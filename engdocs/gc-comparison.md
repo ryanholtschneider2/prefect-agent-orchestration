@@ -73,16 +73,20 @@ writing a `engdocs/topologies.md` when someone asks for it.
 | # | Feature | Source (GC concept) | Effort | Value |
 |---|---|---|---|---|
 | 1 | **Unread-mail auto-inject** per-turn wrapper in `AgentSession.prompt()` | §2.6 messaging | ~1 hour | Closes the gap where prompts say "check inbox" but nothing enforces it |
-| 2 | **`po.commands` entry-point group** — packs ship user-facing ops; `po <command>` dispatches | §3 `commands/` | ~1 day | Biggest low-effort win. Turns tribal shell knowledge into versioned pack content. |
-| 3 | **`po.doctor_checks` entry-point group** — packs extend `po doctor` | §3 `doctor/` | ~2 hours | Pack authors declare health checks; core aggregates. |
-| 4 | **Jinja2 + `shared/` fragments** in `templates.render_template()` | §2.5 prompts | ~1 day | Removes prompt duplication. Shared rubric for critic + reviewer. |
-| 5 | **`overlay/` dir** copied into agent `cwd` at session start | §3 `overlay/` | ~2 hours | Small, nice-to-have for tmux lurking + standardized context files. |
-| 6 | **`po.toml` with `[rig.patches]`** — per-rig overrides of formula kwargs (model, iter caps, prompts) | §2.4 config | ~2 days | Lets a single pack serve dev/staging/prod without forking. Defer until a second rig asks. |
-| 7 | **Event + condition deployment triggers** via `po deploy` (thin wrapper over Prefect Automations) | §2.7 orders | ~1 day | Matches GC's order trigger set. Defer until we have a concrete event-driven formula. |
+| 2 | **Pack lifecycle verbs** — `po install`, `po update`, `po uninstall`, `po packs` (shell out to `uv tool …`, hide it) | §2.4 config + §3 implicit | ~1 day | Stops users learning `uv`. Principle §3. Solves the "forgot to reinstall after pyproject change" footgun. |
+| 3 | **`po.commands` entry-point group** + `po <command>` dispatch for pack-shipped utility ops | §3 `commands/` | ~1 day | Per principle §4: pack-shipped non-work ops (check-budget, tail-logs, etc.) get a first-class home. |
+| 4 | **`agents/<role>/prompt.md` folder layout** — reorganize existing `prompts/<step>.md` into role-folders | §3 directory layout | ~2 hours | Cleaner structure, room to add `config.toml` per role later, matches GC convention. Plain markdown, `{{var}}` substitution only — no Jinja. |
+| 5 | **`po.doctor_checks` entry-point group** — packs extend `po doctor` | §3 `doctor/` | ~2 hours | Pack authors declare health checks; core aggregates. |
+| 6 | **`overlay/` dir** copied into agent `cwd` at session start | §3 `overlay/` | ~2 hours | Small, nice-to-have for tmux lurking + standardized context files. |
+| 7 | **`po.toml` with `[rig.patches]`** — per-rig overrides of formula kwargs (model, iter caps, prompts) | §2.4 config | ~2 days | Lets a single pack serve dev/staging/prod without forking. Defer until a second rig asks. |
+| 8 | **Event + condition deployment triggers** via `po deploy` (thin wrapper over Prefect Automations) | §2.7 orders | ~1 day | Matches GC's order trigger set. Defer until we have a concrete event-driven formula. |
 
-All 7 pass principles §1 + §2 (CLI-first, composes things Prefect
-doesn't know about). Items 1-5 are clear wins. 6-7 are "build when
-needed."
+Items 1-6 are clear wins. 7-8 are "build when needed."
+
+**Explicitly dropped from an earlier draft of this list**: Jinja2 +
+`shared/` fragments for prompt partials. Per Ryan, prompts stay
+plain markdown with `{{var}}` substitution only — shared rubric is
+duplicated across files, not templated. Grep-able > clever.
 
 ## 6 — What to explicitly *not* lift
 
@@ -101,15 +105,15 @@ needed."
 
 ## 7 — Filing plan
 
-Of §5's 7 items, file `1`, `2`, `3`, `4`, `5` as beads issues now.
-Leave `6`, `7` unfiled — they're "when a use case forces it."
+File items `1` through `6`. Leave `7` and `8` unfiled — "when a
+use case forces it."
 
 - `po-mail-auto-inject` (P2, small)
+- `po-pack-lifecycle` — `install` / `update` / `uninstall` / `packs` (P2, medium)
 - `po-commands-entry-point-group` (P2, medium)
+- `po-agents-folder-layout` — reorganize `prompts/<step>.md` into `agents/<role>/prompt.md` (P3, small)
 - `po-doctor-checks-entry-point-group` (P3, small)
-- `po-jinja2-shared-fragments` (P2, medium)
 - `po-overlay-dir` (P3, small)
 
-Together these would close the GC-parity gap for everything that
-matters, without taking on the OTP supervisor or the TOML config
-overhead.
+Together these close the GC-parity gap without taking on the OTP
+supervisor, TOML config DSL, or prompt-templating engine.

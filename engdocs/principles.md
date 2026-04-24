@@ -84,3 +84,108 @@ integration, not the primary UX.
    instead. Usually the answer is yes.
 
 ---
+
+## 3. PO owns the full pack lifecycle
+
+Users and agents should only know **two** CLIs: `po` and `prefect`.
+They should not have to learn `uv`, `pip`, `hatchling`, or
+`[project.entry-points]`. Pack install, update, uninstall, and
+inventory are PO's job.
+
+**Why.**
+
+- Every extra tool a user has to know is a place the abstraction
+  leaks. `uv tool install --force --editable /path --with-editable
+  /other/path` is Python-package-manager knowledge pretending to be
+  PO knowledge.
+- Packs are a PO concept (they register `po.formulas`,
+  `po.deployments`, `po.commands`, `po.doctor_checks`, …). Only PO
+  knows which installed Python distributions qualify as packs. The
+  package manager sees opaque entry-points; `po` sees semantics.
+- This is also how every mature platform CLI behaves: `kubectl
+  plugin install`, `gh extension install`, `helm repo add`,
+  `cargo install`. The package manager is plumbing.
+
+**What PO is responsible for.**
+
+- `po install <pack>` — from PyPI, git, or a local editable path
+- `po install --editable <path>` — dev workflow for pack authors
+- `po update <pack>` / `po update` (all) — re-install so changed
+  entry-point metadata takes effect (entry-point groups are written
+  at install time, not on code reload — a real footgun today)
+- `po uninstall <pack>`
+- `po packs` — inventory: version, source, what each contributes
+  (formulas, deployments, commands, checks, integrations)
+
+Under the hood PO can shell out to `uv tool …`. The user never
+knows.
+
+**How to apply.**
+
+- If you're about to write docs that say "run `uv tool install
+  --with-editable …`," stop. That's pack lifecycle; add or use a
+  `po` verb instead.
+- `[project.scripts]` in `pyproject.toml` is fine as an
+  implementation detail (pack authors' Python tooling), but user-
+  facing ops belong in the `po.commands` entry-point group so `po
+  <command>` dispatches.
+
+---
+
+## 4. Two dispatch verbs, semantically distinct
+
+PO distinguishes **orchestrated work** from **ad-hoc utility ops**:
+
+- **`po run <formula>`** — runs a Prefect-orchestrated formula.
+  Stateful, claims beads, produces a `$RUN_DIR`, composes
+  actor/critic roles.
+- **`po <command>`** — runs a pack-shipped utility callable or
+  shell. One-shot, no Prefect overhead, no bead claim, no run dir.
+  Examples: `po check-budget`, `po tail-logs-eks`, `po summarize-
+  open-releases`.
+
+Both are discoverable via `po list` (one column distinguishing
+`formula` vs `command`), and introspectable via `po show <name>`.
+
+**Why two verbs and not one.** The semantic categories are real: a
+formula is an orchestrated workflow with observability + retries +
+dep graph; a command is a script. Forcing both through `po run`
+would either overload `run` (confusing) or hide the Prefect
+semantics that make formulas different. Forcing both through `po
+<name>` would silently upgrade every command into a Prefect flow
+run, which is overkill and slow.
+
+**Principle against duplication still holds**: there is exactly
+**one** way to invoke each kind. Formulas are always `po run X`.
+Commands are always `po X`. Not both for either.
+
+**When packs register something, they pick one group.** An op that
+does orchestrated, multi-step, LLM-bearing work → `po.formulas`.
+An op that checks state, reports, or performs a one-shot action →
+`po.commands`.
+
+---
+
+## Prompt authoring convention
+
+Prompts are **plain markdown** with `{{var}}` substitution. No
+Jinja2, no `{% include %}`, no fragment auto-compose. If two
+prompts share rubric, duplicate it; duplication stays grep-able and
+predictable. Agents (roles) live as folders:
+
+```
+<pack>/po_formulas/agents/
+  triager/
+    prompt.md
+  builder/
+    prompt.md
+  critic/
+    prompt.md
+  ...
+```
+
+Optional future: `agents/<role>/config.toml` for model choice /
+option defaults, when that need appears. Keep the default simple
+until it doesn't work.
+
+---
