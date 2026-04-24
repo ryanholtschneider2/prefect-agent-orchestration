@@ -46,4 +46,6 @@ def read_verdict(run_dir: Path, name: str) -> dict[str, Any]:
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"verdict file {path} is not valid JSON:\n{text[:500]}") from exc
+        raise ValueError(
+            f"verdict file {path} is not valid JSON:\n{text[:500]}"
+        ) from exc

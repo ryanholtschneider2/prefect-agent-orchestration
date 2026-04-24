@@ -58,7 +58,9 @@ def load_deployments() -> tuple[list[LoadedDeployment], list[LoadError]]:
             continue
         if not callable(register_fn):
             errors.append(
-                LoadError(pack=ep.name, error=f"entry point is not callable: {register_fn!r}")
+                LoadError(
+                    pack=ep.name, error=f"entry point is not callable: {register_fn!r}"
+                )
             )
             continue
         try:

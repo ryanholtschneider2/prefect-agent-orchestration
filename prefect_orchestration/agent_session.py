@@ -112,15 +112,19 @@ class ClaudeCliBackend:
         )
         if proc.returncode != 0:
             raise RuntimeError(
-                f"claude CLI exited {proc.returncode}\n"
-                f"stderr: {proc.stderr[:2000]}"
+                f"claude CLI exited {proc.returncode}\nstderr: {proc.stderr[:2000]}"
             )
 
         return _parse_envelope(proc.stdout, session_id)
 
 
 _STUB_VERDICTS: dict[str, dict] = {
-    "triage": {"has_ui": False, "has_backend": True, "needs_migration": False, "is_docs_only": False},
+    "triage": {
+        "has_ui": False,
+        "has_backend": True,
+        "needs_migration": False,
+        "is_docs_only": False,
+    },
     "plan": {"verdict": "approved"},
     "review": {"verdict": "approved"},
     "verification": {"verdict": "approved"},
@@ -183,7 +187,9 @@ def _clean_env() -> dict[str, str]:
     return env
 
 
-def _wait_for_rc(rc_path: Path, session_name: str, *, timeout: float, poll: float = 0.2) -> None:
+def _wait_for_rc(
+    rc_path: Path, session_name: str, *, timeout: float, poll: float = 0.2
+) -> None:
     """Block until the wrapper writes an rc file, or raise.
 
     Also bails if the tmux session disappears before the rc file appears
@@ -240,9 +246,7 @@ class TmuxClaudeBackend:
         model: str = "opus",
     ) -> tuple[str, str]:
         if shutil.which("tmux") is None:
-            raise RuntimeError(
-                "TmuxClaudeBackend requires the `tmux` binary on PATH"
-            )
+            raise RuntimeError("TmuxClaudeBackend requires the `tmux` binary on PATH")
 
         name = self._session_name()
         workdir = cwd / ".tmux"

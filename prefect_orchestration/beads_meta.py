@@ -134,7 +134,9 @@ def list_epic_children(epic_id: str) -> list[dict]:
         candidate = f"{epic_id}.{n}"
         proc = subprocess.run(
             ["bd", "show", candidate, "--json"],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if proc.returncode != 0 or not proc.stdout.strip():
             consecutive_missing += 1
@@ -146,12 +148,16 @@ def list_epic_children(epic_id: str) -> list[dict]:
         except (json.JSONDecodeError, IndexError):
             continue
         if row.get("status") in ("open", "in_progress"):
-            deps = [d["id"] if isinstance(d, dict) else d
-                    for d in row.get("dependencies") or []]
-            children.append({
-                "id": row["id"],
-                "status": row["status"],
-                "dependencies": deps,
-                "title": row.get("title", ""),
-            })
+            deps = [
+                d["id"] if isinstance(d, dict) else d
+                for d in row.get("dependencies") or []
+            ]
+            children.append(
+                {
+                    "id": row["id"],
+                    "status": row["status"],
+                    "dependencies": deps,
+                    "title": row.get("title", ""),
+                }
+            )
     return children

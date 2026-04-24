@@ -14,7 +14,6 @@ specific formulas — they're pluggable.
 from __future__ import annotations
 
 import inspect
-import sys
 from importlib.metadata import entry_points
 from typing import Any
 
@@ -105,7 +104,7 @@ def list_formulas() -> None:
     if not formulas:
         typer.echo("no formulas installed.")
         typer.echo("install a pack with `uv add <pack>` or `pip install <pack>`")
-        typer.echo("packs declare formulas via `[project.entry-points.\"po.formulas\"]`.")
+        typer.echo('packs declare formulas via `[project.entry-points."po.formulas"]`.')
         return
     for name, flow_obj in sorted(formulas.items()):
         fn_name = getattr(flow_obj, "__name__", str(flow_obj))
@@ -143,7 +142,7 @@ def run(
 ) -> None:
     """Run a registered formula. Pass flow kwargs after the name:
 
-        po run software-dev-full --issue-id sr-8yu.3 --rig site --rig-path ./site
+    po run software-dev-full --issue-id sr-8yu.3 --rig site --rig-path ./site
     """
     formulas = _load_formulas()
     if name not in formulas:
@@ -166,9 +165,13 @@ def deploy(
         False, "--apply", help="Create/update deployments on the Prefect server."
     ),
     pack: str | None = typer.Option(None, "--pack", help="Only include this pack."),
-    name: str | None = typer.Option(None, "--name", help="Only include this deployment name."),
+    name: str | None = typer.Option(
+        None, "--name", help="Only include this deployment name."
+    ),
     work_pool: str | None = typer.Option(
-        None, "--work-pool", help="Assign this work pool to each deployment before apply."
+        None,
+        "--work-pool",
+        help="Assign this work pool to each deployment before apply.",
     ),
 ) -> None:
     """List (or apply) deployments registered via the `po.deployments` EP group."""
@@ -185,7 +188,7 @@ def deploy(
     if not loaded:
         typer.echo("no deployments registered.")
         typer.echo(
-            "packs declare deployments via `[project.entry-points.\"po.deployments\"]` "
+            'packs declare deployments via `[project.entry-points."po.deployments"]` '
             "pointing at a `register()` callable that returns RunnerDeployment objects."
         )
         raise typer.Exit(0 if not errors else 1)
