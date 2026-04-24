@@ -5,6 +5,12 @@ repo where `po` is installed. Load this when a task involves `po`, a
 formula pack, a scheduled PO deployment, or the interaction between
 beads, PO flows, and Prefect.
 
+> **Agents:** the canonical "how to use `po`" reference is shipped with
+> this repo at [`skills/po/SKILL.md`](skills/po/SKILL.md) — load it
+> whenever the user asks to dispatch a beads issue/epic, mentions the
+> `po` CLI, or wants to run an actor-critic pipeline. Other repos pick
+> it up via `~/.claude/skills/po/` (symlink or copy of that file).
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
 
@@ -32,6 +38,42 @@ integration block below references `git push` / `bd dolt push`; skip those
 steps until a remote exists. Still: close finished beads, commit code,
 leave a handoff note.
 <!-- END BEADS INTEGRATION -->
+
+## Working on this repo
+
+This repo is the **core** (`prefect-orchestration` package + `po` CLI).
+Formulas live in sibling packs (e.g. `../software-dev/po-formulas/`).
+
+```bash
+uv sync                                     # install + dev deps
+uv run python -m pytest                     # full test suite (unit + e2e)
+uv run python -m pytest tests/test_status.py        # one file
+uv run python -m pytest tests/test_status.py::test_name  # one test
+uv run python -m pytest tests/e2e/          # only e2e (CLI roundtrips)
+uv run python -m pytest -k "deploy"         # by keyword
+
+# Re-install after editing pyproject.toml entry points (metadata is
+# baked at install time, not on code reload):
+uv tool install --force \
+  --editable . \
+  --with-editable ../../../software-dev/po-formulas
+```
+
+`tests/` is split into unit tests (one file per module under `prefect_orchestration/`)
+and `tests/e2e/` (subprocess-driven `po` CLI roundtrips). E2E tests
+shell out to `po` and `bd`, so both must be on PATH; many also need
+a Prefect server reachable at `PREFECT_API_URL`.
+
+### Core module map
+
+| Module | Role |
+|---|---|
+| `cli.py` | Typer entry point; discovers `po.formulas` + `po.deployments` entry points; subcommands `list`/`show`/`run`/`logs`/`artifacts`/`sessions`/`watch`/`retry`/`status`/`deploy`/`doctor`. |
+| `agent_session.py` | `AgentSession` + `SessionBackend` Protocol (`ClaudeCliBackend`, `TmuxClaudeBackend`, `StubBackend`). Per-role `--resume <uuid>` + `--fork-session`. |
+| `beads_meta.py` | `MetadataStore` Protocol; `BeadsStore` (shells `bd`) + `FileStore` (JSON fallback); `claim_issue`/`close_issue`/`list_epic_children`. |
+| `parsing.py` | `read_verdict()` — reads `$RUN_DIR/verdicts/<step>.json`. |
+| `templates.py` | `{{var}}` substitution over a caller-supplied prompts dir. |
+| `artifacts.py`, `sessions.py`, `watch.py`, `retry.py`, `status.py`, `run_lookup.py`, `doctor.py`, `deployments.py` | Back the matching `po` subcommand. |
 
 ## What PO is
 
@@ -119,6 +161,29 @@ prefect deployment run <flow>/<deployment-name> \
   --param issue_id=<id> --param rig=<rig> --param rig_path=<path> \
   --start-in 2h
 ```
+
+### Unread-mail auto-injection (AgentSession.prompt)
+
+`AgentSession.prompt()` programmatically prepends any unread mail
+addressed to the agent's role as an `<mail-inbox>` XML block before
+sending the turn. On successful turn return, the snapshot's messages
+are marked read; on exception they remain unread for the next turn.
+Empty inbox renders no block.
+
+Wiring is opt-in via two callable fields on `AgentSession`:
+
+- `mail_fetcher: Callable[[str], list]` — `(role) -> list[Mail-like]`
+  (the pack wires `po_formulas.mail.inbox`)
+- `mail_marker:  Callable[[str], None]` — `(mail_id) -> None`
+  (the pack wires `po_formulas.mail.mark_read`)
+- `skip_mail_inject: bool = False` — set True for stub/dry-run paths
+  to skip the `bd list` shell-out
+
+Core never imports `po_formulas.mail` — keeps the layering clean
+(core works without the pack installed). Inbox is capped at
+`MAX_INBOX_MESSAGES = 20` most-recent entries to bound prompt size.
+Mail arriving mid-turn is not auto-marked — only IDs in the
+fetched-at-entry snapshot are closed.
 
 ### Backend selection
 

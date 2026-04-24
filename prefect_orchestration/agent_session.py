@@ -16,6 +16,7 @@ calls the Claude Agent SDK with `ANTHROPIC_API_KEY`.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -26,7 +27,11 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Callable, Protocol
+
+logger = logging.getLogger(__name__)
+
+MAX_INBOX_MESSAGES = 20
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
@@ -346,6 +351,26 @@ class TmuxClaudeBackend:
         return result, new_sid
 
 
+def _render_with_inbox(mails: list[Any], prompt_text: str) -> str:
+    """Prepend a `<mail-inbox>` block to the prompt; passthrough if empty."""
+    if not mails:
+        return prompt_text
+    parts: list[str] = []
+    for i, m in enumerate(mails):
+        if i > 0:
+            parts.append("---")
+        ts = getattr(m, "created_at", None)
+        ts_str = ts.isoformat() if hasattr(ts, "isoformat") else (str(ts) if ts else "?")
+        from_agent = getattr(m, "from_agent", None) or "?"
+        subject = getattr(m, "subject", "") or ""
+        body = getattr(m, "body", "") or ""
+        parts.append(f"[{ts_str} | from={from_agent}] subject: {subject}")
+        if body:
+            parts.append(body)
+    block = "<mail-inbox>\n" + "\n".join(parts) + "\n</mail-inbox>"
+    return f"{block}\n\n{prompt_text}"
+
+
 @dataclass
 class AgentSession:
     """One logical agent (a role) with a persistent Claude session.
@@ -360,18 +385,94 @@ class AgentSession:
     backend: SessionBackend = field(default_factory=ClaudeCliBackend)
     session_id: str | None = None
     model: str = "opus"
+    # Optional pack-supplied hooks for auto-injecting unread mail.
+    # `mail_fetcher(role) -> list[Mail-like]`; objects need .id/.subject/.body
+    # and may have .from_agent and .created_at. `mail_marker(mail_id)` closes.
+    # Keeping these as injected callables avoids importing pack modules from
+    # core (po-formulas is a sibling package; core must work without it).
+    mail_fetcher: Callable[[str], list[Any]] | None = None
+    mail_marker: Callable[[str], None] | None = None
+    skip_mail_inject: bool = False
+    overlay: bool = True
+    skills: bool = True
+    _materialized: bool = field(default=False, init=False, repr=False)
+
+    def _materialize_packs_once(self) -> None:
+        """Lazily copy pack overlay + skills into the rig cwd before the first turn."""
+        if self._materialized:
+            return
+        self._materialized = True
+        if not self.overlay and not self.skills:
+            return
+        # Imported lazily to keep AgentSession construction cheap and
+        # avoid loading importlib.metadata in tests that stub the backend.
+        from prefect_orchestration.pack_overlay import materialize_packs
+
+        try:
+            materialize_packs(
+                self.repo_path,
+                role=self.role,
+                overlay=self.overlay,
+                skills=self.skills,
+            )
+        except Exception:
+            logger.exception(
+                "pack overlay/skills materialization failed for role=%s cwd=%s",
+                self.role,
+                self.repo_path,
+            )
 
     def prompt(self, text: str, *, fork: bool = False) -> str:
-        """Send a prompt; updates `session_id` in place."""
+        """Send a prompt; updates `session_id` in place.
+
+        Prepends an `<mail-inbox>` block listing any unread mail addressed
+        to this role (via `mail_fetcher`). On successful turn return,
+        marks those messages read (via `mail_marker`). On exception,
+        leaves them unread so the next turn re-renders them.
+        """
+        self._materialize_packs_once()
+        mails = self._fetch_inbox()
+        full_text = _render_with_inbox(mails, text)
+
         result, new_sid = self.backend.run(
-            text,
+            full_text,
             session_id=self.session_id,
             cwd=self.repo_path,
             fork=fork,
             model=self.model,
         )
         self.session_id = new_sid
+        self._mark_read(mails)
         return result
+
+    def _fetch_inbox(self) -> list[Any]:
+        if self.skip_mail_inject or self.mail_fetcher is None:
+            return []
+        try:
+            mails = list(self.mail_fetcher(self.role) or [])
+        except Exception:
+            logger.exception("mail_fetcher failed for role %r; skipping inject", self.role)
+            return []
+        if len(mails) > MAX_INBOX_MESSAGES:
+            # Keep the most recent N. Sort defensively; created_at may be None.
+            mails.sort(
+                key=lambda m: getattr(m, "created_at", None) or "",
+                reverse=True,
+            )
+            mails = mails[:MAX_INBOX_MESSAGES]
+        return mails
+
+    def _mark_read(self, mails: list[Any]) -> None:
+        if not mails or self.mail_marker is None:
+            return
+        for m in mails:
+            mail_id = getattr(m, "id", None)
+            if not mail_id:
+                continue
+            try:
+                self.mail_marker(str(mail_id))
+            except Exception:
+                logger.exception("mail_marker failed for id %r", mail_id)
 
     def fork(self) -> AgentSession:
         """Return a child session that shares prior context but branches off.
