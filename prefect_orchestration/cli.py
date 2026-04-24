@@ -14,12 +14,17 @@ specific formulas — they're pluggable.
 from __future__ import annotations
 
 import inspect
+import os
 from importlib.metadata import entry_points
+from pathlib import Path
 from typing import Any
 
 import typer
 
 from prefect_orchestration import deployments as _deployments
+from prefect_orchestration import doctor as _doctor
+from prefect_orchestration import run_lookup as _run_lookup
+from prefect_orchestration import status as _status
 
 app = typer.Typer(
     help="Prefect orchestration for Claude Code agents — pluggable formula runner.",
@@ -241,6 +246,149 @@ def _print_deployment_table(loaded: list[_deployments.LoadedDeployment]) -> None
     typer.echo(fmt.format(*("-" * w for w in widths)))
     for row in rows:
         typer.echo(fmt.format(*row))
+
+
+@app.command()
+def logs(
+    issue_id: str = typer.Argument(..., help="Beads issue id (e.g. prefect-orchestration-5i9)"),
+    lines: int = typer.Option(200, "-n", "--lines", help="Tail this many lines."),
+    follow: bool = typer.Option(False, "-f", "--follow", help="Stream new lines (execs `tail -F`)."),
+    file: str | None = typer.Option(
+        None, "--file", help="Override auto-pick: filename relative to run_dir."
+    ),
+) -> None:
+    """Tail the freshest log artifact for a beads issue's run_dir."""
+    try:
+        loc = _run_lookup.resolve_run_dir(issue_id)
+    except _run_lookup.RunDirNotFound as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    if file is not None:
+        target = loc.run_dir / file
+        if not target.exists():
+            typer.echo(f"no such file: {target}", err=True)
+            raise typer.Exit(3)
+    else:
+        target = _run_lookup.pick_freshest(_run_lookup.candidate_log_files(loc))
+        if target is None:
+            typer.echo(
+                f"no log files found under {loc.run_dir}. "
+                "Either the run hasn't produced logs yet, or they live outside "
+                "the known patterns (try --file <name>).",
+                err=True,
+            )
+            raise typer.Exit(4)
+
+    if follow:
+        # exec so Ctrl-C, signals, and tail's own buffering all behave
+        # naturally. POSIX-only — acceptable (Prefect is POSIX-only).
+        os.execvp("tail", ["tail", "-n", str(lines), "-F", str(target)])
+
+    try:
+        rel = target.relative_to(loc.run_dir)
+        header = f"===== {rel} ====="
+    except ValueError:
+        header = f"===== {target} ====="
+    typer.echo(header)
+    _print_tail(target, lines)
+
+
+def _print_tail(path: Path, lines: int) -> None:
+    """Python tail-N, avoiding a full-file read for large logs."""
+    with path.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        block = 8192
+        data = b""
+        while size > 0 and data.count(b"\n") <= lines:
+            step = min(block, size)
+            size -= step
+            f.seek(size)
+            data = f.read(step) + data
+    text = data.decode("utf-8", errors="replace")
+    tail = text.splitlines()[-lines:]
+    for line in tail:
+        typer.echo(line)
+
+
+@app.command()
+def doctor() -> None:
+    """Read-only health check of the full PO wiring.
+
+    Checks: `bd` CLI, Prefect server reachability, at least one work
+    pool, formula + deployment entry points load, uv-tool install
+    freshness, and LOGFIRE telemetry token. Exits 1 if any critical
+    check fails; warnings never affect the exit code.
+    """
+    report = _doctor.run_doctor()
+    typer.echo(_doctor.render_table(report))
+    raise typer.Exit(report.exit_code)
+
+
+@app.command()
+def status(
+    issue_id: str | None = typer.Option(
+        None, "--issue-id", help="Filter to runs tagged `issue_id:<id>`."
+    ),
+    since: str | None = typer.Option(
+        None, "--since", help="Relative (1h, 30m, 2d) or ISO-8601. Default: 24h."
+    ),
+    all_: bool = typer.Option(
+        False, "--all", help="Ignore default `--since` window and show everything."
+    ),
+    state: str | None = typer.Option(
+        None, "--state", help="Filter by Prefect state name (Running, Completed, ...)."
+    ),
+    limit: int = typer.Option(
+        200, "--limit", help="Max flow runs to fetch from server."
+    ),
+) -> None:
+    """List active / recent flow runs grouped by beads `issue_id` tag.
+
+    `prefect flow-run ls` is unaware of bead IDs. This pulls recent runs
+    from the Prefect server, groups by the `issue_id:<id>` tag PO stamps
+    onto each run, and prints one row per issue. Always exits 0 — an
+    observation command, not a check.
+    """
+    import anyio
+
+    from prefect.client.orchestration import get_client
+
+    since_dt = None
+    if not all_:
+        spec = since or "24h"
+        try:
+            since_dt = _status.parse_since(spec)
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            return
+
+    async def _main() -> None:
+        try:
+            async with get_client() as client:
+                runs = await _status.find_runs_by_issue_id(
+                    client,
+                    issue_id=issue_id,
+                    since=since_dt,
+                    state=state,
+                    limit=limit,
+                )
+                groups = _status.group_by_issue(runs)
+                for g in groups:
+                    g.current_step = await _status.current_step_for_flow_run(
+                        client, g.latest.id
+                    )
+        except Exception as exc:  # noqa: BLE001 — AC3: observation, no tracebacks
+            api_url = os.environ.get("PREFECT_API_URL", "<unset>")
+            typer.echo(
+                f"error: could not query Prefect server at {api_url}: {exc}",
+                err=True,
+            )
+            return
+        typer.echo(_status.render_table(groups))
+
+    anyio.run(_main)
 
 
 if __name__ == "__main__":

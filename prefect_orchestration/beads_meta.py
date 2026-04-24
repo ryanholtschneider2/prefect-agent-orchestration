@@ -43,7 +43,7 @@ class BeadsStore:
 
     def set(self, key: str, value: str) -> None:
         subprocess.run(
-            ["bd", "update", self.parent_id, "--metadata", f"{key}={value}"],
+            ["bd", "update", self.parent_id, "--set-metadata", f"{key}={value}"],
             check=True,
         )
 
