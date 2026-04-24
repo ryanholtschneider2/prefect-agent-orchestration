@@ -1,0 +1,502 @@
+diff --git a/prefect_orchestration/artifacts.py b/prefect_orchestration/artifacts.py
+new file mode 100644
+index 0000000..44643b7
+--- /dev/null
++++ b/prefect_orchestration/artifacts.py
+@@ -0,0 +1,122 @@
++"""Collect + render the forensic trail from a software-dev-full run dir.
++
++Pure helpers used by `po artifacts`. The run dir layout is:
++
++    <rig>/.planning/software-dev-full/<issue>/
++      triage.md
++      plan.md
++      critique-iter-N.md
++      verification-report-iter-N.md
++      decision-log.md
++      lessons-learned.md
++      verdicts/*.json
++
++Iter files are sorted by integer N so `iter-10` comes after `iter-2`.
++Missing files render as a header with `(missing)` — never abort.
++"""
++
++from __future__ import annotations
++
++import json
++import re
++from dataclasses import dataclass
++from pathlib import Path
++
++ITER_RE = re.compile(r"iter-(\d+)\.md$")
++
++FIXED_SECTIONS: tuple[str, ...] = ("triage.md", "plan.md")
++TRAILING_SECTIONS: tuple[str, ...] = ("decision-log.md", "lessons-learned.md")
++
++
++@dataclass(frozen=True)
++class Section:
++    """One chunk of the forensic dump — a header and a body."""
++
++    label: str
++    path: Path
++    body: str
++
++
++def _iter_n(name: str) -> int | None:
++    m = ITER_RE.search(name)
++    return int(m.group(1)) if m else None
++
++
++def _iter_pairs(run_dir: Path) -> list[Path]:
++    """critique-iter-N.md + verification-report-iter-N.md sorted by N, critique first."""
++    critiques = {
++        _iter_n(p.name): p
++        for p in run_dir.glob("critique-iter-*.md")
++        if _iter_n(p.name) is not None
++    }
++    verifies = {
++        _iter_n(p.name): p
++        for p in run_dir.glob("verification-report-iter-*.md")
++        if _iter_n(p.name) is not None
++    }
++    ns = sorted(set(critiques) | set(verifies))
++    out: list[Path] = []
++    for n in ns:
++        if n in critiques:
++            out.append(critiques[n])
++        if n in verifies:
++            out.append(verifies[n])
++    return out
++
++
++def _read_or_missing(path: Path, run_dir: Path) -> Section:
++    try:
++        rel = path.relative_to(run_dir)
++    except ValueError:
++        rel = path
++    label = str(rel)
++    if not path.exists():
++        return Section(label=label, path=path, body="(missing)")
++    if path.suffix == ".json":
++        try:
++            data = json.loads(path.read_text())
++            body = json.dumps(data, indent=2, sort_keys=True)
++        except (OSError, json.JSONDecodeError):
++            body = path.read_text(errors="replace")
++    else:
++        body = path.read_text(errors="replace")
++    return Section(label=label, path=path, body=body)
++
++
++def collect_sections(run_dir: Path, *, verdicts_only: bool = False) -> list[Section]:
++    """Ordered list of sections to render.
++
++    verdicts_only=True restricts to `verdicts/*.json` (alphabetical).
++    """
++    if verdicts_only:
++        return _collect_verdicts(run_dir)
++
++    sections: list[Section] = []
++    for name in FIXED_SECTIONS:
++        sections.append(_read_or_missing(run_dir / name, run_dir))
++    for iter_path in _iter_pairs(run_dir):
++        sections.append(_read_or_missing(iter_path, run_dir))
++    for name in TRAILING_SECTIONS:
++        sections.append(_read_or_missing(run_dir / name, run_dir))
++    sections.extend(_collect_verdicts(run_dir))
++    return sections
++
++
++def _collect_verdicts(run_dir: Path) -> list[Section]:
++    verdicts_dir = run_dir / "verdicts"
++    if not verdicts_dir.is_dir():
++        return []
++    return [
++        _read_or_missing(p, run_dir)
++        for p in sorted(verdicts_dir.glob("*.json"), key=lambda p: p.name)
++    ]
++
++
++def render(sections: list[Section]) -> str:
++    """Plain-ASCII rendering — no ANSI, safe to pipe to `less`."""
++    chunks: list[str] = []
++    for sec in sections:
++        chunks.append(f"===== {sec.label} =====")
++        body = sec.body
++        chunks.append(body if body.endswith("\n") else body + "\n")
++    return "\n".join(chunks)
+diff --git a/prefect_orchestration/cli.py b/prefect_orchestration/cli.py
+index 52aa2b5..a6bd0de 100644
+--- a/prefect_orchestration/cli.py
++++ b/prefect_orchestration/cli.py
+@@ -15,15 +15,20 @@ from __future__ import annotations
+ 
+ import inspect
+ import os
++import shutil
++import subprocess
+ from importlib.metadata import entry_points
+ from pathlib import Path
+ from typing import Any
+ 
+ import typer
+ 
++from prefect_orchestration import artifacts as _artifacts
+ from prefect_orchestration import deployments as _deployments
+ from prefect_orchestration import doctor as _doctor
++from prefect_orchestration import retry as _retry
+ from prefect_orchestration import run_lookup as _run_lookup
++from prefect_orchestration import sessions as _sessions
+ from prefect_orchestration import status as _status
+ 
+ app = typer.Typer(
+@@ -316,6 +321,58 @@ def _print_tail(path: Path, lines: int) -> None:
+         typer.echo(line)
+ 
+ 
++@app.command()
++def artifacts(
++    issue_id: str = typer.Argument(
++        ..., help="Beads issue id (e.g. prefect-orchestration-5i9)"
++    ),
++    verdicts: bool = typer.Option(
++        False, "--verdicts", help="Print only the verdicts/*.json files."
++    ),
++    open_: bool = typer.Option(
++        False,
++        "--open",
++        help=(
++            "Launch $EDITOR (or xdg-open) on the run dir instead of printing. "
++            "Takes precedence over --verdicts."
++        ),
++    ),
++) -> None:
++    """Dump the full forensic trail for a beads issue's run dir.
++
++    Prints triage.md, plan.md, each critique-iter-N / verification-report-iter-N
++    pair in numeric N order, decision-log.md, lessons-learned.md, and every
++    verdicts/*.json. Missing files render as `(missing)` — the command never
++    aborts on a partial run.
++    """
++    try:
++        loc = _run_lookup.resolve_run_dir(issue_id)
++    except _run_lookup.RunDirNotFound as exc:
++        typer.echo(str(exc), err=True)
++        raise typer.Exit(2) from exc
++
++    if open_:
++        editor = os.environ.get("EDITOR") or shutil.which("xdg-open")
++        if not editor:
++            typer.echo(
++                "no $EDITOR set and `xdg-open` not on PATH; cannot --open.",
++                err=True,
++            )
++            raise typer.Exit(5)
++        proc = subprocess.run([editor, str(loc.run_dir)], check=False)
++        if proc.returncode != 0:
++            typer.echo(
++                f"{editor!r} exited {proc.returncode}; on bare servers xdg-open "
++                "often fails — try EDITOR=vim or cd to the dir directly.",
++                err=True,
++            )
++            raise typer.Exit(proc.returncode)
++        return
++
++    sections = _artifacts.collect_sections(loc.run_dir, verdicts_only=verdicts)
++    typer.echo(_artifacts.render(sections))
++
++
+ @app.command()
+ def doctor() -> None:
+     """Read-only health check of the full PO wiring.
+@@ -395,5 +452,108 @@ def status(
+     anyio.run(_main)
+ 
+ 
++@app.command()
++def sessions(
++    issue_id: str = typer.Argument(
++        ..., help="Beads issue id (e.g. prefect-orchestration-5i9)"
++    ),
++    resume: str | None = typer.Option(
++        None,
++        "--resume",
++        help="Print a ready-to-run `claude --print --resume <uuid> --fork-session` "
++        "one-liner for this role and exit.",
++    ),
++) -> None:
++    """List per-role Claude session UUIDs recorded for an issue's run_dir.
++
++    Reads `metadata.json` at the run_dir root (resolved via bead metadata)
++    and prints a table of `role | uuid | last-iter | last-updated`. With
++    `--resume <role>`, prints a single copy-paste command for that role.
++    """
++    try:
++        loc = _run_lookup.resolve_run_dir(issue_id)
++    except _run_lookup.RunDirNotFound as exc:
++        typer.echo(str(exc), err=True)
++        raise typer.Exit(2) from exc
++
++    try:
++        metadata = _sessions.load_metadata(loc.run_dir)
++    except _sessions.MetadataNotFound as exc:
++        typer.echo(str(exc), err=True)
++        raise typer.Exit(3) from exc
++
++    if resume is not None:
++        uuid = _sessions.lookup_session(metadata, resume)
++        if uuid is None:
++            typer.echo(f"no session recorded for role {resume!r}", err=True)
++            raise typer.Exit(4)
++        typer.echo(_sessions.resume_command(uuid))
++        return
++
++    rows = _sessions.build_rows(loc.run_dir, metadata)
++    typer.echo(_sessions.render_table(rows))
++
++
++@app.command()
++def retry(
++    issue_id: str = typer.Argument(
++        ..., help="Beads issue id whose run_dir should be archived + relaunched."
++    ),
++    keep_sessions: bool = typer.Option(
++        False,
++        "--keep-sessions",
++        help="Preserve per-role Claude session UUIDs from the prior run's metadata.json.",
++    ),
++    rig: str | None = typer.Option(
++        None,
++        "--rig",
++        help="Rig name passed to the formula. Defaults to the rig_path basename.",
++    ),
++    force: bool = typer.Option(
++        False,
++        "--force",
++        help="Skip the in-flight check (Prefect Running runs for this issue).",
++    ),
++    formula: str = typer.Option(
++        _retry.DEFAULT_FORMULA,
++        "--formula",
++        help="Formula entry-point name to relaunch.",
++    ),
++) -> None:
++    """Archive an issue's run_dir and re-run its formula from scratch.
++
++    Looks up `(rig_path, run_dir)` from bd metadata, archives the
++    run_dir to a `.bak-<utc-timestamp>` sibling, reopens the bead if
++    closed, and invokes the formula in-process. Refuses to proceed if
++    another flow for this issue is still Running on the Prefect server
++    (pass `--force` to bypass).
++    """
++    try:
++        result = _retry.retry_issue(
++            issue_id,
++            keep_sessions=keep_sessions,
++            rig=rig,
++            force=force,
++            formula=formula,
++            warn=lambda msg: typer.echo(f"warning: {msg}", err=True),
++        )
++    except _run_lookup.RunDirNotFound as exc:
++        typer.echo(str(exc), err=True)
++        raise typer.Exit(2) from exc
++    except _retry.RetryError as exc:
++        typer.echo(f"error: {exc}", err=True)
++        raise typer.Exit(exc.exit_code) from exc
++
++    if result.archived_to is not None:
++        typer.echo(f"archived → {result.archived_to}")
++    else:
++        typer.echo("no prior run_dir on disk; launching fresh.")
++    if result.reopened:
++        typer.echo(f"reopened bead {issue_id}")
++    if result.kept_sessions:
++        typer.echo("restored metadata.json (--keep-sessions)")
++    typer.echo(result.flow_result)
++
++
+ if __name__ == "__main__":
+     app()
+diff --git a/tests/test_cli_artifacts.py b/tests/test_cli_artifacts.py
+new file mode 100644
+index 0000000..a8becd5
+--- /dev/null
++++ b/tests/test_cli_artifacts.py
+@@ -0,0 +1,175 @@
++"""Unit tests for `po artifacts` Typer subcommand."""
++
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++import pytest
++from typer.testing import CliRunner
++
++from prefect_orchestration import cli, run_lookup
++
++
++@pytest.fixture
++def runner() -> CliRunner:
++    return CliRunner()
++
++
++def _seed_full_run(tmp_path: Path) -> Path:
++    run_dir = tmp_path / "run"
++    run_dir.mkdir()
++    (run_dir / "triage.md").write_text("# triage body\n")
++    (run_dir / "plan.md").write_text("# plan body\n")
++    (run_dir / "critique-iter-1.md").write_text("critique 1\n")
++    (run_dir / "verification-report-iter-1.md").write_text("verify 1\n")
++    (run_dir / "critique-iter-2.md").write_text("critique 2\n")
++    (run_dir / "verification-report-iter-2.md").write_text("verify 2\n")
++    (run_dir / "critique-iter-10.md").write_text("critique 10\n")
++    (run_dir / "verification-report-iter-10.md").write_text("verify 10\n")
++    (run_dir / "decision-log.md").write_text("decisions\n")
++    (run_dir / "lessons-learned.md").write_text("lessons\n")
++    verdicts = run_dir / "verdicts"
++    verdicts.mkdir()
++    (verdicts / "triage.json").write_text(json.dumps({"verdict": "pass"}))
++    (verdicts / "build-iter-1.json").write_text(json.dumps({"verdict": "pass"}))
++    return run_dir
++
++
++def _patch_resolve(monkeypatch, run_dir: Path, tmp_path: Path) -> None:
++    loc = run_lookup.RunLocation(rig_path=tmp_path, run_dir=run_dir)
++    monkeypatch.setattr(cli._run_lookup, "resolve_run_dir", lambda _id: loc)
++
++
++def test_artifacts_full_order(tmp_path, runner, monkeypatch):
++    run_dir = _seed_full_run(tmp_path)
++    _patch_resolve(monkeypatch, run_dir, tmp_path)
++
++    result = runner.invoke(cli.app, ["artifacts", "beads-xyz"])
++    assert result.exit_code == 0, result.stderr
++    out = result.stdout
++
++    order = [
++        "triage.md",
++        "plan.md",
++        "critique-iter-1.md",
++        "verification-report-iter-1.md",
++        "critique-iter-2.md",
++        "verification-report-iter-2.md",
++        "critique-iter-10.md",
++        "verification-report-iter-10.md",
++        "decision-log.md",
++        "lessons-learned.md",
++        "verdicts/build-iter-1.json",
++        "verdicts/triage.json",
++    ]
++    positions = [out.find(f"===== {name} =====") for name in order]
++    assert all(p >= 0 for p in positions), positions
++    assert positions == sorted(positions), positions
++
++
++def test_artifacts_missing_files_render_missing(tmp_path, runner, monkeypatch):
++    run_dir = tmp_path / "run"
++    run_dir.mkdir()
++    (run_dir / "triage.md").write_text("just triage\n")
++    _patch_resolve(monkeypatch, run_dir, tmp_path)
++
++    result = runner.invoke(cli.app, ["artifacts", "beads-xyz"])
++    assert result.exit_code == 0
++    assert "===== triage.md =====" in result.stdout
++    assert "===== plan.md =====" in result.stdout
++    assert "(missing)" in result.stdout
++
++
++def test_artifacts_verdicts_only(tmp_path, runner, monkeypatch):
++    run_dir = _seed_full_run(tmp_path)
++    _patch_resolve(monkeypatch, run_dir, tmp_path)
++
++    result = runner.invoke(cli.app, ["artifacts", "beads-xyz", "--verdicts"])
++    assert result.exit_code == 0
++    out = result.stdout
++    assert "===== verdicts/triage.json =====" in out
++    assert "===== verdicts/build-iter-1.json =====" in out
++    assert "===== triage.md =====" not in out
++    assert "===== plan.md =====" not in out
++    # Pretty-printed JSON
++    assert '"verdict": "pass"' in out
++
++
++def test_artifacts_open_uses_editor(tmp_path, runner, monkeypatch):
++    run_dir = _seed_full_run(tmp_path)
++    _patch_resolve(monkeypatch, run_dir, tmp_path)
++    monkeypatch.setenv("EDITOR", "my-editor")
++
++    captured: dict = {}
++
++    def fake_run(argv, check=False):
++        captured["argv"] = argv
++        captured["check"] = check
++
++        class R:
++            returncode = 0
++
++        return R()
++
++    monkeypatch.setattr(cli.subprocess, "run", fake_run)
++
++    result = runner.invoke(cli.app, ["artifacts", "beads-xyz", "--open"])
++    assert result.exit_code == 0, result.stderr
++    assert captured["argv"] == ["my-editor", str(run_dir)]
++
++
++def test_artifacts_open_fallback_to_xdg_open(tmp_path, runner, monkeypatch):
++    run_dir = _seed_full_run(tmp_path)
++    _patch_resolve(monkeypatch, run_dir, tmp_path)
++    monkeypatch.delenv("EDITOR", raising=False)
++    monkeypatch.setattr(cli.shutil, "which", lambda _name: "/usr/bin/xdg-open")
++
++    captured: dict = {}
++
++    def fake_run(argv, check=False):
++        captured["argv"] = argv
++
++        class R:
++            returncode = 0
++
++        return R()
++
++    monkeypatch.setattr(cli.subprocess, "run", fake_run)
++
++    result = runner.invoke(cli.app, ["artifacts", "beads-xyz", "--open"])
++    assert result.exit_code == 0, result.stderr
++    assert captured["argv"] == ["/usr/bin/xdg-open", str(run_dir)]
++
++
++def test_artifacts_open_no_editor_no_xdg(tmp_path, runner, monkeypatch):
++    run_dir = _seed_full_run(tmp_path)
++    _patch_resolve(monkeypatch, run_dir, tmp_path)
++    monkeypatch.delenv("EDITOR", raising=False)
++    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
++
++    result = runner.invoke(cli.app, ["artifacts", "beads-xyz", "--open"])
++    assert result.exit_code == 5
++    assert "xdg-open" in result.stderr
++
++
++def test_artifacts_clean_output_no_ansi(tmp_path, runner, monkeypatch):
++    run_dir = _seed_full_run(tmp_path)
++    _patch_resolve(monkeypatch, run_dir, tmp_path)
++
++    result = runner.invoke(cli.app, ["artifacts", "beads-xyz"])
++    assert result.exit_code == 0
++    assert "\x1b[" not in result.stdout
++
++
++def test_artifacts_missing_metadata_shows_fix_hint(tmp_path, runner, monkeypatch):
++    def raiser(_id: str):
++        raise run_lookup.RunDirNotFound(
++            "no run_dir recorded for beads-xyz. "
++            "bd update beads-xyz --set-metadata po.rig_path=<abs> --set-metadata po.run_dir=<abs>"
++        )
++
++    monkeypatch.setattr(cli._run_lookup, "resolve_run_dir", raiser)
++    result = runner.invoke(cli.app, ["artifacts", "beads-xyz"])
++    assert result.exit_code == 2
++    assert "bd update beads-xyz" in result.stderr

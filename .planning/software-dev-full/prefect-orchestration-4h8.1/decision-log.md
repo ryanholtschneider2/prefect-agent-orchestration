@@ -23,3 +23,7 @@
 - **Decision**: Left the concurrently-added `from prefect_orchestration import sessions as _sessions` import in `cli.py` untouched.
   **Why**: Parallel-run hygiene — another worker (4h8.2 or 4h8.3) added `prefect_orchestration/sessions.py` and the matching import. Not my work; don't revert.
   **Alternatives considered**: None — instructions are explicit about leaving other workers' in-flight changes alone.
+
+- **Decision**: Build-iter-1's implementation files landed under 4h8.2's commits (`73e24ec`, `f301f13`) rather than my own.
+  **Why**: Parallel 4h8.2/4h8.3 workers used `git add -A` during their commits, which swept my uncommitted files — `prefect_orchestration/artifacts.py`, `tests/test_cli_artifacts.py`, `.planning/software-dev-full/prefect-orchestration-4h8.1/plan.md`, and this decision log — into their commit. The files themselves are unmodified and still match the plan; only the attribution is wrong.
+  **Alternatives considered**: Revert + re-commit under 4h8.1's tag. Rejected — rewriting another worker's commit violates parallel-run hygiene rule 4 ("leave the other worker's work alone"). Attribution is recorded here; the diff for iter-1 review still comes from HEAD~2..HEAD for artifacts paths.
