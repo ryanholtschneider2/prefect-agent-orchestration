@@ -149,25 +149,37 @@ packs + C configured deployments + a Prefect server.** No one pack is
 
 ## 5 — Build-next ordering with pack boundaries
 
-Revised from `primitives.md §5`, tagged by what lives where:
+Revised from `primitives.md §5` after the 2026-04-24 compose-first pass
+(see principles.md §5). Several proposed primitives collapsed into
+existing composition patterns:
 
-| # | Feature | Where |
+| # | Feature | Where | Notes |
+|---|---|---|---|
+| 1 | **OTel/Logfire spans** (`9cn`) | **core** | Handles agent-spend observability. Logfire's native budget alerts replace the proposed `@budget` decorator. |
+| 2 | **Pack lifecycle CLI** (`po install/update/packs`) | **core** | In-flight as `4ja.1`. |
+| 3 | **`po.integrations` entry-point group** + first integration pack | **core** declares group; first impl in a **new pack** | Start with `po-integrations-stripe` (real money = real consequences = most value). |
+| 4 | **2-3 more integration packs** (gmail, gcal, slack) | **new packs** | Gmail first for intake-triage; gcal + slack after. |
+| 5 | **`update-prompts-from-lessons` formula** | **new pack**: `po-formulas-retro` | First formula justifies creating the retro pack. |
+| 6 | **Domain flows** (`triage-inbox`, `invoice-reconcile`, …) | **new packs** `po-formulas-intake` / `-ops` | Each flow added as a use-case appears. |
+| 7 | **`po-nanocorp-starter` meta-pack** | **new pack** | Depends on (3)–(5) + a few of (6). Curated deps + default deployments + commands. |
+
+### Dissolved from earlier drafts (per principles §5 — compose before inventing)
+
+The following were in earlier build-next lists but dissolved into
+existing composition patterns instead of becoming new primitives:
+
+| Proposed primitive | Dissolved into | Reason |
 |---|---|---|
-| 1 | OTel/Logfire spans (`9cn`) | **core** |
-| 2 | `@require_human_approval` decorator | **core** (primitive) |
-| 3 | `@budget(daily_cap_usd=X)` decorator | **core** (primitive; reads OTel from 1) |
-| 4 | Pack lifecycle CLI (`po install/update/packs`) (`4ja.1`) | **core** |
-| 5 | `po.integrations` entry-point group + first integration pack | **core** declares the group; first impl in a **new pack** (`po-integrations-stripe` is my pick — highest cost-of-mistake = most value from gating) |
-| 6 | 2-3 more integration packs (gmail, gcal, slack) | **new packs** |
-| 7 | `update-prompts-from-lessons` formula | **new pack**: `po-formulas-retro` — first formula justifies the pack |
-| 8 | `CredentialProvider` Protocol + env-vars default | **core** (Protocol + env-vars default impl) |
-| 9 | Vault adapter(s) | **new pack** `po-vault-<provider>` (deferred) |
-| 10 | Domain flows as needed (`triage-inbox`, `invoice-reconcile`, …) | **new packs** `po-formulas-intake` / `-ops` |
-| 11 | `po-nanocorp-starter` meta-pack — curated deps + default deployments + commands | **new pack**, once (6)–(7) + a few of (10) exist to depend on |
+| `@require_human_approval` decorator | `bd human <id>` + task that polls the bead's decision | GC already does this shape with bd state; no decorator earns primitive status until the pattern repeats 3+ times. When a UI / messaging integration lands later, it simply reads the same `bd human` queue. |
+| `@budget(daily_cap_usd=X)` decorator | Logfire native budget alerts (agent spend) + integration-pack config (`StripeClient.max_per_call`, triggers `bd human` on excess) for real money | Two different concerns — neither warranted a generic decorator. Logfire owns LLM spend; integrations own their own ledgers. |
+| `CredentialProvider` Protocol | `os.environ[...]` direct reads in each integration | YAGNI until a vault pack is real. Adding the Protocol later means refactoring ~5 integrations in an afternoon. Cost of deferral is small. |
+| `MemoryStore` Protocol | `bd remember` + `$RUN_DIR/lessons-learned.md` | Already covered by existing beads + filesystem. Vector store (if ever needed) ships as `po-integrations-mem0`, not a core primitive. |
 
-The in-flight parity epic (`4ja`) delivers (4) and the `po.commands` /
-`po.doctor_checks` scaffolding (5 partially). Once that lands we can
-start (5) in earnest.
+These can still be added later. The bar for promotion: "we wrote this
+pattern 3 times across different packs and it hurt." Not before.
+
+The in-flight parity epic (`4ja`) delivers (2) and the `po.commands` /
+`po.doctor_checks` scaffolding. Once that lands we can start (3).
 
 ## 6 — Naming convention for future packs
 

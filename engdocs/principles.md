@@ -166,6 +166,68 @@ An op that checks state, reports, or performs a one-shot action →
 
 ---
 
+## 5. Compose before inventing
+
+Before adding a new primitive (decorator, Protocol, entry-point group,
+abstraction), try to achieve the same outcome by composing the
+primitives we already have: beads (+ `bd human`, `bd update`, mail),
+Prefect tasks/flows, entry points, file artifacts, and CLI verbs. Only
+promote something to a new primitive when the same composition pattern
+repeats 3+ times across different packs *and* the repetition is
+error-prone.
+
+**Why.**
+
+- Primitives are forever. Every new Protocol, decorator, or
+  entry-point group is a contract that packs must honor, tests must
+  exercise, and future versions must preserve. The cost is permanent;
+  the benefit is speculative.
+- Composition is legible. A flow that calls `bd.human(issue_id,
+  question="approve this?")` and polls for a decision is readable by
+  any human who knows beads. A `@require_human_approval` decorator is
+  readable only by people who know the decorator exists.
+- Integrations are where new capability naturally lives. "A UI for
+  approvals" is not a new primitive — it's a Slack/web/mobile
+  integration that reads the same bd human queue.
+
+**How to apply.**
+
+- When a pack wants "human signoff": call `bd human` + wait for
+  decision. Don't reach for a decorator.
+- When a pack wants "budget gating": use Logfire's native budget
+  alerts for agent spend; let integration packs own their own money
+  (Stripe: `max_per_call` config + bead-based approval for high
+  values). Don't build a generic `@budget` decorator.
+- When a pack wants "configurable credentials": read env vars. Don't
+  introduce a `CredentialProvider` Protocol until a vault pack exists
+  and demands one.
+- When in doubt, do the dumb thing first. Upgrade later if the
+  pattern repeats.
+
+**Counter-examples (things that DID earn primitive status).**
+
+- `SessionBackend` Protocol — 3+ real implementations already
+  (`ClaudeCliBackend`, `TmuxClaudeBackend`, `StubBackend`); swapping
+  runtimes without touching flows is load-bearing.
+- `po.formulas` / `po.deployments` / `po.commands` entry-point groups
+  — packs compose differently from one-off plugins; discovery and
+  dispatch justify the contract.
+- `$RUN_DIR/verdicts/<step>.json` convention — every formula with >1
+  role needs inter-role handoff; a file artifact is less surprising
+  than parsed LLM output.
+
+The bar for a new primitive is "we already wrote this pattern 3 times
+and it hurt." Not "we'll probably want this eventually."
+
+**Companion principle (the other direction):** don't under-engineer
+either. The point of this principle is to push *timing* — build
+primitives when composition is actually painful, not before and not
+way after. Cohesion and seamlessness come from having the right
+primitives at the right time, not from having zero primitives or
+every possible one.
+
+---
+
 ## Prompt authoring convention
 
 Prompts are **plain markdown** with `{{var}}` substitution. No
