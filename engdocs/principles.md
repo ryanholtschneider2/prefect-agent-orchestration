@@ -168,13 +168,103 @@ An op that checks state, reports, or performs a one-shot action →
 
 ## 5. Compose before inventing
 
-Before adding a new primitive (decorator, Protocol, entry-point group,
-abstraction), try to achieve the same outcome by composing the
-primitives we already have: beads (+ `bd human`, `bd update`, mail),
-Prefect tasks/flows, entry points, file artifacts, and CLI verbs. Only
-promote something to a new primitive when the same composition pattern
-repeats 3+ times across different packs *and* the repetition is
-error-prone.
+Every proposed addition (decorator, Protocol, entry-point group,
+abstraction) gets run through a four-part test before it earns
+primitive status. Inspired by Gas City's "five primitives, four
+derived mechanisms" framing (`gascity/AGENTS.md`) — the irreducible
+things are few; everything else is composition.
+
+### The four-part promotion test
+
+All four must be true to add a new primitive.
+
+1. **In scope of PO.** Not Prefect's job (DAG, retries, schedules,
+   UI), not a pack's domain (Stripe charging, Gmail parsing,
+   recruiting-specific scoring), not an external tool's job
+   (Logfire spend tracking, git version control, dolt storage).
+   PO's scope is: agent runtime, work-ledger coordination, pack
+   lifecycle, CLI surface, per-run artifact convention, entry-point
+   groups that enable pack composition.
+
+2. **Not reducible to existing PO primitives.** Try first to
+   compose the outcome from what we already have:
+   - `SessionBackend` / `AgentSession` — talk to agent runtime
+   - `MetadataStore` / `bd` — read/write work state; `bd human` for
+     decisions; mail beads for messaging
+   - `po.formulas` / `po.deployments` / `po.commands` /
+     `po.doctor_checks` / `po.integrations` — pack contribution
+     surfaces
+   - `$RUN_DIR/verdicts/<step>.json` — inter-role handoff
+   - Prefect `@flow` / `@task` / `wait_for=` / tags — orchestration
+
+   If the outcome is reachable via composition, it's a **derived
+   mechanism**, not a primitive. Document the composition in a
+   formula or helper, not a core abstraction.
+
+3. **Not already solved by a library or service we can depend on.**
+   Python has `httpx` for HTTP, `logfire` for OTel+spend, `stripe`
+   for Stripe, `bd` for beads. We do not reinvent any of those. A
+   new PO primitive that shadows an existing dependency is a
+   durable tax for marginal value.
+
+4. **Real pattern pain.** We wrote the composition 3+ times across
+   different packs *and* the repetition hurt — bugs from
+   inconsistency, refactors broke things in surprising places,
+   tests had to special-case each copy. "We'll probably want this
+   eventually" doesn't qualify.
+
+If any condition fails → don't build. If (1-3) pass but (4) doesn't
+yet → wait for the third pain, keep composing.
+
+### Why this test (borrowed from Gas City)
+
+> *"Everything is a bead. The derived mechanisms are provably
+> composable from the primitives. Removing any primitive makes it
+> impossible to rebuild the system."* — GC's architecture doc
+
+The cost of a wrong primitive is paid forever: contract to honor,
+tests to maintain, version compatibility to preserve. The cost of
+keeping a composition pattern unfactored is paid once per repetition
+— and is recoverable by promotion later. Asymmetric costs → bias
+toward composition, against new primitives.
+
+### Derived mechanisms worth naming
+
+These are not primitives. They're patterns we've confirmed as
+composable and given names to so packs can cite them:
+
+- **Signoff** = `bd human <id> --question="…"` + a task that polls
+  the decision field. UI/messaging integrations (Slack, web form,
+  SMS) wire to the same queue.
+- **Agent↔agent handoff mid-flow** = mail bead written by one role,
+  read at turn-start by another (per-turn wrapper auto-injects —
+  `4ja.2`).
+- **Cross-run feedback** = read `$RUN_DIR/lessons-learned.md` across
+  recent runs → synthesize → write to prompt fragments / `bd
+  remember`. Lives in the `po-formulas-retro` pack.
+- **Budget gating** (real money) = integration pack's own `max_per_call`
+  + bd human escalation on excess. Integration pack owns it, not PO.
+- **Budget gating** (agent spend) = Logfire alerts on OTel cost. Not
+  PO's job; Logfire owns it.
+
+### Counter-examples — things that DID earn primitive status
+
+- `SessionBackend` Protocol — 3+ real impls (`ClaudeCliBackend`,
+  `TmuxClaudeBackend`, `StubBackend`); swapping agent runtime
+  without touching flows is load-bearing.
+- `po.formulas` / `po.deployments` / `po.commands` entry-point
+  groups — packs compose differently from one-off plugins;
+  discovery and dispatch justify the contract.
+- `$RUN_DIR/verdicts/<step>.json` convention — every formula with
+  >1 role needs inter-role handoff; file artifact is less
+  surprising than parsed LLM output.
+
+### Companion — don't under-engineer either
+
+The point is *timing*. Build primitives when composition is actually
+painful — not before, not way after. Cohesion and seamlessness come
+from having the right primitives at the right time, not from having
+zero primitives or every possible one.
 
 **Why.**
 
