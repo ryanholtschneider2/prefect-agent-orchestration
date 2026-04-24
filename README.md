@@ -116,7 +116,10 @@ uv sync
 ```
 
 That gets you the `po` CLI and the library. On its own `po list` will show
-no formulas — install or `uv add` a pack to get useful output.
+no formulas — run `po install <pack>` to get useful output. For pack
+authors: `po install --editable <path>`. See `po packs` for what's
+currently installed and `po update` if you change a pack's
+`pyproject.toml` entry points and need the metadata refreshed.
 
 ## Agent messaging (beads-as-mail)
 

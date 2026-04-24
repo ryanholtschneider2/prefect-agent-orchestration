@@ -52,11 +52,9 @@ uv run python -m pytest tests/test_status.py::test_name  # one test
 uv run python -m pytest tests/e2e/          # only e2e (CLI roundtrips)
 uv run python -m pytest -k "deploy"         # by keyword
 
-# Re-install after editing pyproject.toml entry points (metadata is
-# baked at install time, not on code reload):
-uv tool install --force \
-  --editable . \
-  --with-editable ../../../software-dev/po-formulas
+# Refresh entry-point metadata after editing any pack's pyproject.toml
+# (EP metadata is baked at install time, not on code reload):
+po update
 ```
 
 `tests/` is split into unit tests (one file per module under `prefect_orchestration/`)
@@ -68,11 +66,12 @@ a Prefect server reachable at `PREFECT_API_URL`.
 
 | Module | Role |
 |---|---|
-| `cli.py` | Typer entry point; discovers `po.formulas` + `po.deployments` entry points; subcommands `list`/`show`/`run`/`logs`/`artifacts`/`sessions`/`watch`/`retry`/`status`/`deploy`/`doctor`. |
+| `cli.py` | Typer entry point; discovers `po.formulas` + `po.deployments` entry points; subcommands `list`/`show`/`run`/`logs`/`artifacts`/`sessions`/`watch`/`retry`/`status`/`deploy`/`doctor`/`install`/`update`/`uninstall`/`packs`. |
+| `packs.py` | Pack lifecycle — `install`/`update`/`uninstall`/`packs` shell out to `uv tool` and introspect `importlib.metadata` for `po.*` EP groups. |
 | `agent_session.py` | `AgentSession` + `SessionBackend` Protocol (`ClaudeCliBackend`, `TmuxClaudeBackend`, `StubBackend`). Per-role `--resume <uuid>` + `--fork-session`. |
 | `beads_meta.py` | `MetadataStore` Protocol; `BeadsStore` (shells `bd`) + `FileStore` (JSON fallback); `claim_issue`/`close_issue`/`list_epic_children`. |
 | `parsing.py` | `read_verdict()` — reads `$RUN_DIR/verdicts/<step>.json`. |
-| `templates.py` | `{{var}}` substitution over a caller-supplied prompts dir. |
+| `templates.py` | `{{var}}` substitution over a caller-supplied agents dir (`<dir>/<role>/prompt.md`). |
 | `artifacts.py`, `sessions.py`, `watch.py`, `retry.py`, `status.py`, `run_lookup.py`, `doctor.py`, `deployments.py` | Back the matching `po` subcommand. |
 
 ## What PO is
@@ -307,6 +306,42 @@ Python second).
   (`../software-dev/po-formulas/po_formulas/`), not in the caller's
   rig-path — see issue `prefect-orchestration-pw4`.
 
+## Prompt layout (per-pack)
+
+Packs author prompts as plain markdown under
+`po_formulas/agents/<role>/prompt.md` — one folder per agent role,
+leaving room for an optional sibling `config.toml` later (model choice,
+option defaults). `templates.render_template(agents_dir, role, **vars)`
+resolves `<agents_dir>/<role>/prompt.md` and substitutes `{{var}}`.
+Hyphens are fine in role names (`plan-critic`, `regression-gate`).
+
+```
+po_formulas/agents/
+  triager/      prompt.md
+  baseline/     prompt.md
+  planner/      prompt.md
+  plan-critic/  prompt.md
+  builder/      prompt.md
+  build-critic/ prompt.md
+  linter/       prompt.md
+  tester/       prompt.md
+  regression-gate/  prompt.md
+  deploy-smoke/ prompt.md
+  review-artifacts/ prompt.md
+  verifier/     prompt.md
+  ralph/        prompt.md
+  documenter/   prompt.md
+  demo-video/   prompt.md
+  learn/        prompt.md
+```
+
+**No Jinja, no `{% include %}`, no fragment auto-compose.** If two
+roles share rubric, duplicate it — grep-able beats clever. Role names
+in `render(...)` are *prompt-file lookup keys*, decoupled from
+`RoleRegistry` keys / task names / verdict-file basenames (those stay
+stable across renames so per-role Claude session UUIDs don't orphan).
+See `engdocs/principles.md` § "Prompt authoring convention".
+
 ## Installed at runtime
 
 - `prefect-orchestration` — core, CLI, `AgentSession`, `BeadsStore`,
@@ -315,17 +350,20 @@ Python second).
 - `po-formulas-software-dev` — ships `software-dev-full`, `epic`,
   `deployments.register()`, `mail` helper, 16 role prompts.
 
-Install both editable into a uv tool for development:
+Install both editable for development — use `po install --editable`
+(which shells out to uv under the hood):
 
 ```bash
-uv tool install --force \
-  --editable /path/to/prefect-orchestration \
-  --with-editable /path/to/software-dev/po-formulas
+# First time: bootstrap core from PyPI or an editable path, then add
+# the pack(s) you're working on:
+po install --editable /path/to/prefect-orchestration
+po install --editable /path/to/software-dev/po-formulas
 ```
 
-Re-run `uv tool install --force …` any time `pyproject.toml` entry
-points change (entry-point metadata is written at install time, not
-on code reload).
+Run `po update` any time a pack's `pyproject.toml` entry points
+change — entry-point metadata is written at install time, not on
+code reload, and `po update` refreshes it for every installed pack.
+`po packs` lists what's installed and what each contributes.
 
 ## Related beads (read before touching core or prompts)
 

@@ -26,10 +26,12 @@ import typer
 from prefect_orchestration import artifacts as _artifacts
 from prefect_orchestration import deployments as _deployments
 from prefect_orchestration import doctor as _doctor
+from prefect_orchestration import packs as _packs
 from prefect_orchestration import retry as _retry
 from prefect_orchestration import run_lookup as _run_lookup
 from prefect_orchestration import sessions as _sessions
 from prefect_orchestration import status as _status
+from prefect_orchestration import watch as _watch
 
 app = typer.Typer(
     help="Prefect orchestration for Claude Code agents — pluggable formula runner.",
@@ -553,6 +555,152 @@ def retry(
     if result.kept_sessions:
         typer.echo("restored metadata.json (--keep-sessions)")
     typer.echo(result.flow_result)
+
+
+@app.command()
+def watch(
+    issue_id: str = typer.Argument(
+        ..., help="Beads issue id whose run should be watched live."
+    ),
+    replay: bool = typer.Option(
+        False,
+        "--replay",
+        help="Dump existing run_dir artifacts + last N flow state transitions "
+        "before following live.",
+    ),
+    replay_n: int = typer.Option(
+        10,
+        "--replay-n",
+        help="Number of prior flow state transitions to include in --replay.",
+    ),
+) -> None:
+    """Merge Prefect flow-state transitions + new run_dir artifacts into one feed.
+
+    Resolves the run_dir via bd metadata (`po.rig_path` / `po.run_dir`),
+    finds the most recent flow run tagged `issue_id:<id>`, and streams
+    both sources with `[prefect]` / `[run-dir]` prefixes. Ctrl-C exits
+    cleanly; if either source is unavailable (run finished, bd metadata
+    missing, Prefect unreachable) the other still streams.
+    """
+    import asyncio
+
+    try:
+        loc = _run_lookup.resolve_run_dir(issue_id)
+    except _run_lookup.RunDirNotFound as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    async def _find_flow_run(client: Any) -> Any | None:
+        runs = await _status.find_runs_by_issue_id(
+            client, issue_id=issue_id, limit=10
+        )
+        return runs[0] if runs else None
+
+    def _write(line: str) -> None:
+        typer.echo(line)
+
+    def _warn(line: str) -> None:
+        typer.echo(line, err=True)
+
+    use_color = _watch.should_use_color()
+
+    async def _main() -> None:
+        from prefect.client.orchestration import get_client
+
+        async with get_client() as client:
+
+            async def _factory() -> Any:
+                return client
+
+            await _watch.run_watch(
+                issue_id=issue_id,
+                run_dir=loc.run_dir,
+                client_factory=_factory,
+                find_flow_run=_find_flow_run,
+                write=_write,
+                warn=_warn,
+                replay=replay,
+                replay_n=replay_n,
+                use_color=use_color,
+            )
+
+    try:
+        asyncio.run(_main())
+    except KeyboardInterrupt:
+        # AC2: clean exit; no traceback to the user.
+        raise typer.Exit(0)
+
+
+@app.command()
+def install(
+    spec: str = typer.Argument(
+        ...,
+        help="Pack to install: PyPI name (e.g. po-formulas-software-dev), "
+        "git URL (git+https://..., git@..., https://.../x.git), or local path.",
+    ),
+    editable: bool = typer.Option(
+        False,
+        "--editable",
+        "-e",
+        help="Treat `spec` as a local path and install editable (dev workflow).",
+    ),
+) -> None:
+    """Install a pack into po's tool env (delegates to `uv tool`).
+
+    PO owns pack lifecycle end-to-end (engdocs/principles.md §3). Users
+    don't need to learn `uv tool install --force --with-editable …`
+    incantations.
+    """
+    try:
+        _packs.install(spec, editable=editable)
+    except _packs.PackError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    typer.echo(f"installed {spec}")
+
+
+@app.command()
+def update(
+    name: str | None = typer.Argument(
+        None,
+        help="Pack name to refresh. Omit to refresh every installed pack.",
+    ),
+) -> None:
+    """Re-install packs so entry-point metadata is rewritten.
+
+    Entry-point groups are written at install time, not on code reload.
+    This verb replaces the manual `uv tool install --force …` re-run
+    ritual.
+    """
+    try:
+        refreshed = _packs.update(name)
+    except _packs.PackError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    if not refreshed:
+        typer.echo("no packs installed; reinstalled core only.")
+    else:
+        typer.echo(f"refreshed: {', '.join(refreshed)}")
+
+
+@app.command()
+def uninstall(
+    name: str = typer.Argument(..., help="Pack distribution name to remove."),
+) -> None:
+    """Remove a pack from po's tool env."""
+    try:
+        _packs.uninstall(name)
+    except _packs.PackError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    typer.echo(f"uninstalled {name}")
+
+
+@app.command()
+def packs() -> None:
+    """List installed packs and what each contributes (formulas, deployments, ...)."""
+    found = _packs.discover_packs()
+    typer.echo(_packs.render_packs_table(found))
 
 
 if __name__ == "__main__":
