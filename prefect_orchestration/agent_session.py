@@ -234,7 +234,13 @@ class TmuxClaudeBackend:
     timeout_s: float = 1800.0
 
     def _session_name(self) -> str:
-        return f"po-{self.issue}-{self.role}"
+        # tmux uses '.' as a pane separator in target specs (session.window.pane).
+        # Replace dots in issue IDs like `prefect-orchestration-4ja.1` so
+        # `kill-session -t <name>` and `send-keys -t <name>` resolve to the
+        # whole session, not a pane inside it.
+        safe_issue = self.issue.replace(".", "_")
+        safe_role = self.role.replace(".", "_")
+        return f"po-{safe_issue}-{safe_role}"
 
     def run(
         self,
