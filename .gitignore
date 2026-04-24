@@ -1,5 +1,17 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+*.egg-info/
 
-# Beads / Dolt files (added by bd init)
-.dolt/
-*.db
-.beads-credential-key
+# PO run artifacts (per-issue, regenerable)
+.planning/software-dev-full/*/verdicts/
+.planning/software-dev-full/*/*.log
+.planning/software-dev-full/*/*.diff
+.planning/software-dev-full/*/*.patch
+.planning/software-dev-full/*/review-artifacts/
+.planning/software-dev-full/*/final-tests.txt
+.planning/software-dev-full/*/smoke-test-output.txt

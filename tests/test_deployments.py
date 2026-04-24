@@ -223,6 +223,41 @@ def test_po_list_still_works(monkeypatch):
     assert "no formulas" in res.stdout
 
 
+# -- real-EP integration: the po-formulas pack example ----------------
+
+
+def test_po_formulas_pack_exposes_epic_sr_8yu_nightly():
+    """Run the installed `po` console script and assert the po-formulas pack's
+    `epic-sr-8yu-nightly` Cron deployment shows up in the listing (AC2).
+
+    Runs in a subprocess so pytest's rootdir-on-sys.path doesn't shadow the
+    editable po-formulas install. Skips when the `po` script or the pack is
+    not present.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    # Prefer the `po` shipped with the current Python's venv (pytest's
+    # interpreter) so this test validates the in-tree wiring.
+    po = Path(sys.executable).with_name("po")
+    if not po.exists():
+        pytest.skip("`po` console script not installed in this venv")
+    # Run from /tmp so pytest rootdir isn't inherited as cwd.
+    result = subprocess.run(
+        [str(po), "deploy"], capture_output=True, text=True, cwd="/tmp", timeout=30
+    )
+    out = result.stdout + result.stderr
+    if "no deployments registered" in out:
+        pytest.skip("po-formulas-software-dev pack not installed in this venv")
+    assert result.returncode == 0, out
+    assert "software-dev" in out
+    assert "epic-sr-8yu-nightly" in out
+    assert "cron(0 9 * * *" in out
+    assert "America/New_York" in out
+    assert "epic_id" in out
+
+
 def test_po_run_still_works(monkeypatch):
     from prefect_orchestration import cli as cli_mod
 

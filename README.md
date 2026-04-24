@@ -12,7 +12,7 @@ registers itself via entry points.
 | Module | Purpose |
 |---|---|
 | `agent_session.AgentSession` | Per-role wrapper around `claude --print --resume <uuid>`; persistent session context across turns; `--fork-session` support. |
-| `agent_session.SessionBackend` (Protocol) | Swap `ClaudeCliBackend` → `StubBackend` (dry-run), future `TmuxClaudeBackend` (lurk-able), `ClaudeAgentSdkBackend` (commercial API key), `GeminiCliBackend`, etc. |
+| `agent_session.SessionBackend` (Protocol) | Swap `ClaudeCliBackend` → `StubBackend` (dry-run) → `TmuxClaudeBackend` (lurk-able via `tmux attach -t po-<issue>-<role>`); future `ClaudeAgentSdkBackend` (commercial API key), `GeminiCliBackend`, etc. |
 | `beads_meta.MetadataStore` (Protocol) | `BeadsStore` (uses `bd` CLI) or `FileStore` (local JSON fallback when beads isn't present). |
 | `beads_meta.{claim_issue, close_issue, list_epic_children}` | Minimal beads tracker ops; no-op when `bd` is absent. |
 | `parsing.read_verdict` | Reads `$RUN_DIR/verdicts/<name>.json` — the artifact convention for agent → orchestrator signals. |
