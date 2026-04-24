@@ -126,6 +126,25 @@ Overlay does NOT contain secrets, rig-specific config, or anything
 that should survive session end. It's pack-authored, pack-versioned,
 idempotent to copy.
 
+## Native-binary prerequisites
+
+When a pack depends on a **non-Python** tool (Stripe CLI, `gh`, `ffmpeg`,
+cloud-provider CLIs, …) the pack does **not** install it. Instead:
+
+1. The pack's `SKILL.md` documents the prerequisite with platform-
+   specific install commands (`brew install stripe/stripe-cli/stripe`
+   for macOS, `apt install …` for Debian, direct-download URL for
+   others).
+2. A `po.doctor_checks` entry verifies the binary is on `PATH` (e.g.,
+   `shutil.which("stripe")`) and its `--version` meets any minimum.
+3. On missing, the check returns `red` with the install command as
+   the hint — `po doctor` surfaces it.
+
+No post-install hooks, no shell-script auto-install. Running arbitrary
+code at pack-install time is a supply-chain risk we refuse on
+principle. Users install natives once; `po doctor` nags until
+resolved.
+
 ## Credentials
 
 Env vars. No `CredentialProvider` Protocol today (per `principles.md
