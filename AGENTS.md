@@ -82,3 +82,12 @@ bd close <id>         # Complete work
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
+
+## Check your inbox first
+
+If you are acting as a role (builder, critic, verifier, …) that might
+receive mid-run messages from peer agents, include the prompt fragment
+at [`po_formulas/mail_prompt.md`](po_formulas/mail_prompt.md) in your
+role prompt. Before producing any verdict or starting a new turn,
+iterate `inbox("<your role>")` from `po_formulas.mail` and `mark_read`
+each message once addressed. Messages are beads issues labeled `mail`.

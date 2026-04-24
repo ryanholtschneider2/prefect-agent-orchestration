@@ -118,6 +118,35 @@ uv sync
 That gets you the `po` CLI and the library. On its own `po list` will show
 no formulas — install or `uv add` a pack to get useful output.
 
+## Agent messaging (beads-as-mail)
+
+Mid-run handoff between roles (critic → builder, verifier → doer, …) is
+done with `po_formulas.mail` — a thin wrapper over `bd` that turns the
+beads tracker into a shared mailbox. No new MCP, no extra daemon.
+
+```python
+from po_formulas.mail import send, inbox, mark_read
+
+# Critic, after reviewing builder's iter 1:
+send("builder", "fix X", "mail.py:42 swallows parse errors", from_agent="critic")
+
+# Builder, at the top of its next turn:
+for msg in inbox("builder"):
+    # ... address msg.subject / msg.body ...
+    mark_read(msg.id)
+```
+
+Conventions:
+
+- Mail is stored as `type=task`, `priority=4` (backlog, hidden from
+  `bd ready`), labels `mail` + `mail-to:<recipient>`, assignee = recipient.
+- Title format: `[mail:<to>] <subject>`; description carries the body
+  plus a `From:` footer.
+- Role prompts should include [`po_formulas/mail_prompt.md`](po_formulas/mail_prompt.md)
+  so every turn starts with an inbox check.
+- Escalation: if you need threads, read receipts, or file reservations,
+  switch to `mcp-agent-mail`.
+
 ## Design principles
 
 - **Claude Code CLI is the worker, Prefect is the foreman.** Core doesn't
