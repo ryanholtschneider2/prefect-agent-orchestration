@@ -1,0 +1,20 @@
+=== BASELINE 2026-04-24T08:50:36-04:00 ===
+============================= test session starts ==============================
+platform linux -- Python 3.13.11, pytest-9.0.3, pluggy-1.6.0
+rootdir: /home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration
+configfile: pyproject.toml
+plugins: anyio-4.13.0, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 17 items
+
+tests/test_agent_session_tmux.py ..............F..                       [100%]
+
+=================================== FAILURES ===================================
+_________________ test_tmux_backend_passes_resume_across_turns _________________
+tests/test_agent_session_tmux.py:275: in test_tmux_backend_passes_resume_across_turns
+    assert len(turns) == 2
+E   AssertionError: assert 1 == 2
+E    +  where 1 = len(['--print\n--output-format\njson\n--model\nopus\n--print\n--output-format\njson\n--model\nopus\n--resume\n36a1627a-65ae-4eea-9e86-0b065dcbd44a\n'])
+=========================== short test summary info ============================
+FAILED tests/test_agent_session_tmux.py::test_tmux_backend_passes_resume_across_turns
+========================= 1 failed, 16 passed in 1.62s =========================

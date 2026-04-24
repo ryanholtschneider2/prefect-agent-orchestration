@@ -1,0 +1,12 @@
+=== BASELINE 2026-04-24T08:45:13-04:00 ===
+Uninstalled 1 package in 0.62ms
+Installed 1 package in 2ms
+============================= test session starts ==============================
+platform linux -- Python 3.13.11, pytest-9.0.3, pluggy-1.6.0
+rootdir: /home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration
+configfile: pyproject.toml
+plugins: anyio-4.13.0, asyncio-1.3.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 0 items
+
+============================ no tests ran in 0.01s =============================

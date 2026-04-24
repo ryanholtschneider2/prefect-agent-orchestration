@@ -1,0 +1,21 @@
+[project]
+name = "prefect-orchestration"
+version = "0.2.0"
+description = "Pluggable Prefect-based orchestration for Claude Code CLI agents. Formula packs ship separately."
+requires-python = ">=3.11"
+dependencies = [
+    "prefect>=3.0",
+    "pydantic>=2",
+    "typer>=0.12",
+    "rich>=13",
+]
+
+[project.scripts]
+po = "prefect_orchestration.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["prefect_orchestration"]
