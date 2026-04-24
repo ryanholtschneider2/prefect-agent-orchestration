@@ -75,7 +75,9 @@ def check_bd_on_path() -> CheckResult:
             message=f"`bd --version` exited {proc.returncode}",
             remediation="reinstall beads",
         )
-    return CheckResult(name=name, status=Status.OK, message=(proc.stdout or "").strip() or path)
+    return CheckResult(
+        name=name, status=Status.OK, message=(proc.stdout or "").strip() or path
+    )
 
 
 def check_prefect_api_reachable() -> CheckResult:
@@ -144,7 +146,9 @@ def check_work_pool_exists() -> CheckResult:
             remediation="prefect work-pool create po --type process",
         )
     names = ", ".join(sorted(getattr(p, "name", "?") for p in pools))
-    return CheckResult(name=name, status=Status.OK, message=f"{len(pools)} pool(s): {names}")
+    return CheckResult(
+        name=name, status=Status.OK, message=f"{len(pools)} pool(s): {names}"
+    )
 
 
 def _iter_formula_eps() -> list:
@@ -201,7 +205,9 @@ def check_deployments_load() -> CheckResult:
             message=joined,
             remediation="fix the offending pack's register() callable",
         )
-    return CheckResult(name=name, status=Status.OK, message=f"{len(loaded)} deployment(s)")
+    return CheckResult(
+        name=name, status=Status.OK, message=f"{len(loaded)} deployment(s)"
+    )
 
 
 def check_po_list_nonempty() -> CheckResult:

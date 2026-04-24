@@ -6,7 +6,6 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any
 
-import pytest
 from typer.testing import CliRunner
 
 from prefect_orchestration import doctor as doctor_mod
@@ -115,7 +114,10 @@ def test_formulas_load_ok(monkeypatch):
     monkeypatch.setattr(
         doctor_mod,
         "_iter_formula_eps",
-        lambda: [FakeEntryPoint(name="a", target=object()), FakeEntryPoint(name="b", target=object())],
+        lambda: [
+            FakeEntryPoint(name="a", target=object()),
+            FakeEntryPoint(name="b", target=object()),
+        ],
     )
     r = doctor_mod.check_formulas_load()
     assert r.status is Status.OK
@@ -134,9 +136,7 @@ def test_formulas_load_raises(monkeypatch):
 
 
 def test_deployments_load_ok(monkeypatch):
-    monkeypatch.setattr(
-        deployments_mod, "_iter_entry_points", lambda: []
-    )
+    monkeypatch.setattr(deployments_mod, "_iter_entry_points", lambda: [])
     r = doctor_mod.check_deployments_load()
     assert r.status is Status.OK
 
@@ -203,9 +203,7 @@ def test_uv_tool_fresh_divergence(monkeypatch):
     monkeypatch.setattr(
         doctor_mod.subprocess,
         "run",
-        lambda *a, **k: FakeProc(
-            returncode=0, stdout="  extra  po_formulas.x:extra\n"
-        ),
+        lambda *a, **k: FakeProc(returncode=0, stdout="  extra  po_formulas.x:extra\n"),
     )
     r = doctor_mod.check_uv_tool_fresh()
     assert r.status is Status.WARN
