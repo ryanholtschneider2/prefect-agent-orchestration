@@ -17,7 +17,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _po(*args: str, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _po(
+    *args: str, env_overrides: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     po_bin = REPO_ROOT / ".venv" / "bin" / "po"
     if not po_bin.exists():
         pytest.skip(f"po CLI not installed at {po_bin}; run `uv sync` first")
@@ -51,7 +53,11 @@ def test_po_retry_help_flags() -> None:
 def test_po_retry_unknown_issue_exits_nonzero() -> None:
     """An issue with no recorded metadata → RunDirNotFound → exit 2."""
     # Use an id that almost certainly has no bd metadata.
-    result = _po("retry", "definitely-not-a-real-issue-zzzzz", env_overrides={"PATH": "/usr/bin:/bin"})
+    result = _po(
+        "retry",
+        "definitely-not-a-real-issue-zzzzz",
+        env_overrides={"PATH": "/usr/bin:/bin"},
+    )
     assert result.returncode != 0
     # Shouldn't dump a traceback at the user.
     assert "Traceback" not in result.stderr
