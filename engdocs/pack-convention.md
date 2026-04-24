@@ -126,6 +126,70 @@ Overlay does NOT contain secrets, rig-specific config, or anything
 that should survive session end. It's pack-authored, pack-versioned,
 idempotent to copy.
 
+## Tool-access preference order
+
+When a skill teaches an agent to use a tool, prefer interfaces in
+this order:
+
+1. **CLI** (native binary or Python script on `PATH`). Preferred.
+   Agents write shell commands faster than they construct SDK calls,
+   and `|`, `jq`, `grep` compose naturally. `stripe`, `gh`, `gcloud`,
+   `slack-cli`, `bd`, `po` — all CLIs first.
+2. **SDK** (Python library). Use when the CLI can't express the
+   operation (streaming, specialized types, webhooks). Fall back
+   here; don't start here.
+3. **HTTP API** (direct `httpx`/`curl`). Use only when neither CLI
+   nor SDK covers the endpoint. Usually means the tool is immature.
+4. **MCP server**. Last resort — adds a subprocess, a protocol
+   layer, and stateful session coupling. Use only when a stateful
+   multi-turn interaction with the tool is needed that a CLI can't
+   match.
+
+A skill should **lead** with the highest available tier and
+document the lower tiers as fallbacks. When a provider ships
+their own Claude Code skill or `llms.txt`, **link to it** from the
+pack's SKILL.md rather than duplicating — our skill adds nanocorp-
+specific policy (idempotency conventions, budget thresholds,
+project-key discipline) on top of the vendor's canonical guidance.
+
+### Official vendor skills / llms.txt — link, don't duplicate
+
+Many vendors now publish LLM-friendly docs:
+
+- Stripe: https://docs.stripe.com/llms.txt
+- Claude's own API docs: https://docs.claude.com/llms.txt
+- Prefect: https://docs.prefect.io/llms.txt
+- Others: a growing list; check `<vendor-docs-site>/llms.txt` or
+  their "for AI agents" / skills page before writing a skill.
+
+Pack's SKILL.md format:
+
+```markdown
+---
+name: stripe
+description: Charge customers, issue refunds, inspect balances via Stripe.
+---
+
+# Stripe skill — <this-nanocorp> conventions
+
+## Canonical vendor docs
+- CLI reference: https://docs.stripe.com/stripe-cli
+- API reference: https://docs.stripe.com/api
+- Vendor llms.txt: https://docs.stripe.com/llms.txt
+
+## This nanocorp's rules
+(idempotency, bd human on > $500, test-key-in-dev, …)
+
+## Quick CLI recipes
+(stripe charges create …, stripe refunds create …, stripe balance …)
+
+## SDK fallback
+(import stripe; stripe.PaymentIntent.create(…) — when streaming / webhooks)
+```
+
+Keep the skill short. The pack owns policy and conventions; the
+vendor owns mechanics.
+
 ## Native-binary prerequisites
 
 When a pack depends on a **non-Python** tool (Stripe CLI, `gh`, `ffmpeg`,

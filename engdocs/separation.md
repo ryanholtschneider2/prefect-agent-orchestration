@@ -236,3 +236,26 @@ Per `engdocs/primitives.md §6` non-goals, with pack-specific rephrasing:
 - Where do **per-pack CLAUDE.md fragments** live? Each pack's README +
   its own CLAUDE.md, with a root-level index in the nanocorp's rig.
   The starter meta-pack ships a consolidated fragment + overlay.
+
+## 9 — Deferred with intent
+
+These came up during design but are **consciously deferred** until
+we have more experience — not just forgotten:
+
+- **Email-triage pack** (`po-formulas-intake`): agent reads a real
+  external inbox (Gmail / IMAP), classifies, routes to other
+  formulas. Worth building eventually, but needs careful design of
+  routing rules, destructive-action policy, and loop-prevention.
+  Revisit after the retro pack has run for a few weeks and we
+  understand what "classification recurrence" even looks like in
+  our data. (Ryan 2026-04-24: "more thoughtful, maybe after some
+  experience".)
+- **`po-formulas-ops` beyond one flow**: `calendar-audit`,
+  `vendor-follow-up`, `monthly-bookkeeping`, etc. Ship ad-hoc as
+  specific friction emerges, not pre-emptively.
+- **Pure-directory packs (GC-style)**: packs without
+  `pyproject.toml`, content-only. `po install-dir <path>`. Build
+  when a content-only pack is actually wanted.
+- **MCP-source packs**: packs that expose content via a Claude
+  Code plugin (in addition to overlay). Build when a case for
+  globally-available skills (vs rig-scoped) appears.
