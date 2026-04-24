@@ -1,5 +1,16 @@
 # Primitives for an AI-native organization
 
+> **Superseded sections** (2026-04-24 design pass, see `principles.md §5`
+> and `separation.md`): this doc's §3 ("integration-packs idea")
+> and §5 items 4-8 proposed a `po.integrations` entry-point group with
+> an `IntegrationSpec` wrapper per integration. That was dissolved —
+> see `engdocs/pack-convention.md` for the current shape. In short:
+> there is no framework, no typed clients in PO, no `IntegrationSpec`.
+> A "tool pack" is a regular PO pack that ships a vendor SDK dep + a
+> Claude Code skill + commands + doctor checks. Agents call the vendor
+> SDK directly. Treat §3 and §5 below as historical context.
+
+
 What's actually required, beyond an agent runtime, to run an org — human+AI
 or AI-only — with governance, version control, orchestration, and
 communication that works in practice. Snapshot of the landscape as of

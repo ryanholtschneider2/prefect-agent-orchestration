@@ -192,8 +192,9 @@ All four must be true to add a new primitive.
    - `MetadataStore` / `bd` — read/write work state; `bd human` for
      decisions; mail beads for messaging
    - `po.formulas` / `po.deployments` / `po.commands` /
-     `po.doctor_checks` / `po.integrations` — pack contribution
-     surfaces
+     `po.doctor_checks` — pack contribution surfaces (see
+     `engdocs/pack-convention.md`; note that `po.integrations` was
+     proposed and dissolved per §5's own test — see separation.md)
    - `$RUN_DIR/verdicts/<step>.json` — inter-role handoff
    - Prefect `@flow` / `@task` / `wait_for=` / tags — orchestration
 

@@ -34,7 +34,7 @@ in `software-dev/po-formulas/` or a future sibling pack.
 | `AgentSession` + `SessionBackend` Protocol — "how do I talk to an agent runtime"; ships `ClaudeCliBackend`, `TmuxClaudeBackend`, `StubBackend`. Future impls (Claude Agent SDK, Gemini CLI, K8s pod) can slot in without touching flows. | concrete `@flow` composition of sessions |
 | `MetadataStore` Protocol — "how do I talk to the work ledger"; ships `BeadsStore` (shells `bd`) + `FileStore` (JSON fallback when `bd` missing). | consumers of the store |
 | `po` CLI verbs (`list`, `run`, `show`, `deploy`, `install`, `packs`, `doctor`, `logs`, `artifacts`, `sessions`, `retry`, `watch`) | entry-point registrations that feed those verbs |
-| Entry-point groups: `po.formulas`, `po.deployments`, `po.commands`, `po.doctor_checks`, `po.integrations` | registrations within those groups |
+| Entry-point groups: `po.formulas`, `po.deployments`, `po.commands`, `po.doctor_checks` | registrations within those groups |
 | Prompt rendering (`{{var}}` substitution, no Jinja) | actual `.md` prompts under `agents/<role>/prompt.md` |
 | `read_verdict` / `write_verdict` artifact convention | agent-authored verdicts |
 | Telemetry primitives (OTel spans — once `9cn` lands) | span labels applied by pack flows |
@@ -71,19 +71,29 @@ the subset it needs.
 `po-formulas-software-dev` — actor-critic software pipeline + epic
 fan-out + mail helper. Covers formula-class work for "ship code."
 
-### Integrations packs (the big platform lever — `primitives §3`)
-One pack per external system, all registering `po.integrations`:
+### Tool packs (the "integration" equivalent — no new primitive)
 
-| Pack | Owns | Provides |
-|---|---|---|
-| `po-integrations-stripe` | payments | `StripeClient`, `charge()`, idempotency, webhook parsing |
-| `po-integrations-gmail` | email | `GmailClient`, `send()`, `list()`, `fetch()`, MIME builders |
-| `po-integrations-gcal` | calendar | create/list events, free-busy, meeting invites |
-| `po-integrations-slack` | messaging | `post()`, `upload()`, DMs, channels |
-| `po-integrations-attio` (or `-hubspot`, `-linear`, …) | CRM | typed record CRUD, dedup helpers |
-| `po-integrations-github` | SCM ops | branch, PR, review fetch (complements `gh` CLI) |
+Per principle §5 and the 2026-04-24 design pass, PO does **not** ship a
+`po.integrations` entry-point group or an `IntegrationSpec` wrapper. A
+"tool pack" (what would have been an "integration pack") is just a
+regular PO pack that happens to depend on a vendor's SDK/CLI and ship
+an agent skill teaching how to use it for this nanocorp's conventions.
+See `engdocs/pack-convention.md` for the full shape.
 
-Each integration pack ships: typed client + auth loader chain + idempotency wrapper + audit hooks + prompt fragments + budget-gate hook.
+| Pack | Ships |
+|---|---|
+| `po-stripe` | `stripe` Python dep + `skills/stripe/SKILL.md` + `po.commands` (`po stripe-balance`, `po stripe-recent`) + `po.doctor_checks` |
+| `po-gmail` | `google-api-python-client` + `skills/gmail/SKILL.md` + commands + doctor checks |
+| `po-gcal` | same shape, calendar client |
+| `po-slack` | same shape, slack SDK |
+| `po-attio` / `-hubspot` / `-linear` | same shape, CRM client |
+| `po-github` | complements `gh` CLI with skills + commands |
+
+Agents learn to use these tools by reading the pack's SKILL.md
+(delivered via overlay into `<rig>/.claude/skills/<pack>/`), then
+calling the vendor SDK/CLI directly. No PO-level typed client, no
+idempotency wrapper, no auth loader — the skill teaches the
+conventions, the vendor SDK handles the mechanics.
 
 ### Operations packs (domain flows)
 One pack per operational competency. These are the "nanocorp-specific" stuff but named by function:
@@ -110,11 +120,11 @@ is curation, not code. One `po install` gets a new nanocorp a working
 finance/email/calendar/CRM/automation stack:
 
 - **Dependencies** (the curated set):
-  - `po-integrations-stripe` (finance)
-  - `po-integrations-gmail` (email)
-  - `po-integrations-gcal` (scheduling)
-  - `po-integrations-slack` (notifications)
-  - `po-integrations-attio` (CRM) — swap for `-hubspot` / `-linear` / etc. in forks
+  - `po-stripe` (finance)
+  - `po-gmail` (email)
+  - `po-gcal` (scheduling)
+  - `po-slack` (notifications)
+  - `po-attio` (CRM) — swap for `-hubspot` / `-linear` / etc. in forks
   - `po-formulas-intake`, `po-formulas-ops`, `po-formulas-retro`
 - **Ships opinionated default deployments** (registered via `po.deployments`):
   - `weekly-kpi-digest` (cron, Monday 9am)
@@ -157,7 +167,7 @@ existing composition patterns:
 |---|---|---|---|
 | 1 | **OTel/Logfire spans** (`9cn`) | **core** | Handles agent-spend observability. Logfire's native budget alerts replace the proposed `@budget` decorator. |
 | 2 | **Pack lifecycle CLI** (`po install/update/packs`) | **core** | In-flight as `4ja.1`. |
-| 3 | **`po.integrations` entry-point group** + first integration pack | **core** declares group; first impl in a **new pack** | Start with `po-integrations-stripe` (real money = real consequences = most value). |
+| 3 | **First tool pack** (reference impl of `engdocs/pack-convention.md`) | **new pack**: `po-stripe` | Start with `po-stripe` (real money = real consequences). No framework needed — just the pack. |
 | 4 | **2-3 more integration packs** (gmail, gcal, slack) | **new packs** | Gmail first for intake-triage; gcal + slack after. |
 | 5 | **`update-prompts-from-lessons` formula** | **new pack**: `po-formulas-retro` | First formula justifies creating the retro pack. |
 | 6 | **Domain flows** (`triage-inbox`, `invoice-reconcile`, …) | **new packs** `po-formulas-intake` / `-ops` | Each flow added as a use-case appears. |
@@ -185,7 +195,7 @@ The in-flight parity epic (`4ja`) delivers (2) and the `po.commands` /
 
 ```
 po-formulas-<domain>           # shipped flows for a domain (code-shipping, recruiting, intake, ops, retro, growth)
-po-integrations-<system>       # typed client + auth + idempotency for one external system
+po-<tool>                      # tool pack: vendor SDK dep + skill + commands + doctor checks (see pack-convention.md)
 po-nanocorp-<flavor>           # starter/meta-pack — deps + opinionated default deployments + commands
 po-<capability>-<provider>     # implementations of a core Protocol (memory, vault)
 ```
