@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -15,7 +14,9 @@ def _fake_bd_show(metadata: dict | None):
     payload = {"id": "x", "metadata": metadata} if metadata is not None else {"id": "x"}
 
     def runner(cmd, capture_output, text, check):  # noqa: ARG001
-        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps(payload), stderr=""
+        )
 
     return runner
 
@@ -71,6 +72,7 @@ def test_pick_freshest_chooses_max_mtime(tmp_path):
     a.write_text("a")
     b.write_text("b")
     import os
+
     os.utime(a, (1000, 1000))
     os.utime(b, (2000, 2000))
     picked = run_lookup.pick_freshest([a, b])

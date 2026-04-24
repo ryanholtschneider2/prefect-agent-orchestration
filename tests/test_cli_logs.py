@@ -47,6 +47,7 @@ def test_logs_missing_metadata_shows_fix_hint(tmp_path, runner, monkeypatch):
             "no run_dir recorded for beads-xyz. "
             "bd update beads-xyz --set-metadata po.rig_path=<abs> --set-metadata po.run_dir=<abs>"
         )
+
     monkeypatch.setattr(cli._run_lookup, "resolve_run_dir", raiser)
     result = runner.invoke(cli.app, ["logs", "beads-xyz"])
     assert result.exit_code == 2

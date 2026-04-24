@@ -250,9 +250,13 @@ def _print_deployment_table(loaded: list[_deployments.LoadedDeployment]) -> None
 
 @app.command()
 def logs(
-    issue_id: str = typer.Argument(..., help="Beads issue id (e.g. prefect-orchestration-5i9)"),
+    issue_id: str = typer.Argument(
+        ..., help="Beads issue id (e.g. prefect-orchestration-5i9)"
+    ),
     lines: int = typer.Option(200, "-n", "--lines", help="Tail this many lines."),
-    follow: bool = typer.Option(False, "-f", "--follow", help="Stream new lines (execs `tail -F`)."),
+    follow: bool = typer.Option(
+        False, "-f", "--follow", help="Stream new lines (execs `tail -F`)."
+    ),
     file: str | None = typer.Option(
         None, "--file", help="Override auto-pick: filename relative to run_dir."
     ),
