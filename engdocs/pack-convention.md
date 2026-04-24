@@ -113,8 +113,8 @@ https://docs.stripe.com/api
 
 ## Overlay — what it is, what belongs in it
 
-The overlay (`4ja.4`) is for files the agent's working directory
-should contain when a session starts. Typical contents:
+The overlay is for files the agent's working directory should contain
+when a session starts. Typical contents:
 
 - `overlay/CLAUDE.md` — pack-specific agent instructions that
   reinforce the skill (repetition is fine — prompts are cheap)
@@ -125,6 +125,54 @@ should contain when a session starts. Typical contents:
 Overlay does NOT contain secrets, rig-specific config, or anything
 that should survive session end. It's pack-authored, pack-versioned,
 idempotent to copy.
+
+### Mechanics (4ja.4)
+
+`AgentSession.prompt()` lazily walks every installed pack via
+`importlib.metadata` (any distribution with a `po.formulas`,
+`po.commands`, `po.doctor_checks`, or `po.deployments` entry point)
+and copies its overlay/skills content into the rig once per session:
+
+| Source | Destination | Conflict policy |
+|---|---|---|
+| `<pack>/overlay/**` | `<rig>/<rel>` | **skip-existing** (filesystem presence) |
+| `<pack>/<module>/agents/<role>/overlay/**` | `<rig>/<rel>` | **skip-existing** — laid down *before* pack-wide so role files win |
+| `<pack>/skills/<name>/**` | `<rig>/.claude/skills/<pack-name>/<name>/**` | **always overwrite** |
+
+Skip-existing uses filesystem presence (not git status) for v1 —
+simpler, no `git` shell-out per file, and matches the AC literal
+("existing files in cwd not overwritten"). User-authored files in
+the rig always win.
+
+Skills are pack-owned canonical content and always overwrite. We
+only touch `.claude/skills/<pack-name>/` for installed packs;
+sibling `.claude/skills/<other>/` dirs (user-authored, plugin) are
+left alone.
+
+**Per-role precedence.** `agents/<role>/overlay/**` is processed
+*before* `overlay/**`. Once a role file lands, the pack-wide overlay
+sees it as "existing" and skips. So role-specific files cleanly
+override pack-wide ones on conflict, and a session with no matching
+role overlay falls through to the pack-wide content.
+
+**Wheel vs editable layout.** Discovery probes `<dist-root>/overlay/`
+first (editable installs ship `overlay/` next to `pyproject.toml`),
+then `<package-root>/overlay/` (wheels typically embed it inside the
+importable module via `[tool.hatch.build.targets.wheel] include`).
+Same probe for `skills/`. Pick whichever fits your build; both work.
+
+**Opt-out.** Per-session: `AgentSession(overlay=False, skills=False)`.
+Materialization is best-effort — exceptions are logged and the turn
+proceeds.
+
+**Cleanup.** None in v1. Overlay files persist beyond session end;
+add them to `.gitignore` if the rig is git-tracked. Cleanup may
+arrive in a later issue.
+
+**Concurrency.** Two sessions racing into the same rig will each
+attempt the copy; skip-existing makes the second a near-no-op
+(stat per file). The TOCTOU window is tiny and identical bytes
+on both sides, so collisions don't corrupt content.
 
 ## Tool-access preference order
 
