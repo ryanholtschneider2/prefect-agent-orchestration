@@ -15,15 +15,20 @@ from __future__ import annotations
 
 import inspect
 import os
+import shutil
+import subprocess
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
 
 import typer
 
+from prefect_orchestration import artifacts as _artifacts
 from prefect_orchestration import deployments as _deployments
 from prefect_orchestration import doctor as _doctor
+from prefect_orchestration import retry as _retry
 from prefect_orchestration import run_lookup as _run_lookup
+from prefect_orchestration import sessions as _sessions
 from prefect_orchestration import status as _status
 
 app = typer.Typer(
@@ -317,6 +322,58 @@ def _print_tail(path: Path, lines: int) -> None:
 
 
 @app.command()
+def artifacts(
+    issue_id: str = typer.Argument(
+        ..., help="Beads issue id (e.g. prefect-orchestration-5i9)"
+    ),
+    verdicts: bool = typer.Option(
+        False, "--verdicts", help="Print only the verdicts/*.json files."
+    ),
+    open_: bool = typer.Option(
+        False,
+        "--open",
+        help=(
+            "Launch $EDITOR (or xdg-open) on the run dir instead of printing. "
+            "Takes precedence over --verdicts."
+        ),
+    ),
+) -> None:
+    """Dump the full forensic trail for a beads issue's run dir.
+
+    Prints triage.md, plan.md, each critique-iter-N / verification-report-iter-N
+    pair in numeric N order, decision-log.md, lessons-learned.md, and every
+    verdicts/*.json. Missing files render as `(missing)` — the command never
+    aborts on a partial run.
+    """
+    try:
+        loc = _run_lookup.resolve_run_dir(issue_id)
+    except _run_lookup.RunDirNotFound as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    if open_:
+        editor = os.environ.get("EDITOR") or shutil.which("xdg-open")
+        if not editor:
+            typer.echo(
+                "no $EDITOR set and `xdg-open` not on PATH; cannot --open.",
+                err=True,
+            )
+            raise typer.Exit(5)
+        proc = subprocess.run([editor, str(loc.run_dir)], check=False)
+        if proc.returncode != 0:
+            typer.echo(
+                f"{editor!r} exited {proc.returncode}; on bare servers xdg-open "
+                "often fails — try EDITOR=vim or cd to the dir directly.",
+                err=True,
+            )
+            raise typer.Exit(proc.returncode)
+        return
+
+    sections = _artifacts.collect_sections(loc.run_dir, verdicts_only=verdicts)
+    typer.echo(_artifacts.render(sections))
+
+
+@app.command()
 def doctor() -> None:
     """Read-only health check of the full PO wiring.
 
@@ -393,6 +450,109 @@ def status(
         typer.echo(_status.render_table(groups))
 
     anyio.run(_main)
+
+
+@app.command()
+def sessions(
+    issue_id: str = typer.Argument(
+        ..., help="Beads issue id (e.g. prefect-orchestration-5i9)"
+    ),
+    resume: str | None = typer.Option(
+        None,
+        "--resume",
+        help="Print a ready-to-run `claude --print --resume <uuid> --fork-session` "
+        "one-liner for this role and exit.",
+    ),
+) -> None:
+    """List per-role Claude session UUIDs recorded for an issue's run_dir.
+
+    Reads `metadata.json` at the run_dir root (resolved via bead metadata)
+    and prints a table of `role | uuid | last-iter | last-updated`. With
+    `--resume <role>`, prints a single copy-paste command for that role.
+    """
+    try:
+        loc = _run_lookup.resolve_run_dir(issue_id)
+    except _run_lookup.RunDirNotFound as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    try:
+        metadata = _sessions.load_metadata(loc.run_dir)
+    except _sessions.MetadataNotFound as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(3) from exc
+
+    if resume is not None:
+        uuid = _sessions.lookup_session(metadata, resume)
+        if uuid is None:
+            typer.echo(f"no session recorded for role {resume!r}", err=True)
+            raise typer.Exit(4)
+        typer.echo(_sessions.resume_command(uuid))
+        return
+
+    rows = _sessions.build_rows(loc.run_dir, metadata)
+    typer.echo(_sessions.render_table(rows))
+
+
+@app.command()
+def retry(
+    issue_id: str = typer.Argument(
+        ..., help="Beads issue id whose run_dir should be archived + relaunched."
+    ),
+    keep_sessions: bool = typer.Option(
+        False,
+        "--keep-sessions",
+        help="Preserve per-role Claude session UUIDs from the prior run's metadata.json.",
+    ),
+    rig: str | None = typer.Option(
+        None,
+        "--rig",
+        help="Rig name passed to the formula. Defaults to the rig_path basename.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Skip the in-flight check (Prefect Running runs for this issue).",
+    ),
+    formula: str = typer.Option(
+        _retry.DEFAULT_FORMULA,
+        "--formula",
+        help="Formula entry-point name to relaunch.",
+    ),
+) -> None:
+    """Archive an issue's run_dir and re-run its formula from scratch.
+
+    Looks up `(rig_path, run_dir)` from bd metadata, archives the
+    run_dir to a `.bak-<utc-timestamp>` sibling, reopens the bead if
+    closed, and invokes the formula in-process. Refuses to proceed if
+    another flow for this issue is still Running on the Prefect server
+    (pass `--force` to bypass).
+    """
+    try:
+        result = _retry.retry_issue(
+            issue_id,
+            keep_sessions=keep_sessions,
+            rig=rig,
+            force=force,
+            formula=formula,
+            warn=lambda msg: typer.echo(f"warning: {msg}", err=True),
+        )
+    except _run_lookup.RunDirNotFound as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    except _retry.RetryError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(exc.exit_code) from exc
+
+    if result.archived_to is not None:
+        typer.echo(f"archived → {result.archived_to}")
+    else:
+        typer.echo("no prior run_dir on disk; launching fresh.")
+    if result.reopened:
+        typer.echo(f"reopened bead {issue_id}")
+    if result.kept_sessions:
+        typer.echo("restored metadata.json (--keep-sessions)")
+    typer.echo(result.flow_result)
 
 
 if __name__ == "__main__":
