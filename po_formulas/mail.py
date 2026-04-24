@@ -66,12 +66,18 @@ def send(
     cmd = [
         "bd",
         "create",
-        "--title", title,
-        "--description", description,
-        "--type", "task",
-        "--priority", "4",
-        "--assignee", to,
-        "--labels", f"{MAIL_LABEL},mail-to:{to}",
+        "--title",
+        title,
+        "--description",
+        description,
+        "--type",
+        "task",
+        "--priority",
+        "4",
+        "--assignee",
+        to,
+        "--labels",
+        f"{MAIL_LABEL},mail-to:{to}",
         "--json",
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -84,9 +90,12 @@ def inbox(agent: str, *, include_read: bool = False) -> list[Mail]:
         return []
 
     cmd = [
-        "bd", "list",
-        "--labels", MAIL_LABEL,
-        "--assignee", agent,
+        "bd",
+        "list",
+        "--labels",
+        MAIL_LABEL,
+        "--assignee",
+        agent,
         "--json",
     ]
     if not include_read:
@@ -110,14 +119,16 @@ def inbox(agent: str, *, include_read: bool = False) -> list[Mail]:
         title = row.get("title") or ""
         to, subject = _parse_title(title, fallback_to=agent)
         body, from_agent = _split_body(row.get("description") or "")
-        mails.append(Mail(
-            id=str(row.get("id", "")),
-            to=to,
-            from_agent=from_agent,
-            subject=subject,
-            body=body,
-            created_at=_parse_ts(row.get("created_at") or row.get("created")),
-        ))
+        mails.append(
+            Mail(
+                id=str(row.get("id", "")),
+                to=to,
+                from_agent=from_agent,
+                subject=subject,
+                body=body,
+                created_at=_parse_ts(row.get("created_at") or row.get("created")),
+            )
+        )
     return mails
 
 
@@ -160,12 +171,12 @@ def _parse_title(title: str, *, fallback_to: str) -> tuple[str, str]:
     """`[mail:builder] fix X` -> ('builder', 'fix X'). Non-mail titles pass through."""
     if not title.startswith(_TITLE_PREFIX):
         return fallback_to, title
-    rest = title[len(_TITLE_PREFIX):]
+    rest = title[len(_TITLE_PREFIX) :]
     end = rest.find("]")
     if end == -1:
         return fallback_to, title
     to = rest[:end]
-    subject = rest[end + 1:].lstrip()
+    subject = rest[end + 1 :].lstrip()
     return to, subject
 
 
@@ -176,7 +187,7 @@ def _split_body(description: str) -> tuple[str, str | None]:
     if idx == -1:
         return description, None
     body = description[:idx].rstrip()
-    footer = description[idx + len(marker):].strip()
+    footer = description[idx + len(marker) :].strip()
     from_agent = footer.splitlines()[0].strip() if footer else None
     return body, from_agent or None
 

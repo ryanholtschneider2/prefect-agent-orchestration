@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -163,7 +162,8 @@ def test_inbox_empty_when_bd_missing(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_inbox_tolerates_malformed_json(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(mail.shutil, "which", lambda _cmd: "/usr/bin/bd")
     monkeypatch.setattr(
-        mail.subprocess, "run",
+        mail.subprocess,
+        "run",
         lambda *_a, **_kw: _FakeProc(stdout="not-json"),
     )
     assert inbox("builder") == []
