@@ -60,7 +60,11 @@ def test_sessions_prints_table(tmp_path, runner, monkeypatch):
     assert "uuid-critic-3" in out
     # Max iter for builder = 2
     builder_line = next(line for line in out.splitlines() if "builder" in line)
-    assert " 2 " in builder_line or builder_line.rstrip().endswith("2") or "2  " in builder_line
+    assert (
+        " 2 " in builder_line
+        or builder_line.rstrip().endswith("2")
+        or "2  " in builder_line
+    )
     # Triager has no iter artifact with -iter-N, so should be "-"
     triager_line = next(line for line in out.splitlines() if "triager" in line)
     assert " - " in triager_line or triager_line.split()[2] == "-"
@@ -71,9 +75,7 @@ def test_sessions_resume_emits_one_liner(tmp_path, runner, monkeypatch):
     loc = run_lookup.RunLocation(rig_path=tmp_path, run_dir=run_dir)
     monkeypatch.setattr(cli._run_lookup, "resolve_run_dir", lambda _id: loc)
 
-    result = runner.invoke(
-        cli.app, ["sessions", "beads-xyz", "--resume", "builder"]
-    )
+    result = runner.invoke(cli.app, ["sessions", "beads-xyz", "--resume", "builder"])
     assert result.exit_code == 0, result.stderr
     assert result.stdout.strip() == (
         "claude --print --resume uuid-builder-2 --fork-session"
@@ -85,9 +87,7 @@ def test_sessions_resume_unknown_role(tmp_path, runner, monkeypatch):
     loc = run_lookup.RunLocation(rig_path=tmp_path, run_dir=run_dir)
     monkeypatch.setattr(cli._run_lookup, "resolve_run_dir", lambda _id: loc)
 
-    result = runner.invoke(
-        cli.app, ["sessions", "beads-xyz", "--resume", "nonesuch"]
-    )
+    result = runner.invoke(cli.app, ["sessions", "beads-xyz", "--resume", "nonesuch"])
     assert result.exit_code == 4
     assert "no session recorded for role" in result.stderr
     assert "'nonesuch'" in result.stderr

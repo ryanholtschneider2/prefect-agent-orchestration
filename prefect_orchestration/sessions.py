@@ -62,7 +62,7 @@ def load_metadata(run_dir: Path) -> dict[str, str]:
 def _role_from_key(key: str) -> str | None:
     if not key.startswith(SESSION_PREFIX):
         return None
-    return key[len(SESSION_PREFIX):] or None
+    return key[len(SESSION_PREFIX) :] or None
 
 
 def _fmt_mtime(ts: float) -> str:
