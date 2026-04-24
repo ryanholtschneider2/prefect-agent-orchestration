@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "prefect_orchestration",
+  "project_id": "4bdf66eb-0ac5-4bbe-9f79-9a0dc2d4287d"
+}
