@@ -233,6 +233,45 @@ def env_set():
 When a vault pack lands, integrations swap `os.environ[...]` for a
 provider lookup in a ~5-line patch per pack.
 
+## File reservations for concurrent workers
+
+When two or more PO flows run against the same rig, same-file edits
+collide. PO does **not** ship a reservation primitive — per principle
+§5, we compose with `mcp-agent-mail` which already has
+`file_reservation_paths`, `renew_file_reservations`,
+`release_file_reservations`, and `force_release_file_reservation`.
+
+**Convention.** Every prompt that edits files:
+
+1. Reserves its intended path set at role entry via
+   `mcp-agent-mail file_reservation_paths` with
+   `owner="{{issue_id}}:{{role}}"`. Collisions are legible —
+   "builder from polymer-dev-abc.3 holds these paths."
+2. On denial, mails the holder (`mcp-agent-mail send_message` to
+   the agent whose owner string is in the conflict response) or
+   backs off + retries up to 3× before failing the step.
+3. Renews the reservation if the turn runs > 4 min
+   (default TTL is 5 min).
+4. Releases via `release_file_reservations` after commit.
+5. On crash, TTL auto-expires — no manual cleanup.
+
+Reservations apply to `build.md`, `lint.md`, `ralph.md`, `docs.md`
+in `po-formulas-software-dev`. Any new file-editing prompt in any
+pack should adopt the same convention.
+
+**Optional escalation — precommit guard.** `mcp-agent-mail ships
+install_precommit_guard` which refuses `git commit` on paths not
+reserved by the current agent. Strong protection, operational
+cost. Don't enable by default. Opt-in per rig if collisions keep
+slipping through — e.g., `po doctor` check warns when it's missing
+on a rig that has active parallel PO flows.
+
+**Non-goals.** Don't build a PO Protocol wrapping reservations.
+Don't switch agent-to-agent messaging to `mcp-agent-mail` — beads-
+as-mail is fine for that. `mcp-agent-mail`'s file-reservation
+tools are the specific pain it solves best; consume via MCP tool
+calls from prompts.
+
 ## Lifecycle
 
 ```bash
