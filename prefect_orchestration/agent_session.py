@@ -188,15 +188,23 @@ def _clean_env() -> dict[str, str]:
 
 
 def _wait_for_rc(
-    rc_path: Path, session_name: str, *, timeout: float, poll: float = 0.2
+    rc_path: Path,
+    session_name: str,
+    *,
+    timeout: float | None = None,
+    poll: float = 0.2,
 ) -> None:
     """Block until the wrapper writes an rc file, or raise.
+
+    `timeout=None` means wait indefinitely — agent turns can legitimately
+    run for hours (long plans, deep critiques, ralph iterations). Caller
+    cancels by killing the tmux session, which this loop detects.
 
     Also bails if the tmux session disappears before the rc file appears
     (e.g. someone `tmux kill-session`'d it mid-run).
     """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    while deadline is None or time.monotonic() < deadline:
         if rc_path.exists() and rc_path.stat().st_size > 0:
             return
         has = subprocess.run(
@@ -231,7 +239,7 @@ class TmuxClaudeBackend:
     role: str
     start_command: str = "claude --dangerously-skip-permissions"
     attach_hint: bool = True
-    timeout_s: float = 1800.0
+    timeout_s: float | None = None
 
     def _session_name(self) -> str:
         # tmux uses '.' as a pane separator in target specs (session.window.pane).
