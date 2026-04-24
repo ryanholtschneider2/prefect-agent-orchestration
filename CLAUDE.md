@@ -69,6 +69,7 @@ primary surface**; defer to `prefect` for anything pure-Prefect.
 po list                     # every formula registered by every installed pack
 po show <formula>           # signature + docstring for one formula
 po deploy                   # pack-declared deployments (not yet applied)
+po doctor                   # wiring health check (bd, Prefect, pools, entry points)
 prefect deployment ls       # deployments currently on the server
 ```
 
@@ -119,6 +120,23 @@ prefect deployment run <flow>/<deployment-name> \
   --start-in 2h
 ```
 
+### Backend selection
+
+`software-dev-full` picks an agent-runtime backend automatically:
+
+| Condition | Backend |
+|---|---|
+| `tmux` on `PATH` (default) | `TmuxClaudeBackend` — each role spawns a named tmux session `po-<issue>-<role>` that you can `tmux attach -t …` mid-turn to watch live |
+| `tmux` absent | `ClaudeCliBackend` — subprocess pipes, no lurking |
+| `--dry-run` flag | `StubBackend` — no Claude calls, fakes verdict files |
+
+Override with `PO_BACKEND=cli|tmux|stub` on any `po run` invocation.
+`PO_BACKEND=tmux` errors loudly if tmux is missing (refuses silent
+fallback when you've explicitly asked for it).
+
+Issue IDs with dots (`4ja.1`) are sanitized to `4ja_1` in session
+names because tmux treats `.` as a pane separator.
+
 ### Concurrency (per-role caps)
 
 ```bash
@@ -142,6 +160,40 @@ Every `software-dev-full` run leaves a full paper trail at
 For live runs: `tail -f /tmp/prefect-orchestration-runs/<run>.log` and
 the Prefect UI at `http://127.0.0.1:4200` (after `prefect server start`).
 
+`po logs <issue-id>` resolves the run dir via bead metadata
+(`po.rig_path` / `po.run_dir`, set at flow entry) and tails the freshest
+log/artifact. `-f` streams (`tail -F`), `-n N` overrides tail length,
+`--file NAME` picks a specific file in the run dir.
+
+`po artifacts <issue-id>` dumps the whole forensic trail in one scroll:
+`triage.md`, `plan.md`, each `critique-iter-N.md` + `verification-report-iter-N.md`
+(sorted numerically), `decision-log.md`, `lessons-learned.md`, then every
+`verdicts/*.json` pretty-printed. Missing files render as `(missing)` — never
+aborts. `--verdicts` prints only JSON verdicts; `--open` launches `$EDITOR`
+(TTY) or `xdg-open` on the run dir. ANSI color auto-disables when piped.
+
+`po sessions <issue-id>` reads `metadata.json` at the run dir and prints a
+`role | uuid | last-iter | last-updated` table. `--resume <role>` emits a
+ready-to-run `claude --print --resume <uuid> --fork-session` one-liner so
+you can pick up a role's session outside the flow.
+
+`po watch <issue-id>` merges two live streams into one terminal: Prefect
+flow-run state transitions (polled via the client) and new/modified files
+appearing in the run_dir (polled via mtime; `watchdog` used if installed).
+Lines are prefixed `[prefect]` / `[run-dir]` and timestamped. `--replay`
+dumps existing artifacts + the last N flow state transitions before a
+`===== live =====` separator; `--replay-n N` tunes N (default 10). If the
+flow is already terminal or the Prefect server is unreachable, the run_dir
+watcher still streams. Ctrl-C exits 0 cleanly.
+
+`po retry <issue-id>` archives the run_dir to a `.bak-<utc>` sibling under
+an advisory lock, reopens the bead if closed, and invokes the formula
+in-process. Refuses when a `Running` flow-run for the issue already exists
+(pass `--force` to bypass). `--keep-sessions` preserves the prior
+`metadata.json` so per-role Claude session UUIDs survive the archive.
+`--rig NAME` overrides the default rig (rig_path basename); `--formula NAME`
+picks a non-default entry-point.
+
 ## When to use `po` vs `prefect`
 
 | Task | Use |
@@ -149,8 +201,15 @@ the Prefect UI at `http://127.0.0.1:4200` (after `prefect server start`).
 | List installed formulas | `po list` |
 | Show a formula's signature / docstring | `po show <formula>` |
 | Run a formula synchronously, now | `po run <formula> --args` |
+| Tail / follow logs for an issue's run | `po logs <issue-id> [-f] [-n N] [--file NAME]` |
+| Dump full forensic trail for a run | `po artifacts <issue-id> [--verdicts] [--open]` |
+| Show per-role Claude session UUIDs for a run | `po sessions <issue-id> [--resume <role>]` |
+| Archive a run_dir and relaunch its formula | `po retry <issue-id> [--keep-sessions] [--force] [--rig NAME] [--formula NAME]` |
+| Live merged feed of flow state + run_dir artifacts | `po watch <issue-id> [--replay] [--replay-n N]` |
+| List active / recent runs grouped by bead `issue_id` tag | `po status [--issue-id ID] [--since 24h] [--state Running] [--all]` |
 | List pack-declared deployments | `po deploy` |
 | Apply pack-declared deployments to server | `po deploy --apply` |
+| Check PO wiring (bd, Prefect API, pool, entry points) | `po doctor` |
 | List deployments currently on server | `prefect deployment ls` |
 | Trigger a deployment (now or future) | `prefect deployment run <name> --start-in 2h` |
 | Start server / worker | `prefect server start`, `prefect worker start --pool po` |
