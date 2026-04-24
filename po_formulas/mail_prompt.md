@@ -1,4 +1,7 @@
-<!-- Reusable prompt fragment: inline into builder/critic/verifier role prompts. -->
+<!-- Reusable prompt fragment: inline into builder/critic/verifier role prompts.
+     Placeholders use `{{var}}` syntax matching `prefect_orchestration.templates.render_template`.
+     Callers substitute `role` before sending the prompt to the agent. -->
+
 
 ### Check your inbox first
 

@@ -89,13 +89,21 @@ def inbox(agent: str, *, include_read: bool = False) -> list[Mail]:
     if not _bd_available():
         return []
 
+    # Note: `bd list` uses singular `--label` (AND-match, can repeat), while
+    # `bd create` uses plural `--labels` (comma-separated). Different flag,
+    # same concept. `--limit 0` disables the default 50-row cap so inboxes
+    # don't silently truncate once an agent accumulates mail.
     cmd = [
         "bd",
         "list",
-        "--labels",
+        "--label",
         MAIL_LABEL,
+        "--label",
+        f"mail-to:{agent}",
         "--assignee",
         agent,
+        "--limit",
+        "0",
         "--json",
     ]
     if not include_read:

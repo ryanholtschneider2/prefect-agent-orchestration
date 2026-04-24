@@ -23,3 +23,26 @@
 - **Decision**: Demo test uses a `FakeBdBackend` that emulates `bd create/list/close` in memory.
   **Why**: Plan test plan: keeps the unit test hermetic and fast; a gated integration test against a real `bd` is left as a future follow-up (not required for AC).
   **Alternatives considered**: `unittest.mock.patch("subprocess.run")` with per-test canned responses — rejected; replaying the full send→inbox→close handoff (AC #3) needs shared state across calls, which the FakeBdBackend provides naturally.
+
+## Build iter 2 — responses to critic feedback
+
+- **Decision (fix, blocking)**: Changed `inbox()` to pass `--label` (singular, repeatable) instead of `--labels`, added both `--label mail` and `--label mail-to:<agent>` for tight filtering, and added `--limit 0` to disable the 50-row cap.
+  **Why**: Critic caught via e2e that `bd list` uses singular `--label` whereas `bd create` uses plural `--labels` — my iter 1 blindly reused `--labels` on both, so `inbox()` returned 0 mails against a real `bd`. 4 of 5 e2e tests were failing, including AC #3.
+  **Alternatives considered**: `--label-any` (OR-semantics) — rejected; tight AND-filter keeps inbox scoped to actual mail addressed to this agent.
+
+- **Decision**: Added `test_inbox_uses_singular_label_flag_and_unlimited` as a regression-lock test pinning the exact argv shape.
+  **Why**: Unit tests previously couldn't catch the flag mismatch because `FakeBdBackend._flag` treated any string as opaque. Locking the flag names prevents a future edit from re-introducing the bug. Matches the broader "regression-lock argv whenever two sites share helpers" feedback pattern from the ClaudeCliBackend review.
+  **Alternatives considered**: Only rely on e2e (slow, bd-dependent); only make the fake backend stricter (still lets a reviewer edit the source without a failing unit test).
+
+- **Decision**: Made `FakeBdBackend._list` AND-filter over every repeated `--label` flag (matches real `bd list` semantics).
+  **Why**: Keeps the fake honest; if the wrapper ever drops the `mail-to:<agent>` label, unit tests notice.
+
+- **Decision (nit #2)**: Did not force `from_agent` to be required; left it optional and the footer omitted when unset.
+  **Why**: Some internal senders (system notifications, cron-scheduled nags) legitimately have no human-readable origin. `Mail.from_agent=None` is a clear signal, and downstream consumers can substitute `"unknown"` at display time. Forcing a value would push dummy strings into the tracker.
+  **Alternatives considered**: Default `from_agent="system"` — rejected; hides missing attribution in a way that looks intentional.
+
+- **Decision (nit #3)**: Expanded the docstring in `po_formulas/__init__.py` to acknowledge the still-unlanded `software_dev`/`epic`/`deployments` sibling modules referenced by the core entry points.
+  **Why**: Reviewer asked for an honest note on the in-flight coupling. The mail helper does not depend on those modules, so shipping it first is safe.
+
+- **Decision (nit #4)**: Added a header comment to `mail_prompt.md` pointing at `prefect_orchestration.templates.render_template` as the substitution mechanism for `{{role}}`.
+  **Why**: Removes the Jinja-vs-Handlebars ambiguity the critic flagged; the project's own templater is the answer.

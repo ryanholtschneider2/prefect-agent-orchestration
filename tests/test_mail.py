@@ -43,6 +43,13 @@ class FakeBdBackend:
                 return cmd[i + 1]
         return None
 
+    def _flag_all(self, cmd: list[str], name: str) -> list[str]:
+        vals: list[str] = []
+        for i, tok in enumerate(cmd):
+            if tok == name and i + 1 < len(cmd):
+                vals.append(cmd[i + 1])
+        return vals
+
     def _create(self, cmd: list[str]) -> _FakeProc:
         issue = {
             "id": f"mock-{self._next}",
@@ -60,13 +67,16 @@ class FakeBdBackend:
 
     def _list(self, cmd: list[str]) -> _FakeProc:
         assignee = self._flag(cmd, "--assignee")
-        label_filter = self._flag(cmd, "--labels")
+        # Real `bd list` uses singular `--label` (repeatable, AND-match).
+        required_labels = self._flag_all(cmd, "--label")
         status = self._flag(cmd, "--status")
         out = []
         for issue in self.issues:
             if assignee and issue["assignee"] != assignee:
                 continue
-            if label_filter and label_filter not in issue["labels"]:
+            if required_labels and not all(
+                lbl in issue["labels"] for lbl in required_labels
+            ):
                 continue
             if status and issue["status"] != status:
                 continue
@@ -107,6 +117,32 @@ def test_send_invokes_bd_create_with_mail_shape(fake_bd: FakeBdBackend) -> None:
     desc = cmd[cmd.index("--description") + 1]
     assert "see plan.md line 12" in desc
     assert "From: critic" in desc
+
+
+def test_inbox_uses_singular_label_flag_and_unlimited(fake_bd: FakeBdBackend) -> None:
+    """Regression: `bd list` takes `--label` (singular), not `--labels`.
+
+    `bd create` uses plural `--labels`; `bd list` uses singular `--label`
+    (repeatable). Getting this wrong makes inbox() silently return nothing
+    against a real `bd`. Also asserts `--limit 0` so large inboxes do not
+    truncate at the default cap of 50.
+    """
+    mail_mod_inbox = inbox("builder")
+    assert mail_mod_inbox == []
+
+    assert len(fake_bd.calls) == 1
+    cmd = fake_bd.calls[0]
+    assert cmd[:2] == ["bd", "list"]
+    # Must use singular --label, and must NOT use plural --labels.
+    assert "--label" in cmd
+    assert "--labels" not in cmd
+    # Filter by both base label and recipient-scoped label.
+    label_positions = [i for i, t in enumerate(cmd) if t == "--label"]
+    label_values = [cmd[i + 1] for i in label_positions]
+    assert "mail" in label_values
+    assert "mail-to:builder" in label_values
+    # Unlimited result set.
+    assert "--limit" in cmd and cmd[cmd.index("--limit") + 1] == "0"
 
 
 def test_inbox_parses_bd_list_output(fake_bd: FakeBdBackend) -> None:
