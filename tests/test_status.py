@@ -5,7 +5,7 @@ No live Prefect server — everything runs against simple fakes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -49,10 +49,23 @@ class FakeFlowRun:
 
 def test_parse_since_relative() -> None:
     now = datetime.now(timezone.utc)
-    assert abs((_status.parse_since("1h") - (now - timedelta(hours=1))).total_seconds()) < 5
-    assert abs((_status.parse_since("30m") - (now - timedelta(minutes=30))).total_seconds()) < 5
-    assert abs((_status.parse_since("2d") - (now - timedelta(days=2))).total_seconds()) < 5
-    assert abs((_status.parse_since("1w") - (now - timedelta(weeks=1))).total_seconds()) < 5
+    assert (
+        abs((_status.parse_since("1h") - (now - timedelta(hours=1))).total_seconds())
+        < 5
+    )
+    assert (
+        abs(
+            (_status.parse_since("30m") - (now - timedelta(minutes=30))).total_seconds()
+        )
+        < 5
+    )
+    assert (
+        abs((_status.parse_since("2d") - (now - timedelta(days=2))).total_seconds()) < 5
+    )
+    assert (
+        abs((_status.parse_since("1w") - (now - timedelta(weeks=1))).total_seconds())
+        < 5
+    )
 
 
 def test_parse_since_iso8601() -> None:
@@ -82,14 +95,21 @@ def test_extract_issue_id() -> None:
 def test_group_by_issue_picks_latest_per_issue() -> None:
     t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
     runs = [
-        FakeFlowRun(id="a", name="software_dev_full", tags=["issue_id:po-1"], expected_start_time=t0),
+        FakeFlowRun(
+            id="a",
+            name="software_dev_full",
+            tags=["issue_id:po-1"],
+            expected_start_time=t0,
+        ),
         FakeFlowRun(
             id="b",
             name="software_dev_full",
             tags=["issue_id:po-1"],
             expected_start_time=t0 + timedelta(hours=1),
         ),
-        FakeFlowRun(id="c", name="epic_run", tags=["issue_id:po-2"], expected_start_time=t0),
+        FakeFlowRun(
+            id="c", name="epic_run", tags=["issue_id:po-2"], expected_start_time=t0
+        ),
         FakeFlowRun(id="d", name="other", tags=["misc"], expected_start_time=t0),
     ]
     groups = _status.group_by_issue(runs)
@@ -111,8 +131,12 @@ def test_current_step_prefers_non_terminal() -> None:
     t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
     trs = [
         FakeTaskRun(name="triage", state_type="COMPLETED", start_time=t0),
-        FakeTaskRun(name="plan", state_type="COMPLETED", start_time=t0 + timedelta(minutes=1)),
-        FakeTaskRun(name="build", state_type="RUNNING", start_time=t0 + timedelta(minutes=2)),
+        FakeTaskRun(
+            name="plan", state_type="COMPLETED", start_time=t0 + timedelta(minutes=1)
+        ),
+        FakeTaskRun(
+            name="build", state_type="RUNNING", start_time=t0 + timedelta(minutes=2)
+        ),
     ]
     assert _status.current_step(trs) == "build"
 
@@ -121,7 +145,9 @@ def test_current_step_all_terminal_returns_latest() -> None:
     t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
     trs = [
         FakeTaskRun(name="triage", state_type="COMPLETED", start_time=t0),
-        FakeTaskRun(name="learn", state_type="COMPLETED", start_time=t0 + timedelta(minutes=5)),
+        FakeTaskRun(
+            name="learn", state_type="COMPLETED", start_time=t0 + timedelta(minutes=5)
+        ),
     ]
     assert _status.current_step(trs) == "learn"
 
@@ -185,9 +211,7 @@ async def test_find_runs_drops_untagged_when_no_issue_filter() -> None:
 
 @pytest.mark.asyncio
 async def test_find_runs_applies_tag_filter_server_side() -> None:
-    client = _FakeClient(
-        [FakeFlowRun(id="a", name="f", tags=["issue_id:po-9"])]
-    )
+    client = _FakeClient([FakeFlowRun(id="a", name="f", tags=["issue_id:po-9"])])
     await _status.find_runs_by_issue_id(client, issue_id="po-9")
     flt = client.call_kwargs["flow_run_filter"]
     # Server-side tag filter is set to exactly `issue_id:po-9`
@@ -197,7 +221,9 @@ async def test_find_runs_applies_tag_filter_server_side() -> None:
 # ─── CLI: exit 0 on server down (AC3) ────────────────────────────────
 
 
-def test_status_cli_exits_zero_when_server_down(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_cli_exits_zero_when_server_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """AC3: `po status` must exit 0 even when the Prefect server is unreachable."""
 
     from prefect_orchestration import cli as _cli

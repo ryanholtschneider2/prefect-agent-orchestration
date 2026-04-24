@@ -228,9 +228,11 @@ def render_table(groups: list[IssueGroup]) -> str:
     rows: list[tuple[str, ...]] = []
     for g in groups:
         fr = g.latest
-        state = getattr(fr, "state_name", None) or getattr(
-            getattr(fr, "state", None), "name", "-"
-        ) or "-"
+        state = (
+            getattr(fr, "state_name", None)
+            or getattr(getattr(fr, "state", None), "name", "-")
+            or "-"
+        )
         start = getattr(fr, "start_time", None) or getattr(
             fr, "expected_start_time", None
         )
