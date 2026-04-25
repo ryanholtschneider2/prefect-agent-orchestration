@@ -22,9 +22,24 @@ from prefect_orchestration import cli, commands
 def test_core_verbs_includes_all_typer_subcommands() -> None:
     verbs = commands.core_verbs()
     # Sanity: every @app.command() lands in the set.
-    expected = {"list", "show", "run", "deploy", "logs", "artifacts", "doctor",
-                "status", "sessions", "retry", "watch", "install", "update",
-                "uninstall", "packs", "tui"}
+    expected = {
+        "list",
+        "show",
+        "run",
+        "deploy",
+        "logs",
+        "artifacts",
+        "doctor",
+        "status",
+        "sessions",
+        "retry",
+        "watch",
+        "install",
+        "update",
+        "uninstall",
+        "packs",
+        "tui",
+    }
     missing = expected - verbs
     assert not missing, f"core_verbs missing: {missing}"
 
@@ -125,11 +140,10 @@ def test_main_dispatches_pack_command(monkeypatch: pytest.MonkeyPatch) -> None:
         received["verbose"] = verbose
 
     monkeypatch.setattr(commands, "load_commands", lambda: {"summarize-verdicts": fake})
+    monkeypatch.setattr(commands, "core_verbs", lambda: {"list", "show", "run"})
     monkeypatch.setattr(
-        commands, "core_verbs", lambda: {"list", "show", "run"}
+        cli.sys, "argv", ["po", "summarize-verdicts", "--issue-id=abc", "--verbose"]
     )
-    monkeypatch.setattr(cli.sys, "argv", ["po", "summarize-verdicts",
-                                          "--issue-id=abc", "--verbose"])
     cli.main()
     assert received == {"issue_id": "abc", "verbose": True}
 

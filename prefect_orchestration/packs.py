@@ -155,9 +155,7 @@ def _check_command_collisions() -> None:
     collisions = _cmds.find_command_collisions(by_pack)
     if not collisions:
         return
-    lines = [
-        "po command name(s) collide with core verbs — refusing to register:"
-    ]
+    lines = ["po command name(s) collide with core verbs — refusing to register:"]
     for pack, offenders in sorted(collisions.items()):
         lines.append(f"  {pack}: {', '.join(offenders)}")
     lines.append(

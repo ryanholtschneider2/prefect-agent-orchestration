@@ -845,9 +845,7 @@ def main() -> None:
                     result = fn(**kwargs)
                 except TypeError as exc:
                     typer.echo(f"bad arguments for {first}: {exc}", err=True)
-                    typer.echo(
-                        f"run `po show {first}` to see the signature", err=True
-                    )
+                    typer.echo(f"run `po show {first}` to see the signature", err=True)
                     raise SystemExit(2) from exc
                 if result is not None:
                     typer.echo(result)
