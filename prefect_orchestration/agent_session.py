@@ -360,7 +360,9 @@ def _render_with_inbox(mails: list[Any], prompt_text: str) -> str:
         if i > 0:
             parts.append("---")
         ts = getattr(m, "created_at", None)
-        ts_str = ts.isoformat() if hasattr(ts, "isoformat") else (str(ts) if ts else "?")
+        ts_str = (
+            ts.isoformat() if hasattr(ts, "isoformat") else (str(ts) if ts else "?")
+        )
         from_agent = getattr(m, "from_agent", None) or "?"
         subject = getattr(m, "subject", "") or ""
         body = getattr(m, "body", "") or ""
@@ -451,7 +453,9 @@ class AgentSession:
         try:
             mails = list(self.mail_fetcher(self.role) or [])
         except Exception:
-            logger.exception("mail_fetcher failed for role %r; skipping inject", self.role)
+            logger.exception(
+                "mail_fetcher failed for role %r; skipping inject", self.role
+            )
             return []
         if len(mails) > MAX_INBOX_MESSAGES:
             # Keep the most recent N. Sort defensively; created_at may be None.
