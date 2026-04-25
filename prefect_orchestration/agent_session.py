@@ -397,6 +397,250 @@ class TmuxClaudeBackend:
         return result, new_sid
 
 
+def _stop_dir() -> Path:
+    base = os.environ.get("PO_STOP_DIR")
+    return Path(base) if base else Path.home() / ".cache" / "po-stops"
+
+
+def _ensure_stop_hook(cwd: Path) -> None:
+    """Lay down `<cwd>/.claude/settings.json` with our Stop hook.
+
+    Idempotent — preserves existing settings, only inserts/replaces the
+    Stop hook entry. Multiple sessions in the same cwd share this file;
+    they're keyed by `session_id` in the sentinel filename, so no race.
+    """
+    settings_dir = cwd / ".claude"
+    settings_dir.mkdir(parents=True, exist_ok=True)
+    settings_path = settings_dir / "settings.json"
+    existing: dict[str, Any] = {}
+    if settings_path.exists():
+        try:
+            existing = json.loads(settings_path.read_text()) or {}
+        except json.JSONDecodeError:
+            existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    hooks = existing.setdefault("hooks", {}) if isinstance(existing.get("hooks", {}), dict) else {}
+    if not isinstance(hooks, dict):
+        hooks = {}
+        existing["hooks"] = hooks
+    hook_cmd = f"{shlex.quote(sys.executable)} -m prefect_orchestration.stop_hook"
+    hooks["Stop"] = [{"matcher": "", "hooks": [{"type": "command", "command": hook_cmd}]}]
+    settings_path.write_text(json.dumps(existing, indent=2))
+
+
+def _wait_for_stop(
+    sentinel: Path,
+    session_name: str,
+    *,
+    timeout: float | None = None,
+    poll: float = 0.4,
+) -> None:
+    """Block until the Stop hook writes our sentinel — or session disappears."""
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    while deadline is None or time.monotonic() < deadline:
+        if sentinel.exists() and sentinel.stat().st_size >= 0:
+            return
+        has = subprocess.run(
+            ["tmux", "has-session", "-t", session_name],
+            capture_output=True,
+            check=False,
+        )
+        if has.returncode != 0 and not sentinel.exists():
+            raise RuntimeError(
+                f"tmux session {session_name!r} disappeared before Stop hook fired"
+            )
+        time.sleep(poll)
+    raise TimeoutError(
+        f"Stop hook for {session_name!r} did not fire within {timeout}s"
+    )
+
+
+def _last_assistant_text_from_jsonl(jsonl_path: Path) -> str:
+    """Return the most recent assistant text-message from a Claude JSONL.
+
+    Used by TmuxInteractiveClaudeBackend after the Stop hook fires to
+    extract the agent's final reply (the orchestrator usually doesn't
+    care — verdict files carry the truth — but we still return the text
+    for logging / fallback.)
+    """
+    if not jsonl_path.exists():
+        return ""
+    last = ""
+    try:
+        for raw in jsonl_path.read_text().splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            msg = ev.get("message") if isinstance(ev, dict) else None
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") != "assistant":
+                continue
+            for block in msg.get("content", []) or []:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    text = block.get("text") or ""
+                    if text.strip():
+                        last = text
+    except OSError:
+        return last
+    return last
+
+
+@dataclass
+class TmuxInteractiveClaudeBackend:
+    """Run the **real** Claude Code TUI inside tmux.
+
+    Unlike `TmuxClaudeBackend` (which uses `--print` and pipes
+    stream-json through a formatter), this backend launches `claude`
+    interactively — the same bordered TUI you get from `claude` in
+    your normal terminal: input box, syntax-highlighted code blocks,
+    scrollable chat. Attaching to the tmux session is a first-class
+    lurking experience.
+
+    Lifecycle:
+
+    1. We generate (or reuse) a `session_id` and pass `--session-id`
+       so the orchestrator knows the UUID without parsing stdout.
+    2. We lay down a `<cwd>/.claude/settings.json` Stop hook (via
+       `prefect_orchestration.stop_hook`) that touches a sentinel
+       under `~/.cache/po-stops/<session_id>.stopped` when the agent
+       finishes a turn.
+    3. tmux session spawns `claude` interactively.
+    4. Prompt is injected via `tmux load-buffer` + `paste-buffer -p`
+       (bracketed paste) + `send-keys Enter`.
+    5. Orchestrator polls for the sentinel; on appearance, kills the
+       tmux session and returns. Result text is recovered from the
+       per-session JSONL transcript.
+
+    Verdict files (`$RUN_DIR/verdicts/<step>.json`) remain the source
+    of truth — agents write them as part of their prompt. This backend
+    is purely about how the role's *human-visible session* runs.
+    """
+
+    issue: str
+    role: str
+    start_command: str = "claude --dangerously-skip-permissions"
+    attach_hint: bool = True
+    timeout_s: float | None = None
+    settle_s: float = 2.5
+
+    def _session_name(self, suffix: str = "") -> str:
+        safe_issue = self.issue.replace(".", "_")
+        safe_role = self.role.replace(".", "_")
+        base = f"po-{safe_issue}-{safe_role}"
+        return f"{base}-{suffix}" if suffix else base
+
+    def run(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None,
+        cwd: Path,
+        fork: bool = False,
+        model: str = "opus",
+    ) -> tuple[str, str]:
+        if shutil.which("tmux") is None:
+            raise RuntimeError(
+                "TmuxInteractiveClaudeBackend requires the `tmux` binary on PATH"
+            )
+
+        # Pick a session_id we can pass via --session-id. If we have a
+        # prior valid UUID, resume it. Forks get a fresh id so concurrent
+        # forked turns don't collide on the JSONL file.
+        prior = session_id if session_id and _UUID_RE.match(session_id) else None
+        new_sid = (
+            str(uuid.uuid4()) if (fork or not prior) else prior
+        )
+        resume_sid = prior if (prior and not fork) else None
+
+        suffix = uuid.uuid4().hex[:6] if fork else ""
+        name = self._session_name(suffix)
+        workdir = cwd / ".tmux"
+        workdir.mkdir(parents=True, exist_ok=True)
+        prompt_path = workdir / f"{name}.in"
+        prompt_path.write_text(prompt)
+
+        _ensure_stop_hook(cwd)
+        sentinel = _stop_dir() / f"{new_sid}.stopped"
+        sentinel.unlink(missing_ok=True)
+
+        # Kill any prior session with the same name.
+        subprocess.run(
+            ["tmux", "kill-session", "-t", name],
+            capture_output=True,
+            check=False,
+        )
+
+        argv = shlex.split(self.start_command) + [
+            "--session-id", new_sid,
+            "--model", model,
+        ]
+        if resume_sid:
+            argv += ["--resume", resume_sid]
+
+        wrapper = f"cd {shlex.quote(str(cwd))} && {shlex.join(argv)}"
+        subprocess.run(
+            [
+                "tmux", "new-session", "-d", "-s", name,
+                "-x", "240", "-y", "60",
+                "bash", "-lc", wrapper,
+            ],
+            check=True,
+            env=_clean_env(),
+            cwd=cwd,
+        )
+        if self.attach_hint:
+            print(
+                f"[tmux] attach with: tmux attach -t {name}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        # Give claude a moment to come up to its input box before we paste.
+        # (No race-free way to detect TUI ready short of capture-pane polling.)
+        time.sleep(self.settle_s)
+
+        # Inject prompt via bracketed paste so internal newlines stay
+        # newlines (Shift+Enter equivalent), not "submit". Then send a
+        # final Enter to submit.
+        subprocess.run(
+            ["tmux", "load-buffer", "-b", name, str(prompt_path)],
+            check=True,
+        )
+        subprocess.run(
+            ["tmux", "paste-buffer", "-t", name, "-b", name, "-p", "-d"],
+            check=True,
+        )
+        time.sleep(0.3)
+        subprocess.run(
+            ["tmux", "send-keys", "-t", name, "Enter"],
+            check=True,
+        )
+
+        try:
+            _wait_for_stop(sentinel, name, timeout=self.timeout_s)
+            # Pull the agent's final assistant text from the JSONL transcript
+            # (verdict files carry orchestrator-readable truth; this is for logs).
+            slug = str(cwd.resolve()).replace("/", "-")
+            jsonl = Path.home() / ".claude" / "projects" / slug / f"{new_sid}.jsonl"
+            result = _last_assistant_text_from_jsonl(jsonl) or "[interactive turn complete]"
+        finally:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", name],
+                capture_output=True,
+                check=False,
+            )
+            sentinel.unlink(missing_ok=True)
+            prompt_path.unlink(missing_ok=True)
+
+        return result, new_sid
+
+
 def _render_with_inbox(mails: list[Any], prompt_text: str) -> str:
     """Prepend a `<mail-inbox>` block to the prompt; passthrough if empty."""
     if not mails:

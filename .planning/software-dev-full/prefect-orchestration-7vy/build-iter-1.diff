@@ -1,0 +1,1708 @@
+===== prefect-orchestration rig diff =====
+
+===== po-formulas-retro pack diff (initial commit b095157, full tree) =====
+commit b095157231d7b237be113f91d4f8f69c4dcd1e42
+Author: Ryan <rholtschneider2@gmail.com>
+Date:   Sat Apr 25 01:21:39 2026 -0400
+
+    prefect-orchestration-7vy: po-formulas-retro pack — update_prompts_from_lessons formula + retro-weekly deployment + tests
+
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..a18610e
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,6 @@
++.venv/
++__pycache__/
++*.pyc
++*.egg-info/
++dist/
++build/
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..fa40d6d
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,54 @@
++# po-formulas-retro
++
++Sibling formula pack for [`prefect-orchestration`][po]. Closes the
++feedback loop on PO runs: collects recent `lessons-learned.md` +
++`decision-log.md` artifacts from a target pack's run dirs, asks
++Claude to identify **recurring** patterns (≥3 distinct runs), and
++commits proposed prompt / skill / CLAUDE.md edits back to the
++target pack's repo.
++
++Single-occurrence lessons land in `bd remember "[<target_pack>] ..."`
++rather than file edits — see `skills/retro/SKILL.md` for the full
++boundaries.
++
++[po]: https://github.com/nanocorps/prefect-orchestration
++
++## Install (editable, for development)
++
++```bash
++po install --editable ../prefect-orchestration
++po install --editable .
++po update      # refresh entry-point metadata
++po list        # confirm `update-prompts-from-lessons` is listed
++```
++
++## Run
++
++```bash
++po run update-prompts-from-lessons \
++    --target-pack po-formulas-software-dev \
++    --rig-path /abs/path/to/rig \
++    --since 7d
++```
++
++`--dry-run true` writes the summary artifact under
++`<rig-path>/.planning/update-prompts-from-lessons/<utc-ts>/` but does
++not edit files, commit, or call `bd remember`.
++
++## Deploy (weekly cron)
++
++```bash
++po deploy --apply        # applies the `retro-weekly` deployment to your Prefect server
++prefect deployment run \
++    update-prompts-from-lessons/retro-weekly \
++    --param target_pack=po-formulas-software-dev \
++    --param rig_path=/abs/path/to/rig
++```
++
++The deployment uses the `po` work pool (Cron `0 9 * * 0`, UTC).
++
++## Tests
++
++```bash
++uv run python -m pytest tests/
++```
+diff --git a/po_formulas_retro/__init__.py b/po_formulas_retro/__init__.py
+new file mode 100644
+index 0000000..aab48e7
+--- /dev/null
++++ b/po_formulas_retro/__init__.py
+@@ -0,0 +1,8 @@
++"""po-formulas-retro: retrospective formula pack.
++
++Closes the feedback loop on PO runs by synthesizing recurring lessons
++across recent run dirs and committing proposed prompt / skill /
++CLAUDE.md edits back to the target pack's repo.
++"""
++
++__version__ = "0.1.0"
+diff --git a/po_formulas_retro/agents/synthesizer/prompt.md b/po_formulas_retro/agents/synthesizer/prompt.md
+new file mode 100644
+index 0000000..c3314d8
+--- /dev/null
++++ b/po_formulas_retro/agents/synthesizer/prompt.md
+@@ -0,0 +1,60 @@
++You are the **synthesizer** for the retro formula on pack `{{target_pack}}`.
++
++Below are concatenated `lessons-learned.md` and `decision-log.md`
++excerpts from {{n_runs}} recent run dirs. Each run is wrapped in a
++`<run id="...">` tag; the id is the issue id of that run.
++
++## Your job
++
++1. Identify **recurring** themes — same insight surfaced in **3 or
++   more distinct runs** (different `id` attributes). Single-occurrence
++   observations are NOT recurring.
++2. For each recurring theme, propose **one** concrete file edit in
++   `{{target_pack}}` (target repo root: `{{target_repo_root}}`).
++3. Note single-occurrence observations separately so the orchestrator
++   can record them as `bd remember` notes instead of touching files.
++
++## Allowed target files (anything else will be rejected)
++
++- `agents/<role>/prompt.md` — and any nested `**/agents/<role>/prompt.md`
++- `skills/<name>/SKILL.md` — and any nested `**/skills/<name>/SKILL.md`
++- `CLAUDE.md` (top-level or nested)
++
++You MAY NOT propose edits to `*.py`, `pyproject.toml`, tests, workflow
++YAML, or anything else. Code learnings belong in prompts.
++
++## Output contract — write JSON to the verdict file
++
++Write exactly the file at `{{verdict_path}}` (it lives under
++`{{run_dir}}/verdicts/synthesize.json`). Use `cat > {{verdict_path}} <<'JSON' ... JSON`
++so the orchestrator's stub can locate it. Schema:
++
++```json
++{
++  "recurring": [
++    {
++      "theme": "short description of the pattern",
++      "evidence": ["<run-id-1>", "<run-id-2>", "<run-id-3>"],
++      "target_file": "agents/<role>/prompt.md",
++      "edit": {"append": "the prose to append (with leading newline if needed)"}
++    }
++  ],
++  "single_occurrence": [
++    {"note": "the lesson", "target_pack": "{{target_pack}}"}
++  ]
++}
++```
++
++The `edit` value may instead be a string containing the **full new
++file contents** when an in-place rewrite is more appropriate than
++appending. Keep the proposed edits small and grep-able.
++
++The orchestrator drops any `recurring` item whose `evidence` has fewer
++than 3 distinct ids or whose `target_file` is outside the allow-list,
++so don't try to game the bar — just be honest.
++
++## Inputs
++
++{{lessons_blob}}
++
++Reply with one line summarizing how many recurring themes you found.
+diff --git a/po_formulas_retro/analysis.py b/po_formulas_retro/analysis.py
+new file mode 100644
+index 0000000..98564b4
+--- /dev/null
++++ b/po_formulas_retro/analysis.py
+@@ -0,0 +1,255 @@
++"""Pure helpers for the retro formula.
++
++No Prefect, no Claude — just filesystem + metadata inspection so each
++helper can be unit-tested in isolation.
++"""
++
++from __future__ import annotations
++
++import json
++import re
++import sys
++import urllib.parse
++from collections.abc import Iterator
++from datetime import datetime, timedelta, timezone
++from importlib.metadata import Distribution, PackageNotFoundError, distribution
++from pathlib import Path
++
++if sys.version_info >= (3, 11):
++    import tomllib
++else:  # pragma: no cover - py3.11+ required by pyproject
++    import tomli as tomllib  # type: ignore[no-redef]
++
++
++# ──────────────────────────────────────────────────────────────────────
++# `since` parsing
++# ──────────────────────────────────────────────────────────────────────
++
++
++_SINCE_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$", re.IGNORECASE)
++_SINCE_UNITS = {
++    "s": 1,
++    "m": 60,
++    "h": 3600,
++    "d": 86400,
++    "w": 604800,
++}
++
++
++def parse_since(since: str) -> timedelta:
++    """Parse a 'Ns'/'Nm'/'Nh'/'Nd'/'Nw' shorthand into a timedelta.
++
++    Raises ValueError on malformed input.
++    """
++    m = _SINCE_RE.match(since)
++    if not m:
++        raise ValueError(
++            f"unrecognized 'since' value {since!r}; expected e.g. '7d', '24h', '30m'"
++        )
++    n, unit = int(m.group(1)), m.group(2).lower()
++    return timedelta(seconds=n * _SINCE_UNITS[unit])
++
++
++# ──────────────────────────────────────────────────────────────────────
++# Editable-install detection + repo root resolution
++# ──────────────────────────────────────────────────────────────────────
++
++
++def _direct_url(dist: Distribution) -> dict | None:
++    """Return parsed `direct_url.json` payload or None if absent."""
++    try:
++        text = dist.read_text("direct_url.json")
++    except Exception:
++        return None
++    if not text:
++        return None
++    try:
++        return json.loads(text)
++    except json.JSONDecodeError:
++        return None
++
++
++def is_editable_install(dist: Distribution) -> bool:
++    """Heuristic editable-install test (PEP 660 + legacy)."""
++    payload = _direct_url(dist)
++    if payload is None:
++        return False
++    dir_info = payload.get("dir_info") or {}
++    return bool(dir_info.get("editable"))
++
++
++def _file_uri_to_path(url: str) -> Path | None:
++    """Convert a `file://` URL to a local Path; None for non-file URLs."""
++    if not url.startswith("file://"):
++        return None
++    parsed = urllib.parse.urlparse(url)
++    return Path(urllib.parse.unquote(parsed.path))
++
++
++def _walk_to_git_root(start: Path) -> Path | None:
++    """Walk parents of `start` until a `.git` dir is found, else None."""
++    for parent in [start, *start.parents]:
++        if (parent / ".git").exists():
++            return parent
++    return None
++
++
++def pack_repo_root(target_pack: str) -> Path:
++    """Resolve the on-disk git working-tree root for an installed pack.
++
++    Raises LookupError when the pack is not editable, when its
++    `direct_url.json` is missing/non-file, or when no `.git` ancestor
++    exists.
++    """
++    try:
++        dist = distribution(target_pack)
++    except PackageNotFoundError as exc:
++        raise LookupError(f"target_pack {target_pack!r} is not installed") from exc
++
++    if not is_editable_install(dist):
++        raise LookupError(
++            f"target_pack {target_pack!r} is not an editable install — refusing"
++        )
++
++    payload = _direct_url(dist) or {}
++    src = _file_uri_to_path(payload.get("url", ""))
++    if src is None or not src.exists():
++        raise LookupError(
++            f"target_pack {target_pack!r} direct_url is not a local file path"
++        )
++
++    root = _walk_to_git_root(src)
++    if root is None:
++        raise LookupError(
++            f"target_pack {target_pack!r} src {src} has no .git ancestor"
++        )
++    return root
++
++
++def pack_formula_names(repo_root: Path) -> list[str]:
++    """Read `[project.entry-points."po.formulas"]` keys from a pack's pyproject.toml."""
++    pyproject = repo_root / "pyproject.toml"
++    if not pyproject.exists():
++        return []
++    with pyproject.open("rb") as f:
++        data = tomllib.load(f)
++    eps = (
++        data.get("project", {})
++        .get("entry-points", {})
++        .get("po.formulas", {})
++    )
++    return list(eps.keys())
++
++
++# ──────────────────────────────────────────────────────────────────────
++# Lesson collection
++# ──────────────────────────────────────────────────────────────────────
++
++
++def iter_run_dirs(
++    rig_path: Path,
++    formula_names: list[str],
++    since: timedelta,
++    *,
++    now: datetime | None = None,
++) -> Iterator[Path]:
++    """Yield run-dirs for the given formulas whose lessons-learned.md is recent enough.
++
++    A run dir is `<rig_path>/.planning/<formula>/<issue_id>/`. Filters
++    by `lessons-learned.md` mtime, falling back to the dir's own mtime
++    when the file is absent (so decision-log-only runs are still
++    surfaced).
++    """
++    cutoff = (now or datetime.now(timezone.utc)) - since
++    cutoff_ts = cutoff.timestamp()
++    planning_root = rig_path / ".planning"
++    for formula in formula_names:
++        formula_root = planning_root / formula
++        if not formula_root.is_dir():
++            continue
++        for run_dir in sorted(formula_root.iterdir()):
++            if not run_dir.is_dir():
++                continue
++            anchor = run_dir / "lessons-learned.md"
++            ref_path = anchor if anchor.exists() else run_dir
++            try:
++                mtime = ref_path.stat().st_mtime
++            except FileNotFoundError:
++                continue
++            if mtime >= cutoff_ts:
++                yield run_dir
++
++
++def read_lessons_and_decisions(run_dir: Path) -> dict[str, str]:
++    """Return {'lessons': ..., 'decisions': ...} for a single run dir."""
++    out: dict[str, str] = {}
++    lessons = run_dir / "lessons-learned.md"
++    if lessons.exists():
++        out["lessons"] = lessons.read_text(errors="replace")
++    decisions = run_dir / "decision-log.md"
++    if decisions.exists():
++        out["decisions"] = decisions.read_text(errors="replace")
++    return out
++
++
++# ──────────────────────────────────────────────────────────────────────
++# Path safety
++# ──────────────────────────────────────────────────────────────────────
++
++
++_ALLOWED_PATTERNS = (
++    re.compile(r"(^|/)agents/.+/prompt\.md$"),
++    re.compile(r"(^|/)skills/.+/SKILL\.md$"),
++    re.compile(r"(^|/|\\)CLAUDE\.md$"),
++)
++
++
++def is_allowed_target_path(rel_path: str) -> bool:
++    """Allow only prompts, skills, and CLAUDE.md edits."""
++    if ".." in Path(rel_path).parts:
++        return False
++    if Path(rel_path).is_absolute():
++        return False
++    return any(p.search(rel_path) for p in _ALLOWED_PATTERNS)
++
++
++# ──────────────────────────────────────────────────────────────────────
++# Synthesizer-output validation
++# ──────────────────────────────────────────────────────────────────────
++
++
++RECURRENCE_THRESHOLD = 3
++
++
++def filter_recurring(items: list[dict]) -> list[dict]:
++    """Drop items whose evidence list has < RECURRENCE_THRESHOLD distinct run_ids
++    or whose target_file isn't an allowed path. Preserves order otherwise.
++    """
++    out: list[dict] = []
++    for item in items:
++        evidence = item.get("evidence") or []
++        if not isinstance(evidence, list):
++            continue
++        distinct = {str(e) for e in evidence if e}
++        if len(distinct) < RECURRENCE_THRESHOLD:
++            continue
++        target = item.get("target_file") or ""
++        if not is_allowed_target_path(target):
++            continue
++        out.append(item)
++    return out
++
++
++def bucket_recurrences(snippets: list[tuple[str, str]]) -> dict[str, list[str]]:
++    """Group `(run_id, snippet)` pairs by trimmed snippet text.
++
++    Pure helper for offline analysis / tests — not used in the synth
++    flow, but documented in the plan as the "recurring patterns" check.
++    """
++    buckets: dict[str, set[str]] = {}
++    for run_id, snippet in snippets:
++        key = " ".join(snippet.split()).strip().lower()
++        if not key:
++            continue
++        buckets.setdefault(key, set()).add(run_id)
++    return {k: sorted(v) for k, v in buckets.items() if len(v) >= RECURRENCE_THRESHOLD}
+diff --git a/po_formulas_retro/deployments.py b/po_formulas_retro/deployments.py
+new file mode 100644
+index 0000000..2812073
+--- /dev/null
++++ b/po_formulas_retro/deployments.py
+@@ -0,0 +1,33 @@
++"""Prefect deployments for the retro formula pack.
++
++Discovered by core's `po deploy` via the `po.deployments` entry-point
++group. Pure construction — no I/O. The single `retro-weekly` deployment
++fires every Sunday at 09:00 UTC. Callers MUST supply `target_pack` and
++`rig_path` parameters at run time (parameters left empty here so the
++deployment is reusable across rigs).
++"""
++
++from __future__ import annotations
++
++from typing import Any
++
++from prefect.client.schemas.schedules import CronSchedule
++
++from .flows import update_prompts_from_lessons
++
++
++def register() -> list[Any]:
++    return [
++        update_prompts_from_lessons.to_deployment(
++            name="retro-weekly",
++            schedules=[CronSchedule(cron="0 9 * * 0", timezone="UTC")],
++            work_pool_name="po",
++            tags=["retro"],
++            description=(
++                "Weekly retrospective: synthesize lessons + decisions from "
++                "recent runs of `target_pack` into prompt/skill/CLAUDE.md "
++                "edits committed to the target pack's repo."
++            ),
++            parameters={"since": "7d"},
++        )
++    ]
+diff --git a/po_formulas_retro/flows.py b/po_formulas_retro/flows.py
+new file mode 100644
+index 0000000..07f9c8a
+--- /dev/null
++++ b/po_formulas_retro/flows.py
+@@ -0,0 +1,384 @@
++"""Prefect flow: `update_prompts_from_lessons`.
++
++Walks recent `lessons-learned.md` + `decision-log.md` artifacts from
++the target pack's run dirs, synthesizes recurring patterns via one
++Claude turn, and commits proposed prompt / skill / CLAUDE.md edits to
++the target pack's repo. Single-occurrence lessons land in
++`bd remember` instead of file edits.
++"""
++
++from __future__ import annotations
++
++import json
++import os
++import shutil
++import subprocess
++from datetime import datetime, timezone
++from pathlib import Path
++from typing import Any
++
++from prefect import flow, get_run_logger, task
++
++from prefect_orchestration.agent_session import (
++    AgentSession,
++    ClaudeCliBackend,
++    StubBackend,
++    TmuxClaudeBackend,
++)
++from prefect_orchestration.parsing import read_verdict, verdicts_dir
++from prefect_orchestration.templates import render_template
++
++from . import analysis, git_ops
++
++_AGENTS_DIR = Path(__file__).parent / "agents"
++_FORMULA_NAME = "update-prompts-from-lessons"
++_RUN_DIR_FORMULA = "update-prompts-from-lessons"
++
++
++def _render(role: str, **vars: object) -> str:
++    return render_template(_AGENTS_DIR, role, **vars)
++
++
++def _utc_timestamp() -> str:
++    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
++
++
++def _select_backend() -> Any:
++    """Mirror software_dev's PO_BACKEND switch."""
++    forced = os.environ.get("PO_BACKEND", "").strip().lower()
++    if forced == "stub":
++        return StubBackend()
++    if forced == "tmux":
++        if not shutil.which("tmux"):
++            raise RuntimeError("PO_BACKEND=tmux but tmux is not on PATH")
++        return TmuxClaudeBackend(issue="retro", role="synthesizer")
++    if forced == "cli":
++        return ClaudeCliBackend()
++    # Default: tmux when available, else cli.
++    if shutil.which("tmux"):
++        return TmuxClaudeBackend(issue="retro", role="synthesizer")
++    return ClaudeCliBackend()
++
++
++# ──────────────────────────────────────────────────────────────────────
++# Tasks
++# ──────────────────────────────────────────────────────────────────────
++
++
++@task(name="locate_target_pack", tags=["retro"])
++def locate_target_pack(target_pack: str) -> dict[str, Any]:
++    logger = get_run_logger()
++    try:
++        repo_root = analysis.pack_repo_root(target_pack)
++    except LookupError as exc:
++        logger.warning(f"refused to operate on {target_pack}: {exc}")
++        return {"refused": str(exc)}
++    formulas = analysis.pack_formula_names(repo_root)
++    logger.info(f"target pack {target_pack} -> {repo_root} (formulas={formulas})")
++    return {"repo_root": str(repo_root), "formulas": formulas}
++
++
++@task(name="collect_lessons", tags=["retro"])
++def collect_lessons(
++    rig_path: str, formulas: list[str], since: str
++) -> list[dict[str, Any]]:
++    logger = get_run_logger()
++    delta = analysis.parse_since(since)
++    runs: list[dict[str, Any]] = []
++    for run_dir in analysis.iter_run_dirs(Path(rig_path), formulas, delta):
++        body = analysis.read_lessons_and_decisions(run_dir)
++        if not body:
++            continue
++        runs.append(
++            {
++                "run_id": run_dir.name,
++                "formula": run_dir.parent.name,
++                "lessons": body.get("lessons", ""),
++                "decisions": body.get("decisions", ""),
++            }
++        )
++    logger.info(f"collected {len(runs)} runs with lessons/decisions since {since}")
++    return runs
++
++
++def _format_lessons_blob(runs: list[dict[str, Any]]) -> str:
++    parts: list[str] = []
++    for r in runs:
++        chunks: list[str] = []
++        if r.get("lessons"):
++            chunks.append(f"## lessons-learned.md\n\n{r['lessons']}")
++        if r.get("decisions"):
++            chunks.append(f"## decision-log.md\n\n{r['decisions']}")
++        body = "\n\n".join(chunks)
++        parts.append(f'<run id="{r["run_id"]}" formula="{r["formula"]}">\n{body}\n</run>')
++    return "\n\n".join(parts) if parts else "(no recent runs)"
++
++
++@task(name="synthesize", tags=["synthesizer"])
++def synthesize(
++    target_pack: str,
++    target_repo_root: str,
++    runs: list[dict[str, Any]],
++    run_dir: str,
++) -> dict[str, Any]:
++    logger = get_run_logger()
++    if not runs:
++        logger.info("no runs collected; producing empty synthesis")
++        return {"recurring": [], "single_occurrence": []}
++
++    run_dir_p = Path(run_dir)
++    verdict_path = verdicts_dir(run_dir_p) / "synthesize.json"
++
++    sess = AgentSession(
++        role="synthesizer",
++        repo_path=Path(target_repo_root),
++        backend=_select_backend(),
++        skip_mail_inject=True,
++    )
++    prompt = _render(
++        "synthesizer",
++        target_pack=target_pack,
++        target_repo_root=target_repo_root,
++        n_runs=len(runs),
++        run_dir=str(run_dir_p),
++        verdict_path=str(verdict_path),
++        lessons_blob=_format_lessons_blob(runs),
++    )
++    sess.prompt(prompt)
++    payload = read_verdict(run_dir_p, "synthesize")
++    recurring_in = payload.get("recurring") or []
++    singles_in = payload.get("single_occurrence") or []
++    recurring = analysis.filter_recurring(
++        [r for r in recurring_in if isinstance(r, dict)]
++    )
++    singles = [s for s in singles_in if isinstance(s, dict) and s.get("note")]
++    logger.info(
++        f"synthesized: {len(recurring)} recurring (after filter), "
++        f"{len(singles)} single-occurrence"
++    )
++    return {"recurring": recurring, "single_occurrence": singles}
++
++
++def _apply_edit(target_path: Path, edit: Any) -> None:
++    """Apply one edit. `edit` is either a string (full rewrite) or
++    {"append": str} (append to existing or create)."""
++    target_path.parent.mkdir(parents=True, exist_ok=True)
++    if isinstance(edit, str):
++        target_path.write_text(edit)
++        return
++    if isinstance(edit, dict) and "append" in edit:
++        suffix = str(edit["append"])
++        existing = target_path.read_text() if target_path.exists() else ""
++        if existing and not existing.endswith("\n"):
++            existing += "\n"
++        target_path.write_text(existing + suffix)
++        return
++    raise ValueError(f"unrecognized edit shape: {edit!r}")
++
++
++@task(name="apply_changes_and_commit", tags=["retro"])
++def apply_changes_and_commit(
++    repo_root: str,
++    target_pack: str,
++    recurring: list[dict[str, Any]],
++    n_runs: int,
++    since: str,
++    timestamp: str,
++    dry_run: bool,
++) -> dict[str, Any]:
++    logger = get_run_logger()
++    if dry_run or not recurring:
++        return {
++            "branch": None,
++            "commit_sha": None,
++            "edited_files": [],
++            "skipped_reason": "dry-run" if dry_run else "no recurring patterns",
++        }
++
++    repo = Path(repo_root)
++    edited_paths: list[Path] = []
++    for item in recurring:
++        rel = item["target_file"]
++        # Defense-in-depth: re-validate the path here as well.
++        if not analysis.is_allowed_target_path(rel):
++            logger.warning(f"dropping disallowed path: {rel}")
++            continue
++        target = (repo / rel).resolve()
++        try:
++            target.relative_to(repo.resolve())
++        except ValueError:
++            logger.warning(f"dropping path outside repo: {rel}")
++            continue
++        _apply_edit(target, item.get("edit"))
++        edited_paths.append(target)
++
++    if not edited_paths:
++        return {
++            "branch": None,
++            "commit_sha": None,
++            "edited_files": [],
++            "skipped_reason": "all edits filtered",
++        }
++
++    branch_created = git_ops.ensure_retro_branch(repo, timestamp)
++    branch_name = branch_created or git_ops.current_branch(repo)
++    message = (
++        f"retro({target_pack}): integrate lessons from {n_runs} runs since {since}"
++    )
++    sha = git_ops.commit_paths(repo, edited_paths, message)
++    return {
++        "branch": branch_name,
++        "branch_created": branch_created is not None,
++        "commit_sha": sha,
++        "edited_files": [str(p.relative_to(repo)) for p in edited_paths],
++    }
++
++
++def _bd_remember(text: str) -> bool:
++    """Best-effort `bd remember` shell-out; returns True on rc=0."""
++    if not shutil.which("bd"):
++        return False
++    rc = subprocess.run(
++        ["bd", "remember", text], capture_output=True, text=True
++    ).returncode
++    return rc == 0
++
++
++@task(name="record_singles", tags=["retro"])
++def record_singles(
++    singles: list[dict[str, Any]], target_pack: str, dry_run: bool
++) -> list[str]:
++    logger = get_run_logger()
++    recorded: list[str] = []
++    for s in singles:
++        note = s.get("note") or ""
++        if not note:
++            continue
++        text = f"[{target_pack}] {note}"
++        if dry_run:
++            recorded.append(text)
++            continue
++        if _bd_remember(text):
++            recorded.append(text)
++        else:
++            logger.warning(f"bd remember failed for: {text!r}")
++    return recorded
++
++
++@task(name="write_summary", tags=["retro"])
++def write_summary(
++    run_dir: str,
++    target_pack: str,
++    since: str,
++    n_runs: int,
++    recurring: list[dict[str, Any]],
++    singles_recorded: list[str],
++    commit: dict[str, Any],
++    timestamp: str,
++) -> str:
++    run_dir_p = Path(run_dir)
++    run_dir_p.mkdir(parents=True, exist_ok=True)
++    summary_path = run_dir_p / f"retro-{timestamp}.md"
++    lines: list[str] = [
++        f"# Retro for `{target_pack}` — {timestamp}",
++        "",
++        f"- Runs scanned: **{n_runs}** (since={since})",
++        f"- Recurring themes: **{len(recurring)}**",
++        f"- Single-occurrence notes: **{len(singles_recorded)}**",
++        f"- Branch: `{commit.get('branch') or '(none)'}`",
++        f"- Commit: `{commit.get('commit_sha') or '(none)'}`",
++        f"- Edited files: {commit.get('edited_files') or []}",
++    ]
++    if commit.get("skipped_reason"):
++        lines.append(f"- Skipped because: {commit['skipped_reason']}")
++    lines.append("")
++    if recurring:
++        lines.append("## Recurring themes")
++        lines.append("")
++        for r in recurring:
++            lines.append(
++                f"- **{r.get('theme', '(no theme)')}** → `{r.get('target_file')}`"
++            )
++            lines.append(
++                f"  evidence: {r.get('evidence', [])}"
++            )
++        lines.append("")
++    if singles_recorded:
++        lines.append("## Single-occurrence (recorded via `bd remember`)")
++        lines.append("")
++        for note in singles_recorded:
++            lines.append(f"- {note}")
++        lines.append("")
++    summary_path.write_text("\n".join(lines))
++    return str(summary_path)
++
++
++# ──────────────────────────────────────────────────────────────────────
++# Flow
++# ──────────────────────────────────────────────────────────────────────
++
++
++@flow(name=_FORMULA_NAME)
++def update_prompts_from_lessons(
++    target_pack: str,
++    since: str = "7d",
++    rig_path: str | None = None,
++    dry_run: bool = False,
++) -> dict[str, Any]:
++    """Synthesize recurring lessons from the target pack's recent runs and
++    commit prompt/skill/CLAUDE.md edits to its repo.
++
++    Args:
++        target_pack: Distribution name of an editable PO formula pack.
++        since: How far back to scan run dirs (e.g. "7d", "24h").
++        rig_path: Rig root whose `.planning/<formula>/<issue>/` dirs
++            host run artifacts. Defaults to `$PWD`.
++        dry_run: If true, write the summary but do not edit files,
++            commit, or call `bd remember`.
++
++    Returns:
++        Dict with `refused` (when target pack is non-editable) OR
++        `summary_path`, `commit`, `n_runs`, `recurring`, `singles_recorded`.
++    """
++    rig = Path(rig_path or Path.cwd()).resolve()
++    timestamp = _utc_timestamp()
++    flow_run_dir = rig / ".planning" / _RUN_DIR_FORMULA / timestamp
++    flow_run_dir.mkdir(parents=True, exist_ok=True)
++
++    located = locate_target_pack(target_pack)
++    if "refused" in located:
++        return {"refused": located["refused"], "run_dir": str(flow_run_dir)}
++
++    repo_root = located["repo_root"]
++    formulas = located["formulas"]
++    runs = collect_lessons(str(rig), formulas, since)
++    synth = synthesize(target_pack, repo_root, runs, str(flow_run_dir))
++
++    commit = apply_changes_and_commit(
++        repo_root=repo_root,
++        target_pack=target_pack,
++        recurring=synth["recurring"],
++        n_runs=len(runs),
++        since=since,
++        timestamp=timestamp,
++        dry_run=dry_run,
++    )
++    singles_recorded = record_singles(synth["single_occurrence"], target_pack, dry_run)
++    summary_path = write_summary(
++        run_dir=str(flow_run_dir),
++        target_pack=target_pack,
++        since=since,
++        n_runs=len(runs),
++        recurring=synth["recurring"],
++        singles_recorded=singles_recorded,
++        commit=commit,
++        timestamp=timestamp,
++    )
++    return {
++        "summary_path": summary_path,
++        "commit": commit,
++        "n_runs": len(runs),
++        "recurring": synth["recurring"],
++        "singles_recorded": singles_recorded,
++        "run_dir": str(flow_run_dir),
++    }
+diff --git a/po_formulas_retro/git_ops.py b/po_formulas_retro/git_ops.py
+new file mode 100644
+index 0000000..0bf37a8
+--- /dev/null
++++ b/po_formulas_retro/git_ops.py
+@@ -0,0 +1,72 @@
++"""Tiny git wrapper used by the retro flow.
++
++Keeps git invocations contained so tests can monkey-patch one helper
++rather than every subprocess call. Uses `core.hooksPath=/dev/null` for
++commits so a target repo's pre-commit hook can't auto-push the retro
++commit.
++"""
++
++from __future__ import annotations
++
++import subprocess
++from pathlib import Path
++
++
++def _run(cmd: list[str], cwd: Path) -> str:
++    result = subprocess.run(
++        cmd, cwd=str(cwd), check=True, text=True, capture_output=True
++    )
++    return result.stdout.strip()
++
++
++def current_branch(repo: Path) -> str:
++    return _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo)
++
++
++def branch_exists(repo: Path, name: str) -> bool:
++    rc = subprocess.run(
++        ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{name}"],
++        cwd=str(repo),
++        capture_output=True,
++    ).returncode
++    return rc == 0
++
++
++def ensure_retro_branch(repo: Path, timestamp: str) -> str | None:
++    """If on main/master, create+checkout `retro/<timestamp>` and return its name.
++
++    Otherwise return None (stay on the active feature branch).
++    Resolves naming collisions by appending `-1`, `-2`, ...
++    """
++    branch = current_branch(repo)
++    if branch not in ("main", "master"):
++        return None
++    base = f"retro/{timestamp}"
++    candidate = base
++    suffix = 1
++    while branch_exists(repo, candidate):
++        candidate = f"{base}-{suffix}"
++        suffix += 1
++    _run(["git", "checkout", "-b", candidate], repo)
++    return candidate
++
++
++def commit_paths(repo: Path, paths: list[Path], message: str) -> str:
++    """Scoped `git add <path>` then commit (hooks disabled). Returns commit SHA."""
++    if not paths:
++        raise ValueError("commit_paths requires at least one path")
++    for p in paths:
++        rel = p.relative_to(repo) if p.is_absolute() else p
++        _run(["git", "add", "--", str(rel)], repo)
++    _run(
++        [
++            "git",
++            "-c",
++            "core.hooksPath=/dev/null",
++            "commit",
++            "-m",
++            message,
++        ],
++        repo,
++    )
++    return _run(["git", "rev-parse", "HEAD"], repo)
+diff --git a/pyproject.toml b/pyproject.toml
+new file mode 100644
+index 0000000..d095fe8
+--- /dev/null
++++ b/pyproject.toml
+@@ -0,0 +1,37 @@
++[project]
++name = "po-formulas-retro"
++version = "0.1.0"
++description = "po formula pack: retrospective — synthesize lessons-learned + decision-log into proposed prompt/skill/CLAUDE.md edits for a target pack"
++requires-python = ">=3.11"
++dependencies = [
++    "prefect-orchestration",
++    "prefect>=3.0",
++]
++
++# Discovered by core's `po list` / `po run <name>`.
++[project.entry-points."po.formulas"]
++update-prompts-from-lessons = "po_formulas_retro.flows:update_prompts_from_lessons"
++
++# Pack-declared deployments (one weekly cron).
++[project.entry-points."po.deployments"]
++retro = "po_formulas_retro.deployments:register"
++
++[build-system]
++requires = ["hatchling"]
++build-backend = "hatchling.build"
++
++[tool.hatch.build.targets.wheel]
++packages = ["po_formulas_retro"]
++
++# Install both editable for local dev:
++#   po install --editable ../prefect-orchestration
++#   po install --editable .
++#
++# Then from any beads-initialized rig with editable target packs installed:
++#   po run update-prompts-from-lessons \
++#       --target-pack po-formulas-software-dev \
++#       --rig-path /path/to/rig \
++#       --since 7d
++
++[tool.uv.sources]
++prefect-orchestration = { path = "../prefect-orchestration", editable = true }
+diff --git a/skills/retro/SKILL.md b/skills/retro/SKILL.md
+new file mode 100644
+index 0000000..913ee07
+--- /dev/null
++++ b/skills/retro/SKILL.md
+@@ -0,0 +1,70 @@
++# Retro skill — boundaries
++
++The `update-prompts-from-lessons` formula closes the feedback loop on
++PO runs. It walks recent `lessons-learned.md` and `decision-log.md`
++artifacts, asks Claude to identify recurring patterns (≥3 distinct
++runs), and proposes edits to the target pack's prompts / skills /
++top-level guidance.
++
++## What the retro MAY change
++
++- `agents/<role>/prompt.md` (and any nested `**/agents/<role>/prompt.md`)
++- `skills/<name>/SKILL.md` (and any nested `**/skills/<name>/SKILL.md`)
++- `CLAUDE.md` (top-level or nested)
++
++## What the retro MUST NOT change
++
++- **NOT code** (`*.py`, anything under `po_formulas_retro/`, or the
++  target pack's modules). Lessons about code go into prompts; agents
++  read prompts every run, so prompt edits are the durable artifact.
++- `pyproject.toml` (no dependency or entry-point churn from a retro)
++- Tests (`tests/**`)
++- CI / workflow YAML (`.github/**`, `.gitlab-ci.yml`, etc.)
++
++The orchestrator double-checks every proposed `target_file` against an
++allow-list (`is_allowed_target_path`) and silently drops anything else.
++A creative synthesizer cannot trick the flow into editing code.
++
++## Recurrence bar
++
++A theme must show up in **3+ distinct run dirs** (different `id`
++attributes) before it qualifies for a file edit. Single-occurrence
++observations are recorded via `bd remember "[<target_pack>] <note>"`
++instead — that keeps prompts grep-able and prevents bloat from one-off
++incidents.
++
++`bd` does not natively support per-pack memory tagging; the
++`[<target_pack>]` prefix is the convention until it does. Search with
++`bd memories <pack-name>`.
++
++## Branch + commit policy
++
++- If the target repo's current branch is `main` or `master`, the flow
++  cuts a fresh `retro/<utc-ts>` branch (collisions resolve via
++  `-1`, `-2`, ...).
++- Otherwise the commit lands on the active feature branch.
++- Commit message: `retro(<target_pack>): integrate lessons from <N> runs since <since>`.
++- `git add` is **scoped** — only the files the synthesizer proposed.
++  Never `git add -A` (CLAUDE.md polyrepo rule).
++- Commit hooks are bypassed (`-c core.hooksPath=/dev/null`) so a
++  pre-commit hook on the target repo can't auto-push the retro commit.
++- The flow **never** pushes. Humans review the branch, rebase, merge.
++
++## Refusal conditions
++
++The flow refuses (returns `{"refused": ...}`, makes no commits, no
++`bd remember` calls) when:
++
++- the target pack is not installed
++- the target pack's distribution metadata says it isn't editable
++  (`direct_url.json` missing or `dir_info.editable != True`)
++- the resolved source path has no `.git` ancestor (monorepo packs
++  installed from a subdir without a git root, or unusual layouts)
++
++## When NOT to run a retro
++
++- Fewer than ~10 runs in the time window — the recurrence bar can't
++  bite, almost everything will be `single_occurrence`. Bump `--since`
++  or skip the run.
++- Mid-merge on the target repo — wait until the working tree is clean
++  so your retro commit doesn't entangle with in-flight work.
+diff --git a/tests/__init__.py b/tests/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/tests/conftest.py b/tests/conftest.py
+new file mode 100644
+index 0000000..d5ea501
+--- /dev/null
++++ b/tests/conftest.py
+@@ -0,0 +1,85 @@
++"""Shared fixtures for retro pack tests.
++
++Builds a fake target-pack git repo and a rig with three matching
++lesson runs. Tests can then point the flow at these via fixture
++fixtures rather than touching importlib metadata.
++"""
++
++from __future__ import annotations
++
++import json
++import os
++import subprocess
++from pathlib import Path
++
++import pytest
++
++
++def _git(repo: Path, *args: str) -> str:
++    out = subprocess.run(
++        ["git", *args],
++        cwd=str(repo),
++        check=True,
++        text=True,
++        capture_output=True,
++    )
++    return out.stdout.strip()
++
++
++@pytest.fixture
++def fake_target_repo(tmp_path: Path) -> Path:
++    """A git repo with a po-formula-shaped pyproject + a fake prompt file."""
++    repo = tmp_path / "fake-pack-repo"
++    pkg = repo / "po_formulas_fake"
++    (pkg / "agents" / "builder").mkdir(parents=True)
++    (pkg / "agents" / "builder" / "prompt.md").write_text(
++        "You are the builder.\n"
++    )
++    (repo / "pyproject.toml").write_text(
++        '[project]\nname = "po-formulas-fake"\n\n'
++        '[project.entry-points."po.formulas"]\n'
++        'fake-formula = "po_formulas_fake:run"\n'
++    )
++    _git(repo, "init", "-q", "-b", "main")
++    _git(repo, "config", "user.email", "test@example.com")
++    _git(repo, "config", "user.name", "Test")
++    _git(repo, "add", "-A")
++    _git(repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "init")
++    return repo
++
++
++@pytest.fixture
++def fake_rig_with_runs(tmp_path: Path) -> Path:
++    """Rig with three run dirs of formula 'fake-formula', each with the same lesson."""
++    rig = tmp_path / "fake-rig"
++    formula_dir = rig / ".planning" / "fake-formula"
++    for issue_id in ("issue-1", "issue-2", "issue-3"):
++        rd = formula_dir / issue_id
++        rd.mkdir(parents=True)
++        (rd / "lessons-learned.md").write_text(
++            "Always run `bd prime` after a session reset.\n"
++        )
++        (rd / "decision-log.md").write_text(
++            "- Decision: used scoped git add to avoid sweeping other workers' work.\n"
++        )
++    return rig
++
++
++@pytest.fixture
++def stub_synthesis_payload() -> dict:
++    """A canned synthesizer verdict that targets a prompt file edit."""
++    return {
++        "recurring": [
++            {
++                "theme": "Run `bd prime` after session reset",
++                "evidence": ["issue-1", "issue-2", "issue-3"],
++                "target_file": "po_formulas_fake/agents/builder/prompt.md",
++                "edit": {
++                    "append": "\n\n## Reminder\nRun `bd prime` after a session reset.\n"
++                },
++            }
++        ],
++        "single_occurrence": [
++            {"note": "scoped git add avoids worker collisions", "target_pack": "po-formulas-fake"}
++        ],
++    }
+diff --git a/tests/test_analysis.py b/tests/test_analysis.py
+new file mode 100644
+index 0000000..20d513a
+--- /dev/null
++++ b/tests/test_analysis.py
+@@ -0,0 +1,260 @@
++"""Unit tests for `po_formulas_retro.analysis`."""
++
++from __future__ import annotations
++
++import json
++import os
++import time
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++
++import pytest
++
++from po_formulas_retro import analysis
++
++
++# ──────────────────────────────────────────────────────────────────────
++# parse_since
++# ──────────────────────────────────────────────────────────────────────
++
++
++def test_parse_since_supports_all_units() -> None:
++    assert analysis.parse_since("30s") == timedelta(seconds=30)
++    assert analysis.parse_since("15m") == timedelta(minutes=15)
++    assert analysis.parse_since("24h") == timedelta(hours=24)
++    assert analysis.parse_since("7d") == timedelta(days=7)
++    assert analysis.parse_since("2w") == timedelta(weeks=2)
++
++
++def test_parse_since_rejects_garbage() -> None:
++    with pytest.raises(ValueError):
++        analysis.parse_since("yesterday")
++    with pytest.raises(ValueError):
++        analysis.parse_since("7")
++
++
++# ──────────────────────────────────────────────────────────────────────
++# is_allowed_target_path
++# ──────────────────────────────────────────────────────────────────────
++
++
++@pytest.mark.parametrize(
++    "rel,allowed",
++    [
++        ("agents/builder/prompt.md", True),
++        ("po_formulas/agents/builder/prompt.md", True),
++        ("skills/retro/SKILL.md", True),
++        ("CLAUDE.md", True),
++        ("docs/CLAUDE.md", True),
++        ("po_formulas/builder.py", False),
++        ("pyproject.toml", False),
++        ("tests/test_x.py", False),
++        ("../etc/passwd", False),
++        ("/etc/passwd", False),
++        ("agents/builder/notes.md", False),
++    ],
++)
++def test_is_allowed_target_path(rel: str, allowed: bool) -> None:
++    assert analysis.is_allowed_target_path(rel) is allowed
++
++
++# ──────────────────────────────────────────────────────────────────────
++# filter_recurring
++# ──────────────────────────────────────────────────────────────────────
++
++
++def test_filter_recurring_drops_below_threshold() -> None:
++    items = [
++        {
++            "theme": "use scoped git add",
++            "evidence": ["a", "b"],  # only 2 — drop
++            "target_file": "agents/builder/prompt.md",
++            "edit": {"append": "x"},
++        },
++        {
++            "theme": "always read CLAUDE.md first",
++            "evidence": ["a", "b", "c"],
++            "target_file": "agents/builder/prompt.md",
++            "edit": {"append": "y"},
++        },
++    ]
++    out = analysis.filter_recurring(items)
++    assert len(out) == 1
++    assert out[0]["theme"] == "always read CLAUDE.md first"
++
++
++def test_filter_recurring_drops_disallowed_target() -> None:
++    items = [
++        {
++            "theme": "x",
++            "evidence": ["a", "b", "c", "d"],
++            "target_file": "po_formulas/builder.py",  # code — drop
++            "edit": "new contents",
++        }
++    ]
++    assert analysis.filter_recurring(items) == []
++
++
++def test_filter_recurring_dedupes_evidence() -> None:
++    items = [
++        {
++            "theme": "x",
++            "evidence": ["a", "a", "b"],  # only 2 distinct
++            "target_file": "agents/builder/prompt.md",
++            "edit": {"append": "x"},
++        }
++    ]
++    assert analysis.filter_recurring(items) == []
++
++
++# ──────────────────────────────────────────────────────────────────────
++# bucket_recurrences
++# ──────────────────────────────────────────────────────────────────────
++
++
++def test_bucket_recurrences_normalizes_whitespace_case_and_threshold() -> None:
++    snippets = [
++        ("run-1", "Always READ claude.md first"),
++        ("run-2", "always read CLAUDE.md  first"),
++        ("run-3", "  always read CLAUDE.md first  "),
++        ("run-4", "use scoped git add"),
++    ]
++    buckets = analysis.bucket_recurrences(snippets)
++    keys = list(buckets.keys())
++    assert len(keys) == 1
++    assert sorted(buckets[keys[0]]) == ["run-1", "run-2", "run-3"]
++
++
++# ──────────────────────────────────────────────────────────────────────
++# editable-install + repo-root resolution
++# ──────────────────────────────────────────────────────────────────────
++
++
++class _FakeDist:
++    def __init__(self, payload: dict | None) -> None:
++        self._payload = payload
++
++    def read_text(self, name: str) -> str | None:
++        if name == "direct_url.json" and self._payload is not None:
++            return json.dumps(self._payload)
++        return None
++
++
++def test_is_editable_install_true_when_dir_info_editable() -> None:
++    dist = _FakeDist({"url": "file:///tmp/pkg", "dir_info": {"editable": True}})
++    assert analysis.is_editable_install(dist) is True  # type: ignore[arg-type]
++
++
++def test_is_editable_install_false_when_missing() -> None:
++    assert analysis.is_editable_install(_FakeDist(None)) is False  # type: ignore[arg-type]
++
++
++def test_is_editable_install_false_when_dir_info_not_editable() -> None:
++    dist = _FakeDist({"url": "file:///tmp/pkg", "dir_info": {"editable": False}})
++    assert analysis.is_editable_install(dist) is False  # type: ignore[arg-type]
++
++
++def test_pack_repo_root_walks_to_git_ancestor(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    repo = tmp_path / "fake-repo"
++    pkg = repo / "src" / "fake_pkg"
++    pkg.mkdir(parents=True)
++    (repo / ".git").mkdir()
++    payload = {"url": f"file://{pkg}", "dir_info": {"editable": True}}
++    monkeypatch.setattr(
++        analysis, "distribution", lambda name: _FakeDist(payload)
++    )
++    assert analysis.pack_repo_root("fake-pkg") == repo
++
++
++def test_pack_repo_root_refuses_non_editable(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    pkg = tmp_path / "site-packages" / "fake_pkg"
++    pkg.mkdir(parents=True)
++    payload = {"url": f"file://{pkg}", "dir_info": {"editable": False}}
++    monkeypatch.setattr(
++        analysis, "distribution", lambda name: _FakeDist(payload)
++    )
++    with pytest.raises(LookupError, match="not an editable install"):
++        analysis.pack_repo_root("fake-pkg")
++
++
++def test_pack_repo_root_refuses_no_git_ancestor(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    pkg = tmp_path / "weird" / "fake_pkg"
++    pkg.mkdir(parents=True)
++    payload = {"url": f"file://{pkg}", "dir_info": {"editable": True}}
++    monkeypatch.setattr(
++        analysis, "distribution", lambda name: _FakeDist(payload)
++    )
++    with pytest.raises(LookupError, match="no .git ancestor"):
++        analysis.pack_repo_root("fake-pkg")
++
++
++def test_pack_formula_names_reads_pyproject(tmp_path: Path) -> None:
++    (tmp_path / "pyproject.toml").write_text(
++        '[project]\nname = "x"\n\n'
++        '[project.entry-points."po.formulas"]\n'
++        'foo = "x.y:z"\n'
++        'bar = "x.y:w"\n'
++    )
++    names = analysis.pack_formula_names(tmp_path)
++    assert sorted(names) == ["bar", "foo"]
++
++
++def test_pack_formula_names_empty_when_no_pyproject(tmp_path: Path) -> None:
++    assert analysis.pack_formula_names(tmp_path) == []
++
++
++# ──────────────────────────────────────────────────────────────────────
++# iter_run_dirs
++# ──────────────────────────────────────────────────────────────────────
++
++
++def _touch(p: Path, mtime: float) -> None:
++    p.parent.mkdir(parents=True, exist_ok=True)
++    p.write_text("x")
++    os.utime(p, (mtime, mtime))
++
++
++def test_iter_run_dirs_filters_by_mtime(tmp_path: Path) -> None:
++    rig = tmp_path / "rig"
++    formula = "software-dev-full"
++    now = datetime.now(timezone.utc)
++    fresh_ts = (now - timedelta(days=2)).timestamp()
++    stale_ts = (now - timedelta(days=30)).timestamp()
++    _touch(rig / ".planning" / formula / "fresh-1" / "lessons-learned.md", fresh_ts)
++    _touch(rig / ".planning" / formula / "fresh-2" / "lessons-learned.md", fresh_ts)
++    _touch(rig / ".planning" / formula / "stale-1" / "lessons-learned.md", stale_ts)
++    out = list(
++        analysis.iter_run_dirs(rig, [formula], timedelta(days=7), now=now)
++    )
++    names = sorted(p.name for p in out)
++    assert names == ["fresh-1", "fresh-2"]
++
++
++def test_iter_run_dirs_falls_back_to_dir_mtime(tmp_path: Path) -> None:
++    rig = tmp_path / "rig"
++    formula = "software-dev-full"
++    now = datetime.now(timezone.utc)
++    fresh_ts = (now - timedelta(hours=1)).timestamp()
++    run_dir = rig / ".planning" / formula / "decisions-only"
++    run_dir.mkdir(parents=True)
++    _touch(run_dir / "decision-log.md", fresh_ts)
++    os.utime(run_dir, (fresh_ts, fresh_ts))
++    out = list(
++        analysis.iter_run_dirs(rig, [formula], timedelta(days=7), now=now)
++    )
++    assert [p.name for p in out] == ["decisions-only"]
++
++
++def test_read_lessons_and_decisions(tmp_path: Path) -> None:
++    rd = tmp_path / "rd"
++    rd.mkdir()
++    (rd / "lessons-learned.md").write_text("L")
++    (rd / "decision-log.md").write_text("D")
++    out = analysis.read_lessons_and_decisions(rd)
++    assert out == {"lessons": "L", "decisions": "D"}
+diff --git a/tests/test_deployments.py b/tests/test_deployments.py
+new file mode 100644
+index 0000000..055bae8
+--- /dev/null
++++ b/tests/test_deployments.py
+@@ -0,0 +1,25 @@
++"""Test that the pack registers exactly one weekly cron deployment."""
++
++from __future__ import annotations
++
++import pytest
++
++pytest.importorskip("prefect")
++
++from po_formulas_retro.deployments import register
++
++
++def test_register_returns_one_weekly_deployment() -> None:
++    deployments = register()
++    assert len(deployments) == 1
++    d = deployments[0]
++    assert d.name == "retro-weekly"
++    assert d.work_pool_name == "po"
++    # Prefect 3 RunnerDeployment uses `.schedules` (list).
++    schedules = getattr(d, "schedules", None) or []
++    assert len(schedules) == 1
++    cron = getattr(schedules[0], "schedule", schedules[0])
++    cron_expr = getattr(cron, "cron", None) or getattr(
++        getattr(cron, "schedule", None), "cron", None
++    )
++    assert cron_expr == "0 9 * * 0"
+diff --git a/tests/test_flow.py b/tests/test_flow.py
+new file mode 100644
+index 0000000..fd5bc02
+--- /dev/null
++++ b/tests/test_flow.py
+@@ -0,0 +1,263 @@
++"""Integration tests for `update_prompts_from_lessons`.
++
++Uses a fake target-pack git repo + a fake rig with three matching
++lesson runs. The synthesizer turn is replaced with a fake backend
++that writes a canned verdict payload to the verdict file the prompt
++contains. No real Claude calls.
++"""
++
++from __future__ import annotations
++
++import json
++import re
++import subprocess
++import uuid
++from pathlib import Path
++from typing import Any
++
++import pytest
++
++pytest.importorskip("prefect")
++
++from po_formulas_retro import analysis, flows
++
++
++# ──────────────────────────────────────────────────────────────────────
++# Fake backend
++# ──────────────────────────────────────────────────────────────────────
++
++
++class _CannedBackend:
++    """Mimics StubBackend but writes a caller-supplied payload."""
++
++    def __init__(self, payload: dict) -> None:
++        self.payload = payload
++        self.invocations: list[str] = []
++
++    def run(
++        self,
++        prompt: str,
++        *,
++        session_id: str | None,
++        cwd: Path,
++        fork: bool = False,
++        model: str = "opus",
++    ) -> tuple[str, str]:
++        self.invocations.append(prompt)
++        match = re.search(r"(/[^\s`]+/verdicts/[\w\-.]+\.json)", prompt)
++        assert match is not None, "prompt missing verdict path"
++        verdict_path = Path(match.group(1))
++        verdict_path.parent.mkdir(parents=True, exist_ok=True)
++        verdict_path.write_text(json.dumps(self.payload))
++        return "[fake] ack", session_id or f"fake-{uuid.uuid4().hex[:8]}"
++
++
++def _patch_target_pack(
++    monkeypatch: pytest.MonkeyPatch, target_pack: str, repo_root: Path
++) -> None:
++    """Make `analysis.pack_repo_root(target_pack)` return `repo_root`."""
++
++    def fake_pack_repo_root(name: str) -> Path:
++        assert name == target_pack
++        return repo_root
++
++    monkeypatch.setattr(analysis, "pack_repo_root", fake_pack_repo_root)
++    monkeypatch.setattr(flows.analysis, "pack_repo_root", fake_pack_repo_root)
++
++
++def _patch_backend(
++    monkeypatch: pytest.MonkeyPatch, backend: _CannedBackend
++) -> None:
++    monkeypatch.setattr(flows, "_select_backend", lambda: backend)
++
++
++def _patch_bd_remember(monkeypatch: pytest.MonkeyPatch) -> list[str]:
++    """Capture bd remember calls into a list rather than shelling out."""
++    captured: list[str] = []
++
++    def fake(text: str) -> bool:
++        captured.append(text)
++        return True
++
++    monkeypatch.setattr(flows, "_bd_remember", fake)
++    return captured
++
++
++def _git(repo: Path, *args: str) -> str:
++    return subprocess.run(
++        ["git", *args],
++        cwd=str(repo),
++        check=True,
++        text=True,
++        capture_output=True,
++    ).stdout.strip()
++
++
++# ──────────────────────────────────────────────────────────────────────
++# AC #2 + #9: flow detects pattern, proposes prompt edit, commits scoped
++# ──────────────────────────────────────────────────────────────────────
++
++
++def test_three_matching_runs_produce_prompt_edit(
++    fake_target_repo: Path,
++    fake_rig_with_runs: Path,
++    stub_synthesis_payload: dict,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    target_pack = "po-formulas-fake"
++    _patch_target_pack(monkeypatch, target_pack, fake_target_repo)
++    backend = _CannedBackend(stub_synthesis_payload)
++    _patch_backend(monkeypatch, backend)
++    bd_calls = _patch_bd_remember(monkeypatch)
++
++    result = flows.update_prompts_from_lessons(
++        target_pack=target_pack,
++        since="7d",
++        rig_path=str(fake_rig_with_runs),
++    )
++
++    # AC #2: synthesizer was invoked exactly once and produced a verdict.
++    assert len(backend.invocations) == 1
++    # AC #9: a recurring theme was kept (and the disallowed singletons routed elsewhere).
++    assert len(result["recurring"]) == 1
++    assert result["recurring"][0]["target_file"].endswith("prompt.md")
++    # AC #4: single-occurrence lessons → bd remember (with [<pack>] prefix).
++    assert bd_calls == [f"[{target_pack}] scoped git add avoids worker collisions"]
++
++    commit = result["commit"]
++    assert commit["commit_sha"] is not None
++    assert commit["edited_files"] == [
++        "po_formulas_fake/agents/builder/prompt.md"
++    ]
++
++    # Commit landed and prompt was actually mutated.
++    edited = fake_target_repo / "po_formulas_fake/agents/builder/prompt.md"
++    assert "Run `bd prime` after a session reset" in edited.read_text()
++    show = _git(
++        fake_target_repo, "show", "--stat", "--format=%s", commit["commit_sha"]
++    )
++    assert f"retro({target_pack}): integrate lessons from 3 runs since 7d" in show
++    assert "po_formulas_fake/agents/builder/prompt.md" in show
++
++    # AC #5: summary artifact exists.
++    summary = Path(result["summary_path"])
++    assert summary.exists()
++    text = summary.read_text()
++    assert "Run `bd prime`" in text
++    assert commit["commit_sha"] in text
++
++
++# ──────────────────────────────────────────────────────────────────────
++# AC #3: branching policy
++# ──────────────────────────────────────────────────────────────────────
++
++
++def test_main_branch_creates_retro_branch(
++    fake_target_repo: Path,
++    fake_rig_with_runs: Path,
++    stub_synthesis_payload: dict,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    _patch_target_pack(monkeypatch, "po-formulas-fake", fake_target_repo)
++    _patch_backend(monkeypatch, _CannedBackend(stub_synthesis_payload))
++    _patch_bd_remember(monkeypatch)
++
++    result = flows.update_prompts_from_lessons(
++        target_pack="po-formulas-fake",
++        since="7d",
++        rig_path=str(fake_rig_with_runs),
++    )
++    branch = result["commit"]["branch"]
++    assert branch is not None
++    assert re.match(r"^retro/\d{8}T\d{6}Z(-\d+)?$", branch), branch
++    assert result["commit"]["branch_created"] is True
++    assert _git(fake_target_repo, "rev-parse", "--abbrev-ref", "HEAD") == branch
++
++
++def test_feature_branch_commits_in_place(
++    fake_target_repo: Path,
++    fake_rig_with_runs: Path,
++    stub_synthesis_payload: dict,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    _git(fake_target_repo, "checkout", "-b", "feat/something")
++    _patch_target_pack(monkeypatch, "po-formulas-fake", fake_target_repo)
++    _patch_backend(monkeypatch, _CannedBackend(stub_synthesis_payload))
++    _patch_bd_remember(monkeypatch)
++
++    result = flows.update_prompts_from_lessons(
++        target_pack="po-formulas-fake",
++        since="7d",
++        rig_path=str(fake_rig_with_runs),
++    )
++    assert result["commit"]["branch"] == "feat/something"
++    assert result["commit"]["branch_created"] is False
++    assert (
++        _git(fake_target_repo, "rev-parse", "--abbrev-ref", "HEAD")
++        == "feat/something"
++    )
++
++
++# ──────────────────────────────────────────────────────────────────────
++# AC #6: refusal on non-editable target pack
++# ──────────────────────────────────────────────────────────────────────
++
++
++def test_refuses_on_non_editable_target(
++    tmp_path: Path,
++    fake_rig_with_runs: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    bd_calls = _patch_bd_remember(monkeypatch)
++
++    def fake_pack_repo_root(name: str) -> Path:
++        raise LookupError(f"target_pack {name!r} is not an editable install")
++
++    monkeypatch.setattr(analysis, "pack_repo_root", fake_pack_repo_root)
++    monkeypatch.setattr(flows.analysis, "pack_repo_root", fake_pack_repo_root)
++
++    # Backend should NEVER be called — make it explode if it is.
++    def explode() -> Any:
++        raise AssertionError("backend should not be selected on refusal path")
++
++    monkeypatch.setattr(flows, "_select_backend", explode)
++
++    result = flows.update_prompts_from_lessons(
++        target_pack="not-editable",
++        since="7d",
++        rig_path=str(fake_rig_with_runs),
++    )
++    assert "refused" in result
++    assert bd_calls == []
++
++
++# ──────────────────────────────────────────────────────────────────────
++# Dry-run path
++# ──────────────────────────────────────────────────────────────────────
++
++
++def test_dry_run_skips_commit_and_bd_remember(
++    fake_target_repo: Path,
++    fake_rig_with_runs: Path,
++    stub_synthesis_payload: dict,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    _patch_target_pack(monkeypatch, "po-formulas-fake", fake_target_repo)
++    _patch_backend(monkeypatch, _CannedBackend(stub_synthesis_payload))
++    bd_calls = _patch_bd_remember(monkeypatch)
++
++    pre_sha = _git(fake_target_repo, "rev-parse", "HEAD")
++    result = flows.update_prompts_from_lessons(
++        target_pack="po-formulas-fake",
++        since="7d",
++        rig_path=str(fake_rig_with_runs),
++        dry_run=True,
++    )
++    post_sha = _git(fake_target_repo, "rev-parse", "HEAD")
++    assert pre_sha == post_sha
++    assert result["commit"]["commit_sha"] is None
++    assert result["commit"]["skipped_reason"] == "dry-run"
++    # bd_remember not invoked (dry_run still records to summary text only).
++    assert bd_calls == []
++    summary = Path(result["summary_path"])
++    assert summary.exists()
