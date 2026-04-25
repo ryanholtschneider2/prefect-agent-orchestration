@@ -291,17 +291,25 @@ collide. PO does **not** ship a reservation primitive — per principle
 
 **Convention.** Every prompt that edits files:
 
-1. Reserves its intended path set at role entry via
+1. **Registers its identity ONCE at role entry** (mcp-agent-mail
+   requires this before any reservation/mail call):
+   - `ensure_project project_path="$PWD"` → returns `project_key`
+   - `register_agent project_key=<above> name="{{issue_id}}-{{role}}" program="claude-code" model="opus-4"` —
+     "already exists" is fine; idempotent.
+2. Reserves its intended path set via
    `mcp-agent-mail file_reservation_paths` with
-   `owner="{{issue_id}}:{{role}}"`. Collisions are legible —
+   `agent_name="{{issue_id}}-{{role}}"`. Collisions are legible —
    "builder from polymer-dev-abc.3 holds these paths."
-2. On denial, mails the holder (`mcp-agent-mail send_message` to
-   the agent whose owner string is in the conflict response) or
-   backs off + retries up to 3× before failing the step.
-3. Renews the reservation if the turn runs > 4 min
+3. On denial, mails the holder (`mcp-agent-mail send_message` to
+   the `<issue_id>-<role>` agent named in the conflict response)
+   or backs off + retries up to 3× before failing the step.
+4. Renews the reservation if the turn runs > 4 min
    (default TTL is 5 min).
-4. Releases via `release_file_reservations` after commit.
-5. On crash, TTL auto-expires — no manual cleanup.
+5. Releases via `release_file_reservations` after commit.
+6. On crash, TTL auto-expires — no manual cleanup.
+
+**Naming.** `mcp-agent-mail` agent names cannot contain `:`. Use
+`{{issue_id}}-{{role}}` (hyphen) — e.g. `polymer-dev-abc.3-builder`.
 
 Reservations apply to `build.md`, `lint.md`, `ralph.md`, `docs.md`
 in `po-formulas-software-dev`. Any new file-editing prompt in any
