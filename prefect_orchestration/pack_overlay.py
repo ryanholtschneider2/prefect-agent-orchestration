@@ -199,7 +199,9 @@ def apply_skills(pack: Pack, rig_path: Path) -> list[Path]:
         if not skills_root.is_dir():
             continue
         for skill_dir in sorted(p for p in skills_root.iterdir() if p.is_dir()):
-            written.extend(_copy_tree(skill_dir, dest_root / skill_dir.name, skip_existing=False))
+            written.extend(
+                _copy_tree(skill_dir, dest_root / skill_dir.name, skip_existing=False)
+            )
     return written
 
 
