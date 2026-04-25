@@ -138,6 +138,22 @@ def check_prefect_api_reachable() -> CheckResult:
     return CheckResult(name=name, status=Status.OK, message=url)
 
 
+def _read_pool_names(timeout: float = 5.0) -> list[str]:
+    """Return the names of all work pools on the configured Prefect server.
+
+    Factored out so doctor checks can share one network call and tests can
+    monkeypatch a single seam instead of stubbing the Prefect client.
+    """
+    from prefect.client.orchestration import get_client
+
+    async def _list() -> list:
+        async with get_client() as client:
+            return list(await client.read_work_pools())
+
+    pools = asyncio.run(asyncio.wait_for(_list(), timeout=timeout))
+    return [getattr(p, "name", "?") for p in pools]
+
+
 def check_work_pool_exists() -> CheckResult:
     """At least one work pool registered on the server."""
     name = "Work pool exists"
@@ -149,13 +165,7 @@ def check_work_pool_exists() -> CheckResult:
             remediation="fix the Prefect API reachable check first",
         )
     try:
-        from prefect.client.orchestration import get_client
-
-        async def _list() -> list:
-            async with get_client() as client:
-                return list(await client.read_work_pools())
-
-        pools = asyncio.run(asyncio.wait_for(_list(), timeout=5.0))
+        names = _read_pool_names()
     except Exception as exc:
         return CheckResult(
             name=name,
@@ -163,16 +173,79 @@ def check_work_pool_exists() -> CheckResult:
             message=f"read_work_pools() failed: {exc}",
             remediation="check Prefect server health",
         )
-    if not pools:
+    if not names:
         return CheckResult(
             name=name,
             status=Status.FAIL,
             message="no work pools registered",
             remediation="prefect work-pool create po --type process",
         )
-    names = ", ".join(sorted(getattr(p, "name", "?") for p in pools))
     return CheckResult(
-        name=name, status=Status.OK, message=f"{len(pools)} pool(s): {names}"
+        name=name,
+        status=Status.OK,
+        message=f"{len(names)} pool(s): {', '.join(sorted(names))}",
+    )
+
+
+def check_deployment_pools_exist() -> CheckResult:
+    """Pack-declared deployments reference work pools that exist on the server.
+
+    WARN (not FAIL) when a `register()` returns a deployment whose
+    `work_pool_name` is missing — many users iterate on `po deploy` without
+    `--apply`, so a hard failure would be too noisy. Skipped silently when
+    no deployment pins a pool.
+    """
+    name = "Deployment pools exist"
+    try:
+        loaded, _errors = _deployments.load_deployments()
+    except Exception as exc:
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message=f"load_deployments() crashed: {exc}",
+            remediation="see `Deployments load` check",
+        )
+    pinned = [
+        (item.pack, getattr(item.deployment, "work_pool_name", None) or "")
+        for item in loaded
+    ]
+    pinned = [(pack, pool) for pack, pool in pinned if pool]
+    if not pinned:
+        return CheckResult(
+            name=name, status=Status.OK, message="no pool-bound deployments"
+        )
+    if not os.environ.get("PREFECT_API_URL"):
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message="skipped — Prefect API unreachable",
+            remediation="fix the Prefect API reachable check first",
+        )
+    try:
+        existing = set(_read_pool_names())
+    except Exception as exc:
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message=f"read_work_pools() failed: {exc}",
+            remediation="check Prefect server health",
+        )
+    missing = sorted({pool for _pack, pool in pinned if pool not in existing})
+    if missing:
+        joined = ", ".join(missing)
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message=f"deployment(s) reference missing pool(s): {joined}",
+            remediation=(
+                f"prefect work-pool create {missing[0]} "
+                "--type process|kubernetes|docker"
+            ),
+        )
+    return CheckResult(
+        name=name,
+        status=Status.OK,
+        message=f"{len(pinned)} pinned deployment(s) — all pools exist",
     )
 
 
@@ -348,6 +421,7 @@ ALL_CHECKS: list[Callable[[], CheckResult]] = [
     check_bd_on_path,
     check_prefect_api_reachable,
     check_work_pool_exists,
+    check_deployment_pools_exist,
     check_formulas_load,
     check_deployments_load,
     check_po_list_nonempty,

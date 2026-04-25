@@ -121,6 +121,20 @@ authors: `po install --editable <path>`. See `po packs` for what's
 currently installed and `po update` if you change a pack's
 `pyproject.toml` entry points and need the metadata refreshed.
 
+## Containerized runs (k8s / docker)
+
+A `Dockerfile` + `docker-compose.yml` ship at the repo root. The image
+bundles `uv` + `bd` + `claude` + a configurable formula pack so the
+same artifact works as either a `prefect worker` or an interactive
+`po run` driver. See [`engdocs/work-pools.md`](engdocs/work-pools.md)
+for the full playbook (image build, k8s pool create, rig-state
+strategy, OAuth caveat). Quick local smoke:
+
+```bash
+mkdir -p rig && (cd rig && bd init)
+ISSUE_ID=demo-1 PO_BACKEND=stub ./scripts/smoke-compose.sh
+```
+
 ## Agent messaging (beads-as-mail)
 
 Mid-run handoff between roles (critic → builder, verifier → doer, …) is

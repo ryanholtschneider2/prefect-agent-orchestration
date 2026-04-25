@@ -1,0 +1,63 @@
+# Local-dev stack mirroring the k8s shape: a Prefect server, a worker, and
+# an interactive `client` profile. See engdocs/work-pools.md for the full
+# playbook (k8s pool create, image push, OAuth caveat).
+#
+# Usage:
+#   docker compose up -d prefect-server worker
+#   docker compose run --rm client po doctor
+#   ./scripts/smoke-compose.sh    # full smoke
+
+services:
+  prefect-server:
+    image: prefecthq/prefect:3-latest
+    command: ["prefect", "server", "start", "--host", "0.0.0.0"]
+    ports:
+      - "4200:4200"
+    environment:
+      PREFECT_UI_API_URL: http://127.0.0.1:4200/api
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4200/api/health').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: po-worker:dev
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PO_BACKEND: ${PO_BACKEND:-cli}
+    volumes:
+      # Bind a host directory as the rig. Defaults to ./rig — create it
+      # (with a .beads/) before running the smoke. For multi-tenant
+      # isolation, see engdocs/work-pools.md (sibling bead).
+      - ./rig:/rig
+      # Claude OAuth credentials — short-term mount for laptop dev only.
+      # Comment out for stub-only smoke (PO_BACKEND=stub).
+      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json:ro
+    command: ["prefect", "worker", "start", "--pool", "po"]
+
+  client:
+    # Interactive driver: `docker compose run --rm client po run …`
+    # Re-uses the worker image so they always share the same toolchain.
+    profiles: ["client"]
+    image: po-worker:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+    environment:
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PO_BACKEND: ${PO_BACKEND:-stub}
+    volumes:
+      - ./rig:/rig
+      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json:ro
+    entrypoint: ["po"]
+    command: ["doctor"]

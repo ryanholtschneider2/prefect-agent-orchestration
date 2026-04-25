@@ -202,6 +202,25 @@ fallback when you've explicitly asked for it).
 Issue IDs with dots (`4ja.1`) are sanitized to `4ja_1` in session
 names because tmux treats `.` as a pane separator.
 
+### Containerized runs (compose / k8s)
+
+A multi-stage `Dockerfile` + `docker-compose.yml` ship at the repo root
+for running PO against a non-`process` work pool. Tmux is intentionally
+absent from the image (auto-fall-back to `ClaudeCliBackend`); the image
+sets `ENV PO_BACKEND=cli` so the choice is loud. `engdocs/work-pools.md`
+has the k8s playbook and the rig-state decision (bind-mount/PVC now,
+ephemeral clone+push deferred until git remote + `bd` Dolt server-mode
+exist). One-line local smoke:
+
+```bash
+mkdir -p rig && (cd rig && bd init)
+ISSUE_ID=demo-1 PO_BACKEND=stub ./scripts/smoke-compose.sh
+```
+
+`po doctor` warns when a pack-declared deployment pins a `work_pool_name`
+that isn't on the server — see `check_deployment_pools_exist` in
+`prefect_orchestration/doctor.py`.
+
 ### Concurrency (per-role caps)
 
 ```bash

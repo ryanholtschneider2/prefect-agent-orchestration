@@ -102,6 +102,75 @@ def test_work_pool_skipped_when_api_unset(monkeypatch):
     assert "skipped" in r.message.lower()
 
 
+# -- deployment pools exist --------------------------------------------
+
+
+@dataclass
+class _FakeDep:
+    name: str = "demo"
+    work_pool_name: str | None = None
+
+
+def _fake_loader(deps: list[_FakeDep]):
+    def _load() -> tuple[list[Any], list[Any]]:
+        return (
+            [deployments_mod.LoadedDeployment(pack="p", deployment=d) for d in deps],
+            [],
+        )
+
+    return _load
+
+
+def test_deployment_pools_no_pinned_deployments(monkeypatch):
+    monkeypatch.setattr(
+        doctor_mod._deployments,
+        "load_deployments",
+        _fake_loader([_FakeDep(work_pool_name=None)]),
+    )
+    r = doctor_mod.check_deployment_pools_exist()
+    assert r.status is Status.OK
+    assert "no pool-bound deployments" in r.message
+
+
+def test_deployment_pools_warns_on_missing_pool(monkeypatch):
+    monkeypatch.setenv("PREFECT_API_URL", "http://test/api")
+    monkeypatch.setattr(
+        doctor_mod._deployments,
+        "load_deployments",
+        _fake_loader([_FakeDep(work_pool_name="ghost")]),
+    )
+    monkeypatch.setattr(doctor_mod, "_read_pool_names", lambda: ["po"])
+    r = doctor_mod.check_deployment_pools_exist()
+    assert r.status is Status.WARN
+    assert "ghost" in r.message
+    assert "work-pool create" in r.remediation
+
+
+def test_deployment_pools_ok_when_pool_exists(monkeypatch):
+    monkeypatch.setenv("PREFECT_API_URL", "http://test/api")
+    monkeypatch.setattr(
+        doctor_mod._deployments,
+        "load_deployments",
+        _fake_loader([_FakeDep(work_pool_name="po-k8s")]),
+    )
+    monkeypatch.setattr(doctor_mod, "_read_pool_names", lambda: ["po", "po-k8s"])
+    r = doctor_mod.check_deployment_pools_exist()
+    assert r.status is Status.OK
+    assert "1 pinned deployment" in r.message
+
+
+def test_deployment_pools_skipped_when_api_unset(monkeypatch):
+    monkeypatch.delenv("PREFECT_API_URL", raising=False)
+    monkeypatch.setattr(
+        doctor_mod._deployments,
+        "load_deployments",
+        _fake_loader([_FakeDep(work_pool_name="po-k8s")]),
+    )
+    r = doctor_mod.check_deployment_pools_exist()
+    assert r.status is Status.WARN
+    assert "skipped" in r.message.lower()
+
+
 # -- formulas / deployments --------------------------------------------
 
 
