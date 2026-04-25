@@ -1,0 +1,86 @@
+Thanks for installing {{ .Chart.Name }}-{{ .Chart.Version }} (app: {{ .Chart.AppVersion }}).
+
+Release: {{ .Release.Name }}   Namespace: {{ .Release.Namespace }}
+
+Components installed
+--------------------
+{{- if .Values.prefectServer.enabled }}
+  • prefect-server     Deployment + Service ({{ .Values.prefectServer.service.type }}:{{ .Values.prefectServer.service.port }})
+{{- end }}
+  • po-worker          Deployment ({{ .Values.worker.replicaCount }} replica{{ if gt (int .Values.worker.replicaCount) 1 }}s{{ end }}) -> pool '{{ .Values.pool.name }}' ({{ .Values.pool.type }})
+{{- if .Values.poolRegister.enabled }}
+  • pool-register      pre-install/pre-upgrade Job (idempotent)
+{{- end }}
+{{- if and .Values.rig.create (not .Values.rig.existingClaim) }}
+  • rig PVC            {{ include "po.rigClaimName" . }} ({{ .Values.rig.accessMode }}, {{ .Values.rig.size }}) at {{ .Values.rig.mountPath }}
+{{- end }}
+{{- if .Values.ingress.enabled }}
+  • ingress            {{- range .Values.ingress.hosts }} {{ .host }}{{- end }}
+{{- end }}
+
+Auth
+----
+{{- if eq .Values.auth.mode "apikey" }}
+  Mode: ANTHROPIC_API_KEY (Secret '{{ .Values.auth.apikey.secretName }}', key '{{ .Values.auth.apikey.secretKey }}')
+{{- if not .Values.auth.apikey.createSecret }}
+
+  The chart did NOT create the Secret. Create it before the worker
+  pod can start:
+
+    kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.auth.apikey.secretName }} \
+        --from-literal={{ .Values.auth.apikey.secretKey }}="$ANTHROPIC_API_KEY"
+{{- end }}
+{{- else }}
+  Mode: CLAUDE_CREDENTIALS (Secret '{{ .Values.auth.oauth.secretName }}', key '{{ .Values.auth.oauth.secretKey }}')
+{{- if not .Values.auth.oauth.createSecret }}
+
+  The chart did NOT create the Secret. Create it before the worker
+  pod can start:
+
+    kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.auth.oauth.secretName }} \
+        --from-file={{ .Values.auth.oauth.secretKey }}="$HOME/.claude/.credentials.json"
+{{- end }}
+{{- end }}
+
+{{- if and (eq .Values.auth.mode "oauth") .Values.auth.oauth.persistence.enabled }}
+
+  OAuth-refresh persistence is ENABLED — claude-home PVC mounted at
+  /home/coder/.claude. Note RWO storage pins the worker to one node.
+{{- end }}
+
+Sanity checks
+-------------
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "po.workerName" . }}
+{{- if .Values.prefectServer.enabled }}
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "po.serverName" . }}
+{{- end }}
+  helm -n {{ .Release.Namespace }} test {{ .Release.Name }}      # exercises pool-register
+
+Reach the Prefect UI
+--------------------
+{{- if and .Values.prefectServer.enabled (not .Values.ingress.enabled) }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "po.serverName" . }} 4200:{{ .Values.prefectServer.service.port }}
+  open http://127.0.0.1:4200
+{{- else if and .Values.prefectServer.enabled .Values.ingress.enabled }}
+  Ingress hosts:
+  {{- range .Values.ingress.hosts }}
+    https://{{ .host }}
+  {{- end }}
+{{- else }}
+  prefectServer is disabled — point the worker at an external Prefect API
+  via worker.extraEnv (PREFECT_API_URL).
+{{- end }}
+
+Trigger a flow run
+------------------
+  prefect deployment run <flow>/<deployment> \
+      --param issue_id=<id> --param rig=<rig> --param rig_path={{ .Values.rig.mountPath }}
+
+{{- if eq (int .Values.worker.replicaCount) 1 }}
+{{- else if eq .Values.rig.accessMode "ReadWriteOnce" }}
+
+  ⚠️  worker.replicaCount={{ .Values.worker.replicaCount }} but rig.accessMode=ReadWriteOnce.
+      Multiple worker pods cannot mount the rig PVC simultaneously.
+      Either set rig.accessMode=ReadWriteMany (and a matching storageClass)
+      or scale the worker to 1.
+{{- end }}

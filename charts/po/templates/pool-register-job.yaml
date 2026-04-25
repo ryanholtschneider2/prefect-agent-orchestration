@@ -1,0 +1,69 @@
+{{- if .Values.poolRegister.enabled }}
+{{- $apiUrl := include "po.prefectApiUrl" . -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "po.poolRegisterName" . }}
+  labels:
+    {{- include "po.labels" . | nindent 4 }}
+    app.kubernetes.io/component: pool-register
+  annotations:
+    # Run before the worker Deployment so the pool exists by the time the
+    # worker polls. Hook-weight -5 keeps it ahead of any other pre-install
+    # hooks the chart might gain later. before-hook-creation deletes the
+    # previous Job on upgrade so the new one runs cleanly.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.poolRegister.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.poolRegister.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "po.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: pool-register
+    spec:
+      restartPolicy: Never
+      {{- with .Values.worker.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: pool-register
+          image: {{ include "po.poolRegisterImage" . }}
+          imagePullPolicy: {{ .Values.poolRegister.image.pullPolicy }}
+          env:
+            {{- if $apiUrl }}
+            - name: PREFECT_API_URL
+              value: {{ $apiUrl | quote }}
+            {{- end }}
+            - name: POOL_NAME
+              value: {{ .Values.pool.name | quote }}
+            - name: POOL_TYPE
+              value: {{ .Values.pool.type | quote }}
+          # Idempotent: succeed if the pool already exists, create
+          # otherwise. `prefect work-pool inspect` exits non-zero when
+          # the pool is missing — which we use as the "create" signal.
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              echo "Waiting for Prefect API at $PREFECT_API_URL ..."
+              for i in $(seq 1 60); do
+                if prefect server services list >/dev/null 2>&1 \
+                   || prefect work-pool ls >/dev/null 2>&1; then
+                  echo "Prefect API reachable."
+                  break
+                fi
+                sleep 2
+              done
+              if prefect work-pool inspect "$POOL_NAME" >/dev/null 2>&1; then
+                echo "Work pool '$POOL_NAME' already exists — leaving as-is."
+                exit 0
+              fi
+              echo "Creating work pool '$POOL_NAME' (type=$POOL_TYPE) ..."
+              prefect work-pool create "$POOL_NAME" --type "$POOL_TYPE"
+          resources:
+            {{- toYaml .Values.poolRegister.resources | nindent 12 }}
+{{- end }}

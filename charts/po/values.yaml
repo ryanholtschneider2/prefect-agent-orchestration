@@ -1,0 +1,193 @@
+# Default values for the `po` chart. See engdocs/work-pools.md ("Helm
+# install") for the full walkthrough.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Common pod metadata applied to all PO components (worker, server,
+# pool-register Job, helm test). Pack-specific labels still flow through
+# Prefect's base-job-template at run time.
+commonLabels: {}
+commonAnnotations: {}
+
+# ---------------------------------------------------------------------------
+# Prefect work-pool name. The pool-register hook Job creates this if it
+# doesn't already exist; the worker Deployment polls it.
+# ---------------------------------------------------------------------------
+pool:
+  name: po
+  type: process
+
+# ---------------------------------------------------------------------------
+# po-worker Deployment. Mirrors k8s/po-worker-deployment.yaml.
+#
+# replicaCount must be 1 when `rig.accessMode=ReadWriteOnce` (the default
+# kind/minikube path); raise it only after switching to RWX storage.
+# ---------------------------------------------------------------------------
+worker:
+  replicaCount: 1
+  image:
+    # Override per-pack: e.g. `<registry>/po-worker:<pack>-<tag>`. The
+    # dev default mirrors docker-compose.yml.
+    repository: po-worker
+    tag: dev
+    pullPolicy: IfNotPresent
+  imagePullSecrets: []
+  serviceAccount:
+    # When create=true, render ServiceAccount + Role + RoleBinding so
+    # Prefect can launch flow-run Jobs. (Only relevant for kubernetes-type
+    # pools, but harmless on process pools — keeps the chart re-usable.)
+    create: true
+    name: ""
+    annotations: {}
+  podAnnotations: {}
+  podLabels: {}
+  podSecurityContext: {}
+  securityContext: {}
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  # Extra env mounted into the worker. K=V pairs added verbatim.
+  extraEnv: []
+  # Forces the backend selector. Process pool + container = cli (no TTY).
+  backend: cli
+
+# ---------------------------------------------------------------------------
+# Prefect server. Single-replica Deployment using the upstream image.
+# Persistence (SQLite under /root/.prefect) is opt-in — kind/minikube
+# smoke runs fine with an ephemeral pod.
+# ---------------------------------------------------------------------------
+prefectServer:
+  enabled: true
+  image:
+    repository: prefecthq/prefect
+    tag: 3-latest
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+  service:
+    type: ClusterIP
+    port: 4200
+  persistence:
+    # Off by default — fine for kind/minikube smoke; production should
+    # set true and pin a storageClass.
+    enabled: false
+    accessMode: ReadWriteOnce
+    size: 8Gi
+    storageClass: ""
+
+# ---------------------------------------------------------------------------
+# Optional Ingress for the Prefect UI. Off by default. Enabling it does
+# NOT wire cert-manager — bring your own annotations + tls block.
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: prefect.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: prefect-tls
+  #    hosts:
+  #      - prefect.example.com
+
+# ---------------------------------------------------------------------------
+# Shared rig PVC mounted at /rig. RWO + 20Gi is the kind/minikube default
+# (their bundled `standard` storageclass is RWO-only). Set RWX for
+# multi-replica workers; see engdocs/work-pools.md "Rig-state strategy".
+# ---------------------------------------------------------------------------
+rig:
+  create: true
+  existingClaim: ""
+  accessMode: ReadWriteOnce
+  size: 20Gi
+  storageClass: ""
+  mountPath: /rig
+
+# ---------------------------------------------------------------------------
+# Auth: which Claude credential mode to use, and whether the chart should
+# render the Secret itself (default: false — operators create Secrets
+# out-of-band so values.yaml never carries plaintext).
+# ---------------------------------------------------------------------------
+auth:
+  # apikey | oauth
+  mode: apikey
+
+  apikey:
+    # Existing Secret name. When `createSecret=true`, the chart renders it
+    # using `apiKey` below. Leave both blank to require operators to
+    # create it via `kubectl create secret generic`.
+    secretName: anthropic-api-key
+    secretKey: ANTHROPIC_API_KEY
+    createSecret: false
+    apiKey: ""
+
+  oauth:
+    secretName: claude-oauth
+    secretKey: credentials.json
+    createSecret: false
+    # Whole-file blob of ~/.claude/.credentials.json. Only honoured when
+    # createSecret=true. Prefer out-of-band creation:
+    #   kubectl create secret generic claude-oauth \
+    #     --from-file=credentials.json="$HOME/.claude/.credentials.json"
+    credentialsJson: ""
+    # Opt-in PVC mounted at /home/coder/.claude so the Claude CLI's
+    # in-place token refresh survives pod restarts (tyf.3).
+    persistence:
+      enabled: false
+      accessMode: ReadWriteOnce
+      size: 1Gi
+      storageClass: ""
+
+# ---------------------------------------------------------------------------
+# claude-context-overrides ConfigMap (tyf.2). The real overlay flow is
+# `scripts/sync-claude-context.sh --emit-configmap …` + `kubectl apply`.
+# This chart only references the ConfigMap as an `optional: true` volume.
+# Set `create: true` for one-shot inline overrides via values.
+# ---------------------------------------------------------------------------
+claudeContextOverrides:
+  name: claude-context-overrides
+  create: false
+  data: {}
+  #  CLAUDE.md: |
+  #    # inline override
+  #  settings.json: |
+  #    {"theme": "dark"}
+
+# ---------------------------------------------------------------------------
+# pool-register Helm hook Job. Runs once on pre-install / pre-upgrade to
+# create the work pool if missing. Idempotent; succeeds when the pool
+# already exists.
+# ---------------------------------------------------------------------------
+poolRegister:
+  enabled: true
+  # Image used for the Job — defaults to the worker image so `prefect`
+  # CLI is on PATH without an extra dep.
+  image:
+    repository: ""   # empty = inherit worker.image.repository
+    tag: ""          # empty = inherit worker.image.tag
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600

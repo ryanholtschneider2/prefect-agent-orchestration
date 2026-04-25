@@ -1,0 +1,18 @@
+{{- if and .Values.rig.create (not .Values.rig.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "po.rigClaimName" . }}
+  labels:
+    {{- include "po.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rig
+spec:
+  accessModes:
+    - {{ .Values.rig.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.rig.size | quote }}
+  {{- with .Values.rig.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

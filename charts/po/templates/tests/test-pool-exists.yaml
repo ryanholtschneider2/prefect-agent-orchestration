@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "po.fullname" . }}-test-pool
+  labels:
+    {{- include "po.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: pool-check
+      image: {{ include "po.poolRegisterImage" . }}
+      imagePullPolicy: {{ .Values.poolRegister.image.pullPolicy }}
+      env:
+        {{- with (include "po.prefectApiUrl" .) }}
+        - name: PREFECT_API_URL
+          value: {{ . | quote }}
+        {{- end }}
+        - name: POOL_NAME
+          value: {{ .Values.pool.name | quote }}
+      command:
+        - /bin/sh
+        - -ec
+        - |
+          prefect work-pool inspect "$POOL_NAME"

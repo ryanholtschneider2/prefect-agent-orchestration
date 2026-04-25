@@ -1,0 +1,115 @@
+{{- $apiUrl := include "po.prefectApiUrl" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "po.workerName" . }}
+  labels:
+    {{- include "po.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "po.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "po.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+        {{- with .Values.worker.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.worker.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "po.serviceAccountName" . }}
+      {{- with .Values.worker.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ include "po.workerImage" . }}
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          args: ["prefect", "worker", "start", "--pool", {{ .Values.pool.name | quote }}]
+          {{- with .Values.worker.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            {{- if $apiUrl }}
+            - name: PREFECT_API_URL
+              value: {{ $apiUrl | quote }}
+            {{- end }}
+            - name: PO_BACKEND
+              value: {{ .Values.worker.backend | quote }}
+            {{- if eq .Values.auth.mode "apikey" }}
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.apikey.secretName }}
+                  key: {{ .Values.auth.apikey.secretKey }}
+            {{- else if eq .Values.auth.mode "oauth" }}
+            - name: CLAUDE_CREDENTIALS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.oauth.secretName }}
+                  key: {{ .Values.auth.oauth.secretKey }}
+            {{- end }}
+            {{- with .Values.worker.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: rig
+              mountPath: {{ .Values.rig.mountPath | quote }}
+            # ConfigMap-driven override for the small subset of ~/.claude
+            # (CLAUDE.md, settings.json, commands/) — see tyf.2 +
+            # k8s/claude-context-overrides.example.yaml. optional:true
+            # below means missing CM is fine.
+            - name: claude-context-overrides
+              mountPath: /home/coder/.claude-overrides
+              readOnly: true
+            {{- if and (eq .Values.auth.mode "oauth") .Values.auth.oauth.persistence.enabled }}
+            # OAuth-persistence opt-in (tyf.3 option a) — survives Claude
+            # CLI in-place token refreshes across pod restarts.
+            - name: claude-home
+              mountPath: /home/coder/.claude
+            {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: rig
+          persistentVolumeClaim:
+            claimName: {{ include "po.rigClaimName" . }}
+        - name: claude-context-overrides
+          configMap:
+            name: {{ .Values.claudeContextOverrides.name }}
+            optional: true
+        {{- if and (eq .Values.auth.mode "oauth") .Values.auth.oauth.persistence.enabled }}
+        - name: claude-home
+          persistentVolumeClaim:
+            claimName: {{ include "po.claudeHomePvcName" . }}
+        {{- end }}

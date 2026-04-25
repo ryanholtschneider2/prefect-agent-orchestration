@@ -1,0 +1,69 @@
+{{- if .Values.prefectServer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "po.serverName" . }}
+  labels:
+    {{- include "po.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prefect-server
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: 1
+  strategy:
+    # Recreate avoids two pods competing for the same SQLite PVC when
+    # persistence is enabled.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "po.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: prefect-server
+  template:
+    metadata:
+      labels:
+        {{- include "po.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: prefect-server
+    spec:
+      containers:
+        - name: prefect-server
+          image: {{ include "po.serverImage" . }}
+          imagePullPolicy: {{ .Values.prefectServer.image.pullPolicy }}
+          command: ["prefect", "server", "start", "--host", "0.0.0.0"]
+          ports:
+            - name: api
+              containerPort: 4200
+              protocol: TCP
+          env:
+            # Make the in-cluster ClusterIP the canonical UI base too —
+            # users who port-forward to localhost still get a working UI
+            # because Prefect 3 rewrites relative URLs.
+            - name: PREFECT_UI_API_URL
+              value: {{ printf "http://%s:%d/api" (include "po.serverName" .) (int .Values.prefectServer.service.port) | quote }}
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: api
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: api
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.prefectServer.resources | nindent 12 }}
+          {{- if .Values.prefectServer.persistence.enabled }}
+          volumeMounts:
+            - name: prefect-home
+              mountPath: /root/.prefect
+          {{- end }}
+      {{- if .Values.prefectServer.persistence.enabled }}
+      volumes:
+        - name: prefect-home
+          persistentVolumeClaim:
+            claimName: {{ include "po.serverPvcName" . }}
+      {{- end }}
+{{- end }}

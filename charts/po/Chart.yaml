@@ -1,0 +1,38 @@
+apiVersion: v2
+name: po
+description: |
+  Prefect Orchestration (PO) — packages a Prefect server, a po-worker
+  Deployment polling a process-type work pool, a one-shot pool-register
+  Job (Helm hook), the rig PVC, and Claude auth Secrets. Optional Service
+  + Ingress for the Prefect UI.
+
+  Predecessor work in beads `prefect-orchestration-tyf.1` (CLAUDE_CREDENTIALS
+  -> ~/.claude/.credentials.json bootstrap) and `prefect-orchestration-tyf.2`
+  (claude-context-overrides ConfigMap overlay) is already shipped — this
+  chart consumes them. See `engdocs/work-pools.md` for the playbook.
+type: application
+
+# Chart version is independent of appVersion; bump on chart-only changes
+# (template fixes, values knobs) without touching core code.
+version: 0.1.0
+
+# Tracks the `prefect-orchestration` core package version (manual sync —
+# this repo has no git remote, so no release automation).
+appVersion: "0.2.0"
+
+kubeVersion: ">=1.27.0-0"
+
+keywords:
+  - prefect
+  - orchestration
+  - claude
+  - agents
+  - beads
+
+home: https://github.com/nanocorp/prefect-orchestration
+sources:
+  - https://github.com/nanocorp/prefect-orchestration
+
+maintainers:
+  - name: Ryan
+    email: ryan@jataware.com

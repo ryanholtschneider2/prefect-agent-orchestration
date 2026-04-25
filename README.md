@@ -128,6 +128,18 @@ non-root `coder` user) builds `po-worker:base`; `Dockerfile.pack`
 overlays a formula pack. `docker-compose.yml` runs a Prefect server +
 worker locally; `k8s/*.yaml` + `k8s/po-base-job-template.json` cover
 the cluster path (PVC, Secret, Deployment, base-job-template).
+
+For a packaged install — prefect-server + po-worker + pool-register
+hook + rig PVC + auth Secret references in one chart — see
+[`charts/po/`](charts/po/) and the "Helm install" section in
+[`engdocs/work-pools.md`](engdocs/work-pools.md). Quick start:
+
+```bash
+helm install po ./charts/po -n po --create-namespace \
+    --set worker.image.repository=<registry>/po-worker \
+    --set worker.image.tag=<tag>
+```
+
 ### Auth modes
 
 Workers support two auth paths; the entrypoint picks one at startup

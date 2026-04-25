@@ -1,0 +1,20 @@
+{{- if and (eq .Values.auth.mode "oauth") .Values.auth.oauth.persistence.enabled }}
+# OAuth-persistence PVC — see engdocs/auth.md "Opt-in persistence"
+# and prefect-orchestration-tyf.3.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "po.claudeHomePvcName" . }}
+  labels:
+    {{- include "po.labels" . | nindent 4 }}
+    app.kubernetes.io/component: claude-home
+spec:
+  accessModes:
+    - {{ .Values.auth.oauth.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.auth.oauth.persistence.size | quote }}
+  {{- with .Values.auth.oauth.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

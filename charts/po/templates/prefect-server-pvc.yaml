@@ -1,0 +1,18 @@
+{{- if and .Values.prefectServer.enabled .Values.prefectServer.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "po.serverPvcName" . }}
+  labels:
+    {{- include "po.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prefect-server
+spec:
+  accessModes:
+    - {{ .Values.prefectServer.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.prefectServer.persistence.size | quote }}
+  {{- with .Values.prefectServer.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

@@ -1,0 +1,13 @@
+{{- if .Values.claudeContextOverrides.create }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.claudeContextOverrides.name }}
+  labels:
+    {{- include "po.labels" . | nindent 4 }}
+    app.kubernetes.io/component: claude-context
+data:
+  {{- with .Values.claudeContextOverrides.data }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+{{- end }}

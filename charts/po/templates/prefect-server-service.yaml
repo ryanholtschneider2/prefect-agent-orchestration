@@ -1,0 +1,19 @@
+{{- if .Values.prefectServer.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "po.serverName" . }}
+  labels:
+    {{- include "po.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prefect-server
+spec:
+  type: {{ .Values.prefectServer.service.type }}
+  selector:
+    {{- include "po.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: prefect-server
+  ports:
+    - name: api
+      port: {{ .Values.prefectServer.service.port }}
+      targetPort: api
+      protocol: TCP
+{{- end }}

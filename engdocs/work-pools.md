@@ -151,6 +151,102 @@ kubectl get jobs -l app=po-flow
 kubectl logs -f job/<name>
 ```
 
+## Helm install
+
+For repeatable cluster installs, `charts/po/` packages everything above
+(prefect-server, po-worker Deployment, pool-register hook Job, rig PVC,
+Claude auth Secret references, optional Ingress) into a single chart.
+
+```bash
+# 1. Build + push the worker image (same as the imperative path)
+docker build -t <registry>/po-worker:<tag> \
+    --build-context pack=../software-dev/po-formulas .
+docker push <registry>/po-worker:<tag>
+
+# 2. Pre-create the auth Secret out-of-band (chart never embeds it)
+kubectl create namespace po
+kubectl -n po create secret generic anthropic-api-key \
+    --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+
+# 3. Install
+helm install po ./charts/po -n po \
+    --set worker.image.repository=<registry>/po-worker \
+    --set worker.image.tag=<tag>
+
+# 4. Smoke (idempotent; exercises the pre-install pool-register hook)
+helm test po -n po
+kubectl -n po rollout status deployment/po-worker
+kubectl -n po logs -f deployment/po-worker
+```
+
+The chart's `pre-install` / `pre-upgrade` Helm hook runs a one-shot Job
+that creates the work pool if missing, so the worker never races
+pool registration. It is idempotent — re-installing or upgrading is
+safe.
+
+### Selecting OAuth instead of API key
+
+```bash
+kubectl -n po create secret generic claude-oauth \
+    --from-file=credentials.json="$HOME/.claude/.credentials.json"
+
+helm install po ./charts/po -n po \
+    --set auth.mode=oauth \
+    --set auth.oauth.persistence.enabled=true   # opt-in: survive pod restarts
+```
+
+`auth.oauth.persistence.enabled=true` provisions an RWO PVC mounted at
+`/home/coder/.claude` so the Claude CLI's in-place token refreshes
+survive pod restarts (see [`auth.md`](auth.md) "Opt-in persistence",
+beads `prefect-orchestration-tyf.3`). Note the worker stays at one
+replica because RWO can only be mounted on a single node.
+
+### Storage: RWX vs RWO
+
+The chart defaults to `rig.accessMode=ReadWriteOnce` + 20 GiB so kind /
+minikube installs work out of the box (their bundled `standard`
+storageClass is RWO-only). For multi-replica workers on EKS / GKE /
+bare-metal:
+
+```bash
+helm install po ./charts/po -n po \
+    --set rig.accessMode=ReadWriteMany \
+    --set rig.storageClass=efs-sc \
+    --set worker.replicaCount=3
+```
+
+`po-rig.accessMode=ReadWriteOnce` with `worker.replicaCount>1` will
+schedule pods to a single node (or fail) — `NOTES.txt` warns on this
+combination after install.
+
+### Optional Prefect-UI Ingress
+
+Off by default. Enable per-cluster:
+
+```bash
+helm install po ./charts/po -n po \
+    --set ingress.enabled=true \
+    --set ingress.className=nginx \
+    --set 'ingress.hosts[0].host=prefect.example.com' \
+    --set 'ingress.hosts[0].paths[0].path=/' \
+    --set 'ingress.hosts[0].paths[0].pathType=Prefix'
+```
+
+cert-manager wiring is intentionally not bundled — pass annotations +
+`tls:` via values for your cluster's setup.
+
+### Ops references
+
+- `helm lint charts/po` — local validation (CI runs this via
+  `tests/test_helm_chart.py`)
+- `helm template po ./charts/po | kubectl apply --dry-run=server -f -` —
+  cluster-side dry run before a real install
+- `kubectl -n po describe job/po-pool-register` — debug the
+  pre-install hook if `helm install` hangs
+- `kubectl -n po get cm claude-context-overrides` — verify the
+  optional `~/.claude` overlay (see `scripts/sync-claude-context.sh`,
+  beads `prefect-orchestration-tyf.2`)
+
 ## Auth: API key vs OAuth
 
 See [`engdocs/auth.md`](auth.md) for the full decision matrix
