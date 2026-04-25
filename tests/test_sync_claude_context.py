@@ -48,7 +48,9 @@ def _build_fixture_src(tmp_path: Path) -> Path:
     (src / "commands" / "review.md").write_text("review command\n")
 
     # Sensitive top-level files/dirs — must NOT survive.
-    (src / ".credentials.json").write_text('{"refresh_token":"sk-FAKE-CRED-12345678901234567890"}')
+    (src / ".credentials.json").write_text(
+        '{"refresh_token":"sk-FAKE-CRED-12345678901234567890"}'
+    )
     (src / "projects").mkdir()
     (src / "projects" / "history.jsonl").write_text("session log\n")
     (src / "history.jsonl").write_text("global history\n")
@@ -70,7 +72,10 @@ def _build_fixture_src(tmp_path: Path) -> Path:
                 "model": "opus",
                 "hooks": {"pre": "/Users/x/hook.sh"},
                 "mcpServers": {
-                    "rube": {"url": "https://x", "token": "sk-FAKE-MCP-12345678901234567890"}
+                    "rube": {
+                        "url": "https://x",
+                        "token": "sk-FAKE-MCP-12345678901234567890",
+                    }
                 },
                 "anthropicApiKey": "sk-FAKE-MCP-12345678901234567890",
                 "secretToken": "ghp_FAKE0000000000000000000000000000",
