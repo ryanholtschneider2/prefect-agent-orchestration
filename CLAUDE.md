@@ -365,6 +365,41 @@ change — entry-point metadata is written at install time, not on
 code reload, and `po update` refreshes it for every installed pack.
 `po packs` lists what's installed and what each contributes.
 
+### Pack-contributed `po doctor` checks (`po.doctor_checks`)
+
+Packs can ship their own health checks for `po doctor` via the
+`po.doctor_checks` entry-point group. Each entry resolves to a zero-arg
+callable returning a `prefect_orchestration.doctor.DoctorCheck`:
+
+```python
+# po_formulas/checks.py
+from prefect_orchestration.doctor import DoctorCheck
+
+def claude_cli_present() -> DoctorCheck:
+    return DoctorCheck(
+        name="claude CLI present",
+        status="green",   # green | yellow | red
+        message="claude 0.x.y",
+        hint="install Claude Code if absent",  # printed under non-green rows
+    )
+```
+
+```toml
+# pyproject.toml
+[project.entry-points."po.doctor_checks"]
+claude-cli-present = "po_formulas.checks:claude_cli_present"
+```
+
+`po doctor` runs core checks first (bd, Prefect server, pools, entry
+points, …), then each pack's checks in deterministic alphabetical
+order by distribution name, into one unified table with a `SOURCE`
+column showing pack provenance. Each pack check is wrapped in a 5-second
+soft timeout; on timeout the row is yellow (warn), not red. Any red row
+exits 1.
+
+Run `po update` after registering a new check so `importlib.metadata`
+sees the new entry-point.
+
 ## Related beads (read before touching core or prompts)
 
 - `64y` TmuxClaudeBackend — lurkable sessions (shipped)

@@ -411,10 +411,12 @@ def artifacts(
 def doctor() -> None:
     """Read-only health check of the full PO wiring.
 
-    Checks: `bd` CLI, Prefect server reachability, at least one work
-    pool, formula + deployment entry points load, uv-tool install
-    freshness, and LOGFIRE telemetry token. Exits 1 if any critical
-    check fails; warnings never affect the exit code.
+    Runs core checks (`bd` CLI, Prefect server reachability, at least one
+    work pool, formula + deployment entry points load, uv-tool install
+    freshness, LOGFIRE telemetry token), then any checks contributed by
+    installed packs via the `po.doctor_checks` entry-point group. Each
+    pack check is wrapped in a 5s soft timeout (yellow on timeout). Exits
+    1 if any check is red; warnings never affect the exit code.
     """
     report = _doctor.run_doctor()
     typer.echo(_doctor.render_table(report))

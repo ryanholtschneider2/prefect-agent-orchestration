@@ -14,13 +14,14 @@ GETs, env reads, and `importlib.metadata` introspection.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from importlib.metadata import entry_points
-from typing import Callable
+from typing import Callable, Literal
 
 from prefect_orchestration import deployments as _deployments
 
@@ -37,6 +38,30 @@ class CheckResult:
     status: Status
     message: str
     remediation: str = ""
+    source: str = "core"
+
+
+# Pack-facing dataclass — what `po.doctor_checks` callables return.
+# Kept structurally distinct from `CheckResult` (the renderer's internal
+# type) so packs depend only on this small surface.
+DoctorStatus = Literal["green", "yellow", "red"]
+
+
+@dataclass
+class DoctorCheck:
+    name: str
+    status: DoctorStatus
+    message: str
+    hint: str = ""
+
+
+PACK_CHECK_TIMEOUT_S: float = 5.0
+
+_DOCTOR_STATUS_TO_INTERNAL: dict[str, Status] = {
+    "green": Status.OK,
+    "yellow": Status.WARN,
+    "red": Status.FAIL,
+}
 
 
 # -- individual checks --------------------------------------------------
@@ -331,6 +356,105 @@ ALL_CHECKS: list[Callable[[], CheckResult]] = [
 ]
 
 
+# -- pack-contributed doctor checks -------------------------------------
+
+
+def _iter_doctor_check_eps() -> list:
+    """Return `po.doctor_checks` entry points sorted by distribution name.
+
+    Install order is unstable across Python versions/uv-tool layouts; sorting
+    by `(dist.name, ep.name)` gives a deterministic table without anyone
+    relying on `pip`-internal ordering.
+    """
+    try:
+        eps = list(entry_points(group="po.doctor_checks"))
+    except TypeError:
+        eps = list(entry_points().get("po.doctor_checks", []))  # type: ignore[attr-defined]
+
+    def _key(ep: object) -> tuple[str, str]:
+        dist = getattr(ep, "dist", None)
+        dist_name = getattr(dist, "name", "") or ""
+        return (dist_name, getattr(ep, "name", ""))
+
+    return sorted(eps, key=_key)
+
+
+def _ep_source(ep: object) -> str:
+    dist = getattr(ep, "dist", None)
+    return getattr(dist, "name", "") or "pack"
+
+
+def _run_pack_check(
+    ep: object, timeout: float = PACK_CHECK_TIMEOUT_S
+) -> CheckResult:
+    """Load + invoke a pack check under a soft timeout.
+
+    Timeout is enforced via a single-shot thread; if the check truly hangs
+    the thread is orphaned for the lifetime of this Python process. That's
+    acceptable for a CLI: `po doctor` prints and exits, taking the orphan
+    with it. We never re-raise from inside this helper.
+    """
+    name = getattr(ep, "name", "unknown")
+    source = _ep_source(ep)
+    try:
+        fn = ep.load()
+    except Exception as exc:  # pragma: no cover - covered indirectly
+        return CheckResult(
+            name=name,
+            status=Status.FAIL,
+            message=f"failed to load pack check: {exc}",
+            remediation=f"reinstall or fix pack {source}",
+            source=source,
+        )
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(fn)
+            try:
+                result = future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError:
+                return CheckResult(
+                    name=name,
+                    status=Status.WARN,
+                    message=f"check timed out after {timeout:g}s",
+                    remediation="optimize the check or raise the timeout",
+                    source=source,
+                )
+    except Exception as exc:
+        return CheckResult(
+            name=name,
+            status=Status.FAIL,
+            message=f"check raised: {exc}",
+            remediation=f"fix the check in pack {source}",
+            source=source,
+        )
+    if not isinstance(result, DoctorCheck):
+        return CheckResult(
+            name=name,
+            status=Status.FAIL,
+            message=(
+                f"check returned {type(result).__name__}, expected DoctorCheck"
+            ),
+            remediation=f"update pack {source} to return a DoctorCheck",
+            source=source,
+        )
+    internal_status = _DOCTOR_STATUS_TO_INTERNAL.get(result.status)
+    if internal_status is None:
+        return CheckResult(
+            name=result.name or name,
+            status=Status.FAIL,
+            message=f"invalid status {result.status!r} (want green|yellow|red)",
+            remediation=f"fix the check in pack {source}",
+            source=source,
+        )
+    return CheckResult(
+        name=result.name or name,
+        status=internal_status,
+        message=result.message,
+        remediation=result.hint,
+        source=source,
+    )
+
+
 @dataclass
 class DoctorReport:
     results: list[CheckResult] = field(default_factory=list)
@@ -350,8 +474,17 @@ class DoctorReport:
 
 def run_doctor(
     checks: list[Callable[[], CheckResult]] | None = None,
+    *,
+    include_pack_checks: bool = True,
+    pack_check_timeout: float = PACK_CHECK_TIMEOUT_S,
 ) -> DoctorReport:
-    """Run every check, isolating per-check exceptions as FAILs."""
+    """Run core checks, then pack-contributed checks, into one report.
+
+    Per-check exceptions are isolated as FAILs. Pack checks are wrapped
+    with a soft timeout (yellow on timeout). When the caller passes an
+    explicit `checks` list, pack checks are skipped — that path is for
+    tests of the aggregator semantics.
+    """
     report = DoctorReport()
     for fn in checks or ALL_CHECKS:
         try:
@@ -365,6 +498,9 @@ def run_doctor(
                     remediation="file a bug — doctor checks should not raise",
                 )
             )
+    if checks is None and include_pack_checks:
+        for ep in _iter_doctor_check_eps():
+            report.results.append(_run_pack_check(ep, timeout=pack_check_timeout))
     return report
 
 
@@ -372,18 +508,24 @@ def run_doctor(
 
 
 def render_table(report: DoctorReport) -> str:
-    """Fixed-width table; remediation on the line below non-OK rows."""
-    headers = ("CHECK", "STATUS", "MESSAGE")
-    rows = [(r.name, r.status.value, r.message) for r in report.results]
-    widths = [
-        max(len(headers[0]), *(len(r[0]) for r in rows)) if rows else len(headers[0]),
-        max(len(headers[1]), *(len(r[1]) for r in rows)) if rows else len(headers[1]),
-        max(len(headers[2]), *(len(r[2]) for r in rows)) if rows else len(headers[2]),
+    """Fixed-width table; remediation on the line below non-OK rows.
+
+    Columns: SOURCE | CHECK | STATUS | MESSAGE. SOURCE makes pack
+    provenance visible (`core` for built-ins, the distribution name for
+    pack-contributed checks).
+    """
+    headers = ("SOURCE", "CHECK", "STATUS", "MESSAGE")
+    rows = [
+        (r.source, r.name, r.status.value, r.message) for r in report.results
     ]
-    fmt = f"{{:<{widths[0]}}}  {{:<{widths[1]}}}  {{:<{widths[2]}}}"
+    widths = [
+        max(len(headers[i]), *(len(r[i]) for r in rows)) if rows else len(headers[i])
+        for i in range(4)
+    ]
+    fmt = "  ".join(f"{{:<{w}}}" for w in widths)
     lines = [fmt.format(*headers), fmt.format(*("-" * w for w in widths))]
     for r in report.results:
-        lines.append(fmt.format(r.name, r.status.value, r.message))
+        lines.append(fmt.format(r.source, r.name, r.status.value, r.message))
         if r.status is not Status.OK and r.remediation:
             lines.append(f"  -> {r.remediation}")
     lines.append("")

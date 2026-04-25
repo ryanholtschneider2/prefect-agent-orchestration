@@ -13,6 +13,7 @@ from prefect_orchestration import deployments as deployments_mod
 from prefect_orchestration.cli import app
 from prefect_orchestration.doctor import (
     CheckResult,
+    DoctorCheck,
     DoctorReport,
     Status,
     render_table,
@@ -317,3 +318,198 @@ def test_cli_doctor_exits_one_on_failure(monkeypatch):
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
     assert "-> r" in result.stdout
+
+
+# -- pack-contributed doctor checks (po.doctor_checks group) -----------
+
+
+@dataclass
+class FakeDist:
+    name: str
+
+
+@dataclass
+class FakeDoctorEP:
+    name: str
+    target: Any = None
+    raises: Exception | None = None
+    dist: FakeDist | None = None
+
+    def load(self) -> Any:
+        if self.raises is not None:
+            raise self.raises
+        return self.target
+
+
+def test_doctor_check_dataclass_shape():
+    """AC 3: name/status/message/hint."""
+    dc = DoctorCheck(name="x", status="green", message="ok")
+    assert dc.name == "x"
+    assert dc.status == "green"
+    assert dc.message == "ok"
+    assert dc.hint == ""
+    dc2 = DoctorCheck(name="y", status="red", message="bad", hint="fix it")
+    assert dc2.hint == "fix it"
+
+
+def test_iter_doctor_check_eps_sorted_by_dist(monkeypatch):
+    """AC 1 + install-order: deterministic alphabetical-by-dist sort."""
+    eps = [
+        FakeDoctorEP(name="b-check", dist=FakeDist(name="zeta-pack")),
+        FakeDoctorEP(name="a-check", dist=FakeDist(name="alpha-pack")),
+    ]
+
+    def _fake_eps(group: str | None = None, **_kwargs):
+        assert group == "po.doctor_checks"
+        return eps
+
+    monkeypatch.setattr(doctor_mod, "entry_points", _fake_eps)
+    out = doctor_mod._iter_doctor_check_eps()
+    assert [ep.name for ep in out] == ["a-check", "b-check"]
+
+
+def test_run_pack_check_green_to_ok(monkeypatch):
+    """AC 2/3: green DoctorCheck round-trips to a CheckResult with source."""
+    ep = FakeDoctorEP(
+        name="my-check",
+        target=lambda: DoctorCheck(name="my-check", status="green", message="all good"),
+        dist=FakeDist(name="my-pack"),
+    )
+    res = doctor_mod._run_pack_check(ep)
+    assert res.status is Status.OK
+    assert res.source == "my-pack"
+    assert res.message == "all good"
+
+
+def test_run_pack_check_red_to_fail_with_hint(monkeypatch):
+    ep = FakeDoctorEP(
+        name="my-check",
+        target=lambda: DoctorCheck(
+            name="my-check", status="red", message="broken", hint="reinstall"
+        ),
+        dist=FakeDist(name="my-pack"),
+    )
+    res = doctor_mod._run_pack_check(ep)
+    assert res.status is Status.FAIL
+    assert res.remediation == "reinstall"
+
+
+def test_run_pack_check_yellow_on_timeout(monkeypatch):
+    """AC 4: per-check timeout, yellow on timeout."""
+    import time
+
+    def _slow() -> DoctorCheck:
+        time.sleep(5)  # well past our 0.05s ceiling
+        return DoctorCheck(name="slow", status="green", message="never reached")
+
+    ep = FakeDoctorEP(name="slow", target=_slow, dist=FakeDist(name="my-pack"))
+    res = doctor_mod._run_pack_check(ep, timeout=0.05)
+    assert res.status is Status.WARN
+    assert "timed out" in res.message.lower()
+    assert res.source == "my-pack"
+
+
+def test_run_pack_check_exception_to_fail():
+    def _boom() -> DoctorCheck:
+        raise RuntimeError("kaboom")
+
+    ep = FakeDoctorEP(name="oops", target=_boom, dist=FakeDist(name="my-pack"))
+    res = doctor_mod._run_pack_check(ep)
+    assert res.status is Status.FAIL
+    assert "kaboom" in res.message
+
+
+def test_run_pack_check_invalid_status_to_fail():
+    ep = FakeDoctorEP(
+        name="weird",
+        target=lambda: DoctorCheck(name="weird", status="blue", message="?"),  # type: ignore[arg-type]
+        dist=FakeDist(name="my-pack"),
+    )
+    res = doctor_mod._run_pack_check(ep)
+    assert res.status is Status.FAIL
+    assert "invalid status" in res.message.lower()
+
+
+def test_run_pack_check_non_doctorcheck_to_fail():
+    ep = FakeDoctorEP(
+        name="badret",
+        target=lambda: "not a DoctorCheck",
+        dist=FakeDist(name="my-pack"),
+    )
+    res = doctor_mod._run_pack_check(ep)
+    assert res.status is Status.FAIL
+    assert "expected DoctorCheck" in res.message
+
+
+def test_run_doctor_aggregates_pack_checks(monkeypatch):
+    """AC 2: core + pack rows in one report; pack rows tagged with source."""
+
+    def _pack_ep_iter():
+        return [
+            FakeDoctorEP(
+                name="pack-check",
+                target=lambda: DoctorCheck(
+                    name="pack-check", status="green", message="ok"
+                ),
+                dist=FakeDist(name="example-pack"),
+            )
+        ]
+
+    monkeypatch.setattr(doctor_mod, "ALL_CHECKS", [lambda: _ok("core-1")])
+    monkeypatch.setattr(doctor_mod, "_iter_doctor_check_eps", _pack_ep_iter)
+    report = run_doctor()
+    sources = [r.source for r in report.results]
+    assert "core" in sources
+    assert "example-pack" in sources
+    pack_row = next(r for r in report.results if r.source == "example-pack")
+    assert pack_row.status is Status.OK
+
+
+def test_run_doctor_pack_red_sets_exit_one(monkeypatch):
+    monkeypatch.setattr(doctor_mod, "ALL_CHECKS", [lambda: _ok("core-1")])
+    monkeypatch.setattr(
+        doctor_mod,
+        "_iter_doctor_check_eps",
+        lambda: [
+            FakeDoctorEP(
+                name="bad",
+                target=lambda: DoctorCheck(
+                    name="bad", status="red", message="x", hint="h"
+                ),
+                dist=FakeDist(name="p"),
+            )
+        ],
+    )
+    report = run_doctor()
+    assert report.exit_code == 1
+
+
+def test_run_doctor_explicit_checks_skips_pack(monkeypatch):
+    """When tests pass an explicit `checks` arg, pack checks are skipped."""
+    called = {"n": 0}
+
+    def _should_not_be_called():
+        called["n"] += 1
+        return []
+
+    monkeypatch.setattr(doctor_mod, "_iter_doctor_check_eps", _should_not_be_called)
+    run_doctor([lambda: _ok("a")])
+    assert called["n"] == 0
+
+
+def test_render_table_includes_source_column():
+    report = DoctorReport(
+        results=[
+            CheckResult(name="core-c", status=Status.OK, message="m1"),
+            CheckResult(
+                name="pack-c",
+                status=Status.OK,
+                message="m2",
+                source="example-pack",
+            ),
+        ]
+    )
+    out = render_table(report)
+    assert "SOURCE" in out
+    assert "core" in out
+    assert "example-pack" in out
