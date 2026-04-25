@@ -15,6 +15,7 @@ Covers:
     file written.
   * Hard fail: neither auth set, real backend -> exit 64.
 """
+
 from __future__ import annotations
 
 import json
