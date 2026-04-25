@@ -14,8 +14,10 @@ services:
   prefect-server:
     image: prefecthq/prefect:3-latest
     command: ["prefect", "server", "start", "--host", "0.0.0.0"]
+    # UI exposed on the host at $PREFECT_HOST_PORT (default 4200; override
+    # to e.g. 14200 if a host-side Prefect server is already on 4200).
     ports:
-      - "4200:4200"
+      - "${PREFECT_HOST_PORT:-4200}:4200"
     environment:
       PREFECT_UI_API_URL: http://127.0.0.1:4200/api
     healthcheck:

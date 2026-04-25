@@ -122,3 +122,55 @@
   cleanly when it's absent.
   **Alternatives considered**: require `--build-context` (worse UX);
   generate a placeholder dir at build time (extra context bloat).
+
+## Build iter 1 (post-verifier feedback round)
+
+- **Decision**: Reordered `mkdir -p /home/coder/.local/bin` to come BEFORE
+  the two `ln -sf` invocations in the runtime install RUN block.
+  **Why**: Verifier caught a real bug — the `ln` calls referenced
+  `/home/coder/.local/bin/po` and `/home/coder/.local/bin/prefect` while
+  the parent dir didn't yet exist; build aborted at stage 13/16. Fix
+  is mechanical (one line moves up). Rebuilt locally and confirmed
+  `docker build … -t po-worker:dev .` now succeeds.
+  **Alternatives considered**: `install -D` instead of `ln + mkdir`
+  (works but obscures intent); add `mkdir` after every `ln` (redundant).
+
+- **Decision**: Pinned `coder` user to UID/GID 1000 (deleting the
+  default `ubuntu:24.04` UID-1000 `ubuntu` user first).
+  **Why**: First post-fix smoke run hit `PermissionError: [Errno 13]
+  Permission denied: '/rig/.planning'` — the bind-mounted `./rig` is
+  owned by host UID 1000, but `useradd` had assigned UID 1001 to
+  `coder`, so the container couldn't write to the bind-mount. Pinning
+  to UID 1000 (the standard Linux laptop user) is the pragmatic
+  fix; in k8s the SecurityContext can override `runAsUser` per-pod
+  if a different UID is required.
+  **Alternatives considered**: `chmod 0777 ./rig` in the smoke
+  (papers over the issue, doesn't help k8s); pass `--user` to
+  `docker compose run` (couples every consumer to the right UID
+  out-of-band).
+
+- **Decision**: Added `${PREFECT_HOST_PORT:-4200}` to the
+  `prefect-server` ports mapping in `docker-compose.yml`.
+  **Why**: Ryan's host runs a local Prefect server on 4200 (the
+  canonical PO dev setup per CLAUDE.md). The smoke ran into
+  `failed to bind host port 0.0.0.0:4200/tcp: address already in
+  use`. Making the host port overridable lets `PREFECT_HOST_PORT=14200
+  ./scripts/smoke-compose.sh` coexist with a host server. Internal
+  container-to-container traffic still uses port 4200 over the
+  compose network — only the host-facing port is configurable.
+  **Alternatives considered**: drop the host port mapping entirely
+  (users lose UI access during the smoke); pick a different fixed
+  port (less ergonomic — every doc reference would have to change).
+
+- **Decision**: Captured the successful smoke run output to
+  `.planning/software-dev-full/prefect-orchestration-j2p/smoke-test-output.txt`
+  as AC2 evidence.
+  **Why**: Verifier asked for proof of "an issue actually run through
+  software-dev-full in a container". The new artifact shows: image
+  built, prefect-server + worker came up healthy, `po doctor` ran
+  (one container row from the `po-formulas-software-dev` pack check
+  visible), 16 task runs of `software_dev_full` finished Completed,
+  bead `rig-mnz` was claimed and closed, and verdict files landed
+  under `rig/.planning/software-dev-full/rig-mnz/verdicts/` (8 files).
+  **Alternatives considered**: just stating "ran successfully" in
+  the decision log (not falsifiable; verifier asked for evidence).

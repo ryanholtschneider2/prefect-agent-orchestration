@@ -106,7 +106,13 @@ RUN uv --version && bd --version
 # Non-root user: Claude Code refuses --dangerously-skip-permissions as
 # root. `coder` gets passwordless sudo for laptop dev convenience; in k8s
 # the SecurityContext can drop sudo entirely.
-RUN useradd -m -s /bin/bash -G sudo coder \
+#
+# Pin UID/GID to 1000 (matches the typical host user on Linux laptops)
+# so bind-mounted rigs read/write cleanly. ubuntu:24.04 ships a default
+# `ubuntu` user at UID 1000 — delete it before creating `coder`.
+RUN if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu 2>/dev/null || true; fi \
+ && groupadd -g 1000 coder \
+ && useradd -m -s /bin/bash -u 1000 -g 1000 -G sudo coder \
  && echo "coder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
  && mkdir -p /workspace /rig \
  && chown -R coder:coder /workspace /rig
@@ -123,6 +129,7 @@ USER coder
 WORKDIR /home/coder
 
 RUN set -eux; \
+    mkdir -p /home/coder/.local/bin; \
     if [ -f /src/pack/pyproject.toml ]; then \
         echo ">>> installing core + local pack from /src/pack"; \
         # `pip install` with the local sibling pack: pip recognizes the\
@@ -141,7 +148,6 @@ RUN set -eux; \
         echo ">>> installing core only (no pack)"; \
         uv tool install /src/po-core; \
     fi; \
-    mkdir -p /home/coder/.local/bin; \
     /home/coder/.local/bin/po --help >/dev/null; \
     /home/coder/.local/bin/po list
 
