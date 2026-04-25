@@ -123,12 +123,16 @@ currently installed and `po update` if you change a pack's
 
 ## Containerized runs (k8s / docker)
 
-A `Dockerfile` + `docker-compose.yml` ship at the repo root. The image
-bundles `uv` + `bd` + `claude` + a configurable formula pack so the
-same artifact works as either a `prefect worker` or an interactive
-`po run` driver. See [`engdocs/work-pools.md`](engdocs/work-pools.md)
-for the full playbook (image build, k8s pool create, rig-state
-strategy, OAuth caveat). Quick local smoke:
+`Dockerfile` (ubuntu:24.04 + node22 + tmux + uv + bd + Claude Code +
+non-root `coder` user) builds `po-worker:base`; `Dockerfile.pack`
+overlays a formula pack. `docker-compose.yml` runs a Prefect server +
+worker locally; `k8s/*.yaml` + `k8s/po-base-job-template.json` cover
+the cluster path (PVC, Secret, Deployment, base-job-template).
+Workers authenticate with `ANTHROPIC_API_KEY` (mounted as a Secret in
+k8s, host env var locally); the entrypoint bootstraps `~/.claude.json`
+so Claude Code skips onboarding without a TTY. See
+[`engdocs/work-pools.md`](engdocs/work-pools.md) for the full
+playbook. Quick local smoke (no API key required):
 
 ```bash
 mkdir -p rig && (cd rig && bd init)

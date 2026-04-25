@@ -1,11 +1,14 @@
 # Local-dev stack mirroring the k8s shape: a Prefect server, a worker, and
 # an interactive `client` profile. See engdocs/work-pools.md for the full
-# playbook (k8s pool create, image push, OAuth caveat).
+# playbook (k8s pool create, image push, secret + PVC layout).
+#
+# Required env on the host (or in a `.env` file alongside this compose):
+#   ANTHROPIC_API_KEY=sk-…    # only for PO_BACKEND=cli; ignored by stub
 #
 # Usage:
 #   docker compose up -d prefect-server worker
 #   docker compose run --rm client po doctor
-#   ./scripts/smoke-compose.sh    # full smoke
+#   ./scripts/smoke-compose.sh    # full smoke (defaults to PO_BACKEND=stub)
 
 services:
   prefect-server:
@@ -16,7 +19,11 @@ services:
     environment:
       PREFECT_UI_API_URL: http://127.0.0.1:4200/api
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4200/api/health').read()"]
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4200/api/health').read()"
       interval: 5s
       timeout: 3s
       retries: 30
@@ -25,6 +32,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        # Override at compose-build time: COMPOSE_BAKE=1 / docker buildx bake
+        # picks up `additional_contexts`. For plain `docker compose build`
+        # users with a pack repo, pass `--build-context pack=…` directly.
+        # Default points at the sibling po-formulas repo when present.
+        pack: ../software-dev/po-formulas
     image: po-worker:dev
     depends_on:
       prefect-server:
@@ -32,15 +45,18 @@ services:
     environment:
       PREFECT_API_URL: http://prefect-server:4200/api
       PO_BACKEND: ${PO_BACKEND:-cli}
+      # Refuse to start without a key when running real Claude. Override
+      # `PO_BACKEND=stub` (e.g. for the smoke) to skip the requirement.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       # Bind a host directory as the rig. Defaults to ./rig — create it
       # (with a .beads/) before running the smoke. For multi-tenant
       # isolation, see engdocs/work-pools.md (sibling bead).
       - ./rig:/rig
-      # Claude OAuth credentials — short-term mount for laptop dev only.
-      # Comment out for stub-only smoke (PO_BACKEND=stub).
-      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json:ro
-    command: ["prefect", "worker", "start", "--pool", "po"]
+      # OAuth credentials fallback for laptop dev that prefers the
+      # Claude.ai subscription over an API key. Commented out by default
+      # because the worker pattern is API-key-driven (matches k8s).
+      # - ${HOME}/.claude/.credentials.json:/home/coder/.claude/.credentials.json:ro
 
   client:
     # Interactive driver: `docker compose run --rm client po run …`
@@ -50,14 +66,18 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      additional_contexts:
+        pack: ../software-dev/po-formulas
     depends_on:
       prefect-server:
         condition: service_healthy
     environment:
       PREFECT_API_URL: http://prefect-server:4200/api
+      # Default to stub here so `docker compose run client …` does not
+      # need an API key for cheap one-shots like `po doctor`.
       PO_BACKEND: ${PO_BACKEND:-stub}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - ./rig:/rig
-      - ${HOME}/.claude/.credentials.json:/root/.claude/.credentials.json:ro
-    entrypoint: ["po"]
+    entrypoint: ["/usr/local/bin/po-entrypoint", "po"]
     command: ["doctor"]

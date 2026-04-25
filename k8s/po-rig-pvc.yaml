@@ -1,0 +1,18 @@
+# Shared rig PVC. RWX is required when more than one worker pod can claim
+# different beads from the same rig concurrently — bd's claim discipline
+# guarantees single-writer per issue, but the file system must allow
+# multiple pods to read/write the rig directory simultaneously.
+#
+# On EKS, set `storageClassName: efs-sc` (after installing the EFS CSI
+# driver). On GKE, `filestore-csi`. On bare-metal k3s, NFS via `nfs-csi`.
+# RWO is acceptable only when you guarantee a single worker replica.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: po-rig
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: efs-sc   # uncomment + edit for your cluster

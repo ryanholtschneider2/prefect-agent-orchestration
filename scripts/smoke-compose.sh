@@ -3,8 +3,9 @@
 #
 # Brings the stack up, ensures the `po` work-pool exists, and runs one issue
 # through `software-dev-full` against the containerized worker. The default
-# uses `PO_BACKEND=stub` so the smoke does not require Claude OAuth — flip
-# to `cli` once you've bind-mounted ~/.claude/.credentials.json.
+# uses `PO_BACKEND=stub` so the smoke does not require an Anthropic API
+# key — flip to `cli` after exporting `ANTHROPIC_API_KEY` to run real
+# Claude.
 #
 # Pre-reqs: docker compose v2, a `./rig/` directory with a `.beads/` init
 # (run `bd init` inside it once) and at least one open issue.
@@ -17,6 +18,16 @@ ISSUE_ID="${ISSUE_ID:-demo-1}"
 RIG_DIR="${RIG_DIR:-./rig}"
 PO_BACKEND="${PO_BACKEND:-stub}"
 export PO_BACKEND
+
+# When real Claude is selected, the worker will refuse to start without
+# an API key. Surface that early instead of letting `docker compose up`
+# fail opaquely.
+if [[ "$PO_BACKEND" == "cli" && -z "${ANTHROPIC_API_KEY:-}" ]]; then
+  echo "error: PO_BACKEND=cli but ANTHROPIC_API_KEY is unset." >&2
+  echo "       export ANTHROPIC_API_KEY=… or set PO_BACKEND=stub." >&2
+  exit 64
+fi
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-stub-not-required}"
 
 if [[ ! -d "$RIG_DIR/.beads" ]]; then
   echo "error: $RIG_DIR has no .beads/ — run \`bd init\` inside it first." >&2

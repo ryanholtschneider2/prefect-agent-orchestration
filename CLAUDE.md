@@ -204,22 +204,26 @@ names because tmux treats `.` as a pane separator.
 
 ### Containerized runs (compose / k8s)
 
-A multi-stage `Dockerfile` + `docker-compose.yml` ship at the repo root
-for running PO against a non-`process` work pool. Tmux is intentionally
-absent from the image (auto-fall-back to `ClaudeCliBackend`); the image
-sets `ENV PO_BACKEND=cli` so the choice is loud. `engdocs/work-pools.md`
-has the k8s playbook and the rig-state decision (bind-mount/PVC now,
-ephemeral clone+push deferred until git remote + `bd` Dolt server-mode
-exist). One-line local smoke:
+`Dockerfile` (ubuntu:24.04 + node22 + tmux + uv + bd + Claude Code +
+core, non-root `coder` user) builds the base image; `Dockerfile.pack`
+overlays a formula pack on top. `docker/entrypoint.sh` writes
+`~/.claude.json` from `ANTHROPIC_API_KEY` so Claude Code skips
+onboarding without a TTY. Tmux is installed but the runtime backend
+picker (`prefect_orchestration.backend_select.select_default_backend`)
+falls back to `ClaudeCliBackend` whenever stdout is non-TTY (the pod
+case); `ENV PO_BACKEND=cli` is set on the image to make the choice
+loud. Local smoke:
 
 ```bash
 mkdir -p rig && (cd rig && bd init)
 ISSUE_ID=demo-1 PO_BACKEND=stub ./scripts/smoke-compose.sh
 ```
 
-`po doctor` warns when a pack-declared deployment pins a `work_pool_name`
-that isn't on the server — see `check_deployment_pools_exist` in
-`prefect_orchestration/doctor.py`.
+K8s manifests live under `k8s/` (PVC, Secret stub, Deployment,
+base-job-template). Apply order + full playbook in
+`engdocs/work-pools.md`. `po doctor` warns when a pack-declared
+deployment pins a `work_pool_name` that isn't on the server — see
+`check_deployment_pools_exist` in `prefect_orchestration/doctor.py`.
 
 ### Concurrency (per-role caps)
 

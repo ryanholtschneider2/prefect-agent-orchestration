@@ -1,0 +1,16 @@
+# Template ONLY — do not commit a real key.
+#
+# Create the actual secret out-of-band:
+#
+#   kubectl create secret generic anthropic-api-key \
+#       --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+#
+# This file documents the expected shape so the Deployment + base-job-
+# template `valueFrom.secretKeyRef` references stay self-explanatory.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: anthropic-api-key
+type: Opaque
+stringData:
+  ANTHROPIC_API_KEY: "REPLACE_ME"

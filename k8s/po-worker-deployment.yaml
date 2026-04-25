@@ -1,0 +1,86 @@
+# Long-running Prefect worker that polls the `po-k8s` work pool. Each
+# flow run is launched as a Job by Prefect (see po-base-job-template.json
+# for the Job spec); this Deployment is only the poller, so a single
+# replica is enough.
+#
+# Pre-reqs (apply order):
+#   kubectl apply -f k8s/po-rig-pvc.yaml
+#   kubectl create secret generic anthropic-api-key \
+#       --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+#   prefect work-pool create po-k8s --type kubernetes \
+#       --base-job-template k8s/po-base-job-template.json
+#   kubectl apply -f k8s/po-worker-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: po-worker
+  labels: { app: po-worker }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: po-worker }
+  template:
+    metadata:
+      labels: { app: po-worker }
+    spec:
+      serviceAccountName: po-worker
+      containers:
+        - name: worker
+          image: po-worker:dev   # replace with <registry>/po-worker:<tag>
+          imagePullPolicy: IfNotPresent
+          args: ["prefect", "worker", "start", "--pool", "po-k8s"]
+          env:
+            - name: PREFECT_API_URL
+              value: http://prefect-server:4200/api
+            - name: PO_BACKEND
+              value: cli
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic-api-key
+                  key: ANTHROPIC_API_KEY
+          volumeMounts:
+            - name: rig
+              mountPath: /rig
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1
+              memory: 1Gi
+      volumes:
+        - name: rig
+          persistentVolumeClaim:
+            claimName: po-rig
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: po-worker
+---
+# Minimal Role so the worker can create Pods/Jobs in this namespace —
+# Prefect's k8s worker uses the in-cluster client to launch flow-run jobs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: po-worker
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: po-worker
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: po-worker
+subjects:
+  - kind: ServiceAccount
+    name: po-worker

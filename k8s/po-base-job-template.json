@@ -1,0 +1,68 @@
+{
+  "_comment": "Prefect kubernetes work-pool base-job-template. Apply via: prefect work-pool create po-k8s --type kubernetes --base-job-template k8s/po-base-job-template.json. Each flow run becomes a Job whose pod mounts the shared rig PVC + the anthropic-api-key Secret.",
+  "job_configuration": {
+    "env": "{{ env }}",
+    "name": "{{ name }}",
+    "namespace": "{{ namespace }}",
+    "service_account_name": "{{ service_account_name }}",
+    "image_pull_policy": "{{ image_pull_policy }}",
+    "job_manifest": {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "metadata": {
+        "labels": "{{ labels }}"
+      },
+      "spec": {
+        "backoffLimit": 0,
+        "ttlSecondsAfterFinished": 3600,
+        "template": {
+          "spec": {
+            "restartPolicy": "Never",
+            "serviceAccountName": "po-worker",
+            "containers": [
+              {
+                "name": "prefect-job",
+                "image": "{{ image }}",
+                "imagePullPolicy": "{{ image_pull_policy }}",
+                "args": "{{ command }}",
+                "env": [
+                  { "name": "PREFECT_API_URL", "value": "http://prefect-server:4200/api" },
+                  { "name": "PO_BACKEND", "value": "cli" },
+                  { "name": "PO_RIG_PATH", "value": "/rig" },
+                  { "name": "ANTHROPIC_API_KEY",
+                    "valueFrom": {
+                      "secretKeyRef": { "name": "anthropic-api-key", "key": "ANTHROPIC_API_KEY" }
+                    }
+                  }
+                ],
+                "volumeMounts": [
+                  { "name": "rig", "mountPath": "/rig" }
+                ],
+                "resources": {
+                  "requests": { "cpu": "500m", "memory": "512Mi" },
+                  "limits":   { "cpu": "2",    "memory": "4Gi"   }
+                }
+              }
+            ],
+            "volumes": [
+              { "name": "rig", "persistentVolumeClaim": { "claimName": "po-rig" } }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "variables": {
+    "type": "object",
+    "properties": {
+      "name":                  { "type": "string", "default": "po-flow" },
+      "image":                 { "type": "string", "default": "po-worker:dev" },
+      "namespace":             { "type": "string", "default": "default" },
+      "service_account_name":  { "type": "string", "default": "po-worker" },
+      "image_pull_policy":     { "type": "string", "default": "IfNotPresent" },
+      "env":                   { "type": "object", "default": {} },
+      "labels":                { "type": "object", "default": { "app": "po-flow" } },
+      "command":               { "type": "array",  "items": { "type": "string" } }
+    }
+  }
+}

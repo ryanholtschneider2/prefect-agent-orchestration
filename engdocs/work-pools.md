@@ -1,47 +1,50 @@
 # Work pools: running PO on Kubernetes and Docker
 
-This is the playbook for running `software-dev-full` (and any other PO
-formula) against a non-`process` Prefect work pool. Two paths:
+The playbook for running `software-dev-full` (and any other PO formula)
+against a non-`process` Prefect work pool. Two paths:
 
-1. **Local docker-compose** — the smoke path, suitable for laptop dev
-2. **Kubernetes** — the scale-out path, suitable for CI / cloud
+1. **Local docker-compose** — laptop dev / smoke
+2. **Kubernetes** — scale-out / cloud
 
-The image at `Dockerfile` bundles `uv` + `bd` + `claude` CLI +
-`prefect-orchestration` + a configurable formula pack, so the same image
-serves as either a Prefect worker host or an interactive `po run` driver.
+Both use the same image: `Dockerfile` produces `po-worker:base`
+(ubuntu:24.04 + node22 + tmux + git + uv + bd + Claude Code +
+`prefect-orchestration`); `Dockerfile.pack` overlays a formula pack on
+top, so per-pack images are one cheap rebuild away from the base.
 
-## Image build
+## Image shape
+
+| Layer | Path | What it adds |
+|---|---|---|
+| base | `Dockerfile` (target `runtime`) | OS, tools, core, non-root `coder` user, entrypoint |
+| overlay | `Dockerfile.pack` | one (or more) `po-formulas-*` packs |
 
 ```bash
-# Default: software-dev pack
-docker build -t po-worker:dev .
+# Base only — has `po doctor`, `po list` (empty), no formulas.
+docker build -t po-worker:base .
 
-# Override the pack (any uv-installable spec)
-docker build -t po-worker:dev \
-    --build-arg PACK_SPEC=po-formulas-software-dev .
+# Base with a sibling pack repo baked in (single image, no overlay):
+docker build --build-context pack=../software-dev/po-formulas \
+             -t po-worker:dev .
 
-# Faster iteration on docs (skip the runtime stage)
-docker build --target tools -t po-tools:dev .
+# Or: keep base stable, overlay a published pack:
+docker build -t po-worker:software-dev \
+    --build-arg BASE=po-worker:base \
+    --build-arg PACK_SPEC=po-formulas-software-dev==X.Y.Z \
+    -f Dockerfile.pack .
 ```
-
-The build is multi-stage: the `tools` stage produces `uv`, `bd`, and the
-globally-installed `claude` Node package; the `runtime` stage copies those
-artifacts into a Python 3.13 slim base and runs `uv tool install` for
-core + pack. Total image is ~500 MB; the `tools` stage rebuilds rarely
-and cache-hits aggressively.
 
 ### Image rebuild cadence
 
-- **Pack-only changes** — rebuild and push (no version-of-record;
-  re-tag `po-worker:dev` or pin to a date tag like `po-worker:2026-04-25`).
-- **Pinned formula pack releases** — set `PACK_SPEC=po-formulas-software-dev==X.Y.Z`
-  at build time so the image's entry-point metadata matches the release.
-- **Toolchain bumps** (`BD_VERSION`, `NODE_VERSION`, `PYTHON_VERSION`)
-  are build-args at the top of the Dockerfile — bump and rebuild.
+- **Pack-only changes** — rebuild the overlay only; base stays cached.
+- **Toolchain bumps** (`BD_VERSION`, Node version) — bump build-args
+  and rebuild base.
+- **Pinned releases** — set `PACK_SPEC=po-formulas-software-dev==X.Y.Z`
+  so a `po update` inside a long-lived pod is a no-op (the pack is
+  pinned at image build time; pod restart on pack version bump).
 
-## Local docker-compose smoke
+## Local docker-compose
 
-The `docker-compose.yml` ships three services:
+Three services in `docker-compose.yml`:
 
 | Service | Role |
 |---|---|
@@ -49,41 +52,54 @@ The `docker-compose.yml` ships three services:
 | `worker` | `prefect worker start --pool po` against the bind-mounted rig |
 | `client` (profile) | One-shot driver: `docker compose run --rm client …` |
 
-Driver script:
-
 ```bash
-# Pre-req: a rig directory with .beads/ (run `bd init` once in it)
 mkdir -p rig && (cd rig && bd init)
 
-ISSUE_ID=demo-1 RIG_DIR=./rig PO_BACKEND=stub ./scripts/smoke-compose.sh
+# Real Claude (requires API key on host):
+export ANTHROPIC_API_KEY=sk-…
+ISSUE_ID=demo-1 PO_BACKEND=cli ./scripts/smoke-compose.sh
+
+# Stub (no API key required, exercises wiring only):
+ISSUE_ID=demo-1 PO_BACKEND=stub ./scripts/smoke-compose.sh
 ```
 
-`PO_BACKEND=stub` is the default — it short-circuits Claude calls so the
-smoke exercises Prefect + bd wiring without requiring OAuth credentials.
-Flip to `PO_BACKEND=cli` once `~/.claude/.credentials.json` is mounted.
+The smoke script defaults to `PO_BACKEND=stub` so it does not need an
+Anthropic key. Flip to `cli` when you want a real run.
 
-## Kubernetes work-pool path
+## Kubernetes
 
-Prefect's native `kubernetes` work-pool type runs each flow as a pod.
-
-### 1. Push the image
+### 1. Build + push the image
 
 ```bash
-docker tag po-worker:dev <registry>/po-worker:<tag>
+docker build -t <registry>/po-worker:<tag> \
+    --build-context pack=../software-dev/po-formulas .
 docker push <registry>/po-worker:<tag>
 ```
 
-### 2. Create the pool
+### 2. Apply cluster pre-reqs
+
+```bash
+kubectl apply -f k8s/po-rig-pvc.yaml
+
+# Real secret (the YAML at k8s/anthropic-api-key.example.yaml is a
+# documentation stub only — do not commit a real key):
+kubectl create secret generic anthropic-api-key \
+    --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+```
+
+### 3. Create the pool with the base-job-template
 
 ```bash
 prefect work-pool create po-k8s --type kubernetes \
-    --base-job-template kubernetes-job.json
+    --base-job-template k8s/po-base-job-template.json
 ```
 
-Edit the base job template so each pod uses your image, mounts the rig
-PVC, and (short-term) the OAuth secret — see "OAuth in containers" below.
+The template sets the image, mounts the `po-rig` PVC at `/rig`, mounts
+`anthropic-api-key` as `ANTHROPIC_API_KEY`, and forces `PO_BACKEND=cli`.
+Edit the file before applying if your cluster uses a different
+namespace, registry, or storage class.
 
-### 3. Pin a deployment to the pool
+### 4. Pin a deployment to the pool
 
 In your pack's `register()`:
 
@@ -105,80 +121,112 @@ def register():
     return deps
 ```
 
-Then apply:
+Apply:
 
 ```bash
 PO_DEFAULT_WORK_POOL=po-k8s po deploy --apply
 ```
 
 `po doctor` will WARN if any pinned deployment references a pool that
-doesn't exist on the server — fix it with `prefect work-pool create`.
+doesn't exist — fix it with `prefect work-pool create`.
 
-### 4. Start a worker
+### 5. Run the worker
 
 ```bash
 kubectl apply -f k8s/po-worker-deployment.yaml
-# or, ad-hoc:
-kubectl run po-worker --image=<registry>/po-worker:<tag> -- \
-    prefect worker start --pool po-k8s
+kubectl logs -f deployment/po-worker
 ```
 
-### 5. Trigger a run
+### 6. Trigger a run
 
 ```bash
 prefect deployment run epic_run/nightly \
     --param epic_id=<id> --param rig=demo --param rig_path=/rig
 ```
 
-## Rig-state strategy
+Watch the Job pod:
 
-Two real options. **Pick the bind-mount/PVC path for now**; ephemeral
-clone+push is deferred until a git remote and `bd` Dolt server-mode are
-in place for this repo.
+```bash
+kubectl get jobs -l app=po-flow
+kubectl logs -f job/<name>
+```
+
+## Auth: API key vs OAuth
+
+Workers default to `ANTHROPIC_API_KEY`. The entrypoint
+(`docker/entrypoint.sh`) bootstraps `~/.claude.json` so Claude Code
+skips onboarding and accepts the key without a TTY prompt — modeled on
+the rclaude prior art.
+
+| Scenario | Auth |
+|---|---|
+| k8s worker pod | `Secret` → `ANTHROPIC_API_KEY` env var (canonical) |
+| compose worker | `ANTHROPIC_API_KEY` from host env / `.env` |
+| compose client (one-shot) | `PO_BACKEND=stub` skips auth entirely |
+| laptop dev preferring Claude.ai subscription | uncomment the OAuth bind in `docker-compose.yml` (`~/.claude/.credentials.json:ro`) |
+
+The user-global rule "never use API keys for local dev" still applies
+to ad-hoc scripts you run on your laptop — that's why the OAuth bind
+fallback exists for compose. In a deployed cluster pod, the API-key
+path is correct.
+
+## Backend selection
+
+`prefect_orchestration.backend_select.select_default_backend()` is the
+canonical chooser. Order:
+
+| `PO_BACKEND` | tmux on PATH | stdout TTY | Backend |
+|---|---|---|---|
+| `cli` | — | — | `ClaudeCliBackend` |
+| `tmux` | yes | — | `TmuxClaudeBackend` |
+| `tmux` | no | — | **errors** (no silent fallback) |
+| `stub` | — | — | `StubBackend` |
+| unset (auto) | yes | yes | `TmuxClaudeBackend` |
+| unset (auto) | yes | no | `ClaudeCliBackend` (container case) |
+| unset (auto) | no | — | `ClaudeCliBackend` |
+
+The image installs `tmux` so a human can `kubectl exec -it … bash` and
+attach to a session manually for debugging. At normal pod runtime
+there is no TTY, so the helper picks `ClaudeCliBackend` automatically.
+The image still sets `ENV PO_BACKEND=cli` to make the choice explicit.
+
+The pack-side default in `software_dev.py` continues to work; new
+packs should prefer `select_default_backend()` so the TTY check is
+applied uniformly.
+
+## Rig-state strategy
 
 | Strategy | When | Pros | Cons |
 |---|---|---|---|
-| **Bind mount (compose) / RWX PVC (k8s)** | now | simple; one rig per epic; bd claim guarantees single-writer | requires RWX storage class (EFS/NFS); no isolation between epics |
-| **Ephemeral per-run workspace** (init-container clone + post-step push) | after `bd dolt push` + git remote | cloud-native; per-run isolation | requires git remote (this repo has none); requires bd in server mode |
+| **Bind mount (compose) / RWX PVC (k8s)** | now | simple; one rig per epic; `bd` claim guarantees single-writer per issue | requires RWX storage class (EFS/NFS/Filestore); no isolation between epics |
+| **Ephemeral per-run workspace** (init-container clone + post-step push) | after `bd dolt push` + git remote | cloud-native; per-run isolation | requires git remote (this repo has none) and `bd` Dolt server-mode |
 
-Single-writer-per-rig is enforced by `bd update --claim` inside each
-flow step — concurrent epics MUST use separate rigs/PVCs.
+Pick the bind-mount/PVC path now. Ephemeral clone+push is a sibling
+bead, deferred until prerequisites land.
 
-## Backend behavior in containers
+## Concurrency limits
 
-The image deliberately omits `tmux`. PO's auto-selection
-(`software_dev.py`) does `TmuxClaudeBackend if shutil.which("tmux") else
-ClaudeCliBackend`, so containers fall back to `ClaudeCliBackend` cleanly.
-The Dockerfile sets `ENV PO_BACKEND=cli` to make this explicit — anyone
-reading pod logs sees the choice up front.
+`prefect concurrency-limit` is global — `builder` and `critic`
+tag-based caps remain in effect when tasks run on a `po-k8s` pool the
+same way they do on the local `process` pool. No tag- or pool-specific
+config beyond the existing `prefect concurrency-limit create` calls in
+the project README.
 
-`PO_BACKEND=tmux` will hard-error inside a pod (intentional — no TTY,
-no point in silently falling back). `PO_BACKEND=stub` is the right
-choice for smokes that don't need Claude.
+## `po doctor` checks
 
-## OAuth in containers (known limitation)
+- **Work pool exists** — at least one pool registered server-side.
+- **Deployment pools exist** — every deployment whose `register()`
+  pins `work_pool_name` references a pool that exists. WARN on miss
+  (not FAIL — many users `po deploy` without `--apply`); OK when no
+  deployment pins a pool. Skipped when `PREFECT_API_URL` is unset.
 
-Out of scope for the j2p bead; tracked as a sibling. Today:
+Both checks are in `prefect_orchestration/doctor.py` and run as part
+of `po doctor`.
 
-- **Compose**: bind-mount `~/.claude/.credentials.json:ro`. Works on a
-  laptop, doesn't survive in CI/cloud.
-- **k8s**: mount as a `Secret`. The credentials file is a long-lived
-  OAuth refresh token — treat it as production credential material,
-  rotate via the Claude CLI after manual login, and never commit.
+## Known limitations
 
-## Concurrency limits across pools
-
-`prefect concurrency-limit` is global — `builder` and `critic` tag-based
-caps remain in effect when tasks run on a `po-k8s` pool the same way
-they do on the local `process` pool. No tag- or pool-specific config
-needed beyond the existing `prefect concurrency-limit create` calls
-documented in the project README.
-
-## Doctor checks
-
-`po doctor` adds one container-aware check:
-
-- **Deployment pools exist** — for every deployment whose `register()`
-  pins `work_pool_name`, verify the pool exists on the configured
-  Prefect server. WARN (not FAIL) on miss; OK when no deployment pins
-  a pool. Skipped when `PREFECT_API_URL` is unset.
+- **OAuth secrets in k8s** — out of scope here; tracked separately.
+  The k8s path uses API keys.
+- **Multi-tenant rig isolation** — out of scope. One rig PVC per
+  cluster; `bd` claim discipline is the only writer guarantee.
+- **Ephemeral rig (clone+push)** — deferred (see "Rig-state strategy").

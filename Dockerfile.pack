@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1.7
+#
+# Per-pack overlay — adds one (or more) installable pack(s) on top of an
+# existing `po-worker:base` image. Keep the base stable; rebuild the
+# overlay whenever a pack ships a new release.
+#
+#   docker build -t po-worker:software-dev \
+#       --build-arg BASE=po-worker:base \
+#       --build-arg PACK_SPEC=po-formulas-software-dev==X.Y.Z \
+#       -f Dockerfile.pack .
+#
+# To overlay a sibling-repo pack instead of a registry release, use
+# build-context (and leave PACK_SPEC empty):
+#
+#   docker build -t po-worker:software-dev \
+#       --build-arg BASE=po-worker:base \
+#       --build-context pack=../software-dev/po-formulas \
+#       -f Dockerfile.pack .
+
+ARG BASE=po-worker:base
+
+# Default empty `pack` stage so `COPY --from=pack` resolves even when no
+# build-context override is supplied.
+FROM scratch AS pack
+
+FROM ${BASE} AS overlay
+
+ARG PACK_SPEC=
+
+USER root
+COPY --from=pack --chown=coder:coder . /src/pack/
+USER coder
+
+RUN set -eux; \
+    if [ -f /src/pack/pyproject.toml ]; then \
+        echo ">>> overlay: installing local pack from /src/pack"; \
+        # Re-use the venv from the base image if it exists; otherwise fall \
+        # back to uv tool install --with.\
+        if [ -d /home/coder/.local/po-venv ]; then \
+            /home/coder/.local/po-venv/bin/pip install --quiet /src/pack; \
+        else \
+            uv tool install --with /src/pack prefect-orchestration; \
+        fi; \
+    elif [ -n "${PACK_SPEC}" ]; then \
+        echo ">>> overlay: installing ${PACK_SPEC}"; \
+        if [ -d /home/coder/.local/po-venv ]; then \
+            /home/coder/.local/po-venv/bin/pip install --quiet "${PACK_SPEC}"; \
+        else \
+            uv tool install --with "${PACK_SPEC}" prefect-orchestration; \
+        fi; \
+    else \
+        echo "error: PACK_SPEC unset and no pack build-context supplied" >&2; \
+        exit 2; \
+    fi; \
+    /home/coder/.local/bin/po list
