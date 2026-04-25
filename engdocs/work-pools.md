@@ -235,6 +235,15 @@ helm install po ./charts/po -n po \
 cert-manager wiring is intentionally not bundled — pass annotations +
 `tls:` via values for your cluster's setup.
 
+### Cloud smoke (kind / Hetzner)
+
+End-to-end validation of `chart + image + bd + software-dev-full` on a
+real cluster lives at `scripts/cloud-smoke/`. See
+[`engdocs/cloud-smoke.md`](cloud-smoke.md) — one orchestrator drives
+provision → install → seed → trigger → exit-gate → tear down, with
+`kind` as the default driver and `Hetzner k3s` as the documented cloud
+upgrade path. Tracked under `prefect-orchestration-tyf.5`.
+
 ### Ops references
 
 - `helm lint charts/po` — local validation (CI runs this via

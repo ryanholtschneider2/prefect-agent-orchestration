@@ -190,6 +190,15 @@ mkdir -p rig && (cd rig && bd init)
 ISSUE_ID=demo-1 PO_BACKEND=stub ./scripts/smoke-compose.sh
 ```
 
+For the **end-to-end cluster smoke** (helm install + real
+`software-dev-full` run on kind / Hetzner), see
+[`engdocs/cloud-smoke.md`](engdocs/cloud-smoke.md):
+
+```bash
+./scripts/cloud-smoke/run-smoke.sh             # kind, apikey
+SMOKE_DRIVER=hetzner ./scripts/cloud-smoke/run-smoke.sh
+```
+
 ### Shipping Claude context to workers
 
 Workers inside containers need the same Claude Code context as the

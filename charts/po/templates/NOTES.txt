@@ -76,6 +76,11 @@ Trigger a flow run
   prefect deployment run <flow>/<deployment> \
       --param issue_id=<id> --param rig=<rig> --param rig_path={{ .Values.rig.mountPath }}
 
+End-to-end cloud smoke
+----------------------
+  scripts/cloud-smoke/run-smoke.sh   # kind by default; Hetzner via SMOKE_DRIVER=hetzner
+  See engdocs/cloud-smoke.md for the full provision → assert → tear-down flow.
+
 {{- if eq (int .Values.worker.replicaCount) 1 }}
 {{- else if eq .Values.rig.accessMode "ReadWriteOnce" }}
 
