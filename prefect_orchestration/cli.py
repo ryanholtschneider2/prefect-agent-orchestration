@@ -17,6 +17,7 @@ import inspect
 import os
 import shutil
 import subprocess
+import sys
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from typing import Any
 import typer
 
 from prefect_orchestration import artifacts as _artifacts
+from prefect_orchestration import commands as _commands
 from prefect_orchestration import deployments as _deployments
 from prefect_orchestration import doctor as _doctor
 from prefect_orchestration import packs as _packs
@@ -111,38 +113,75 @@ def _parse_kwargs(extras: list[str]) -> dict[str, Any]:
 
 @app.command(name="list")
 def list_formulas() -> None:
-    """List formulas registered via the `po.formulas` entry-point group."""
+    """List formulas + commands registered via `po.formulas` / `po.commands`."""
     formulas = _load_formulas()
-    if not formulas:
-        typer.echo("no formulas installed.")
-        typer.echo("install a pack with `uv add <pack>` or `pip install <pack>`")
-        typer.echo('packs declare formulas via `[project.entry-points."po.formulas"]`.')
+    cmds = _commands.load_commands()
+    if not formulas and not cmds:
+        typer.echo("no formulas or commands installed.")
+        typer.echo("install a pack with `po install <pack>`")
+        typer.echo(
+            'packs declare entries via `[project.entry-points."po.formulas"]` '
+            'and `[project.entry-points."po.commands"]`.'
+        )
         return
-    for name, flow_obj in sorted(formulas.items()):
+
+    rows: list[tuple[str, str, str, str]] = []
+    for name, flow_obj in formulas.items():
         fn_name = getattr(flow_obj, "__name__", str(flow_obj))
         module = getattr(flow_obj, "__module__", "?")
         doc = (inspect.getdoc(flow_obj) or "").split("\n", 1)[0]
-        typer.echo(f"  {name:28s}  {module}:{fn_name}")
-        if doc:
-            typer.echo(f"  {'':28s}  {doc}")
+        rows.append(("formula", name, f"{module}:{fn_name}", doc))
+    for name, fn in cmds.items():
+        fn_name = getattr(fn, "__name__", str(fn))
+        module = getattr(fn, "__module__", "?")
+        doc = (inspect.getdoc(fn) or "").split("\n", 1)[0]
+        rows.append(("command", name, f"{module}:{fn_name}", doc))
+    rows.sort(key=lambda r: (r[0], r[1]))
+
+    headers = ("KIND", "NAME", "MODULE:CALLABLE", "DOC")
+    widths = [
+        max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers[:-1])
+    ]
+    fmt = "  ".join(f"{{:<{w}}}" for w in widths) + "  {}"
+    typer.echo(fmt.format(*headers))
+    typer.echo(fmt.format(*("-" * w for w in widths), "---"))
+    for row in rows:
+        typer.echo(fmt.format(*row))
 
 
 @app.command()
 def show(name: str) -> None:
-    """Show the signature + docstring of a registered formula."""
+    """Show the signature + docstring of a registered formula or command."""
     formulas = _load_formulas()
-    if name not in formulas:
-        typer.echo(f"no formula named {name!r}. Run `po list`.", err=True)
-        raise typer.Exit(1)
-    flow_obj = formulas[name]
-    # Prefect wraps the fn; the original is at .fn
-    fn = getattr(flow_obj, "fn", flow_obj)
-    typer.echo(f"{name} — {flow_obj.__module__}:{flow_obj.__name__}")
-    sig = inspect.signature(fn)
-    typer.echo(f"\nSignature:\n  {fn.__name__}{sig}")
-    doc = inspect.getdoc(fn)
-    if doc:
-        typer.echo(f"\nDoc:\n{doc}")
+    if name in formulas:
+        flow_obj = formulas[name]
+        fn = getattr(flow_obj, "fn", flow_obj)
+        typer.echo(f"{name} (formula) — {flow_obj.__module__}:{flow_obj.__name__}")
+        sig = inspect.signature(fn)
+        typer.echo(f"\nSignature:\n  {fn.__name__}{sig}")
+        doc = inspect.getdoc(fn)
+        if doc:
+            typer.echo(f"\nDoc:\n{doc}")
+        return
+
+    cmds = _commands.load_commands()
+    if name in cmds:
+        fn = cmds[name]
+        module = getattr(fn, "__module__", "?")
+        fn_name = getattr(fn, "__name__", str(fn))
+        typer.echo(f"{name} (command) — {module}:{fn_name}")
+        try:
+            sig = inspect.signature(fn)
+            typer.echo(f"\nSignature:\n  {fn_name}{sig}")
+        except (TypeError, ValueError):
+            typer.echo("\nSignature: <unavailable>")
+        doc = inspect.getdoc(fn)
+        if doc:
+            typer.echo(f"\nDoc:\n{doc}")
+        return
+
+    typer.echo(f"no formula or command named {name!r}. Run `po list`.", err=True)
+    raise typer.Exit(1)
 
 
 _DEFAULT_PREFECT_API = "http://127.0.0.1:4200/api"
@@ -735,5 +774,86 @@ def packs() -> None:
     typer.echo(_packs.render_packs_table(found))
 
 
-if __name__ == "__main__":
+def _locate_po_tui() -> Path | None:
+    """Find the po-tui binary.
+
+    Search order:
+      1. <repo>/bin/po-tui          (canonical install location)
+      2. <repo>/tui/dist/po-tui     (developer build output)
+      3. po-tui on $PATH
+
+    Returns the resolved Path if found, else None.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    candidates = [
+        repo_root / "bin" / "po-tui",
+        repo_root / "tui" / "dist" / "po-tui",
+    ]
+    for p in candidates:
+        if p.is_file() and os.access(p, os.X_OK):
+            return p
+    on_path = shutil.which("po-tui")
+    if on_path:
+        return Path(on_path)
+    return None
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def tui(ctx: typer.Context) -> None:
+    """Live TUI dashboard for the swarm. Hands off to the bun-built `po-tui` binary.
+
+    Extra args are forwarded verbatim, e.g. `po tui --epic 4ja --refresh-ms 1000`.
+    """
+    binary = _locate_po_tui()
+    if binary is None:
+        repo_root = Path(__file__).resolve().parent.parent
+        typer.echo(
+            "po-tui binary not found.\n\n"
+            f"Build it first:\n"
+            f"  cd {repo_root / 'tui'} && bun install && bun run build\n"
+            f"  mkdir -p {repo_root / 'bin'} && cp dist/po-tui {repo_root / 'bin' / 'po-tui'}\n",
+            err=True,
+        )
+        raise typer.Exit(2)
+    # Hand the terminal to the TUI; never returns on success.
+    os.execvp(str(binary), [str(binary), *ctx.args])
+
+
+def main() -> None:
+    """Entry point for the `po` console script.
+
+    Dispatch order:
+      1. If argv[0] is not a core Typer verb and matches a registered
+         `po.commands` entry, invoke that callable with `_parse_kwargs`
+         on the remaining argv. (Per principle §4: pack-shipped utility
+         ops skip Prefect overhead and dispatch as `po <command>`.)
+      2. Otherwise hand off to the Typer `app` for normal subcommand
+         routing (including `--help`, `list`, `run`, etc.).
+    """
+    argv = sys.argv[1:]
+    if argv and not argv[0].startswith("-"):
+        first = argv[0]
+        reserved = _commands.core_verbs()
+        if first not in reserved:
+            registry = _commands.load_commands()
+            if first in registry:
+                fn = registry[first]
+                kwargs = _parse_kwargs(argv[1:])
+                try:
+                    result = fn(**kwargs)
+                except TypeError as exc:
+                    typer.echo(f"bad arguments for {first}: {exc}", err=True)
+                    typer.echo(
+                        f"run `po show {first}` to see the signature", err=True
+                    )
+                    raise SystemExit(2) from exc
+                if result is not None:
+                    typer.echo(result)
+                return
     app()
+
+
+if __name__ == "__main__":
+    main()

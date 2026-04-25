@@ -72,6 +72,7 @@ def test_install_invokes_uv_with_pack_spec(monkeypatch: pytest.MonkeyPatch) -> N
         )
 
     monkeypatch.setattr(packs, "_run_uv", fake_run)
+    monkeypatch.setattr(packs, "discover_packs", lambda: [])
     packs.install("po-formulas-software-dev")
     assert called == [
         [
@@ -97,9 +98,38 @@ def test_install_local_dir_becomes_editable(
         )
 
     monkeypatch.setattr(packs, "_run_uv", fake_run)
+    monkeypatch.setattr(packs, "discover_packs", lambda: [])
     packs.install(str(tmp_path))
     assert called[0][-2] == "--with-editable"
     assert called[0][-1] == str(tmp_path)
+
+
+def test_install_rejects_command_collision_with_core_verb(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pack registering a `po.commands` entry that shadows a core verb
+    (e.g. `run`) must be rejected at install time per principle §4."""
+
+    def fake_run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    bad = packs.PackInfo(
+        name="po-formulas-bad",
+        version="0.1",
+        source="pypi",
+        contributions={"po.commands": ["run"]},
+    )
+    monkeypatch.setattr(packs, "_run_uv", fake_run)
+    monkeypatch.setattr(packs, "discover_packs", lambda: [bad])
+
+    with pytest.raises(packs.PackError) as exc_info:
+        packs.install("po-formulas-bad")
+    msg = str(exc_info.value)
+    assert "po-formulas-bad" in msg
+    assert "run" in msg
+    assert "po uninstall" in msg
 
 
 def test_install_maps_uv_failure_to_packerror(monkeypatch: pytest.MonkeyPatch) -> None:

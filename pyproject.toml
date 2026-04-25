@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-po = "prefect_orchestration.cli:app"
+po = "prefect_orchestration.cli:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -113,7 +113,12 @@ def _install_argv(spec: str, *, editable: bool) -> list[str]:
 
 
 def install(spec: str, *, editable: bool = False) -> None:
-    """Install a pack. Disambiguates `spec` when `editable` is False."""
+    """Install a pack. Disambiguates `spec` when `editable` is False.
+
+    After uv finishes, audits any newly-discovered `po.commands` entries
+    against the core-verb set and raises `PackError` on collision so
+    pack authors hear about it at install time, not invocation time.
+    """
     if not spec:
         raise PackError("install: spec must not be empty")
     eff_editable = editable
@@ -128,6 +133,38 @@ def install(spec: str, *, editable: bool = False) -> None:
             f"po install {spec!r} failed (uv exited {exc.returncode}):\n"
             f"{(exc.stderr or '').rstrip()}"
         ) from exc
+    _check_command_collisions()
+
+
+def _check_command_collisions() -> None:
+    """Scan installed packs for `po.commands` entries that shadow core verbs.
+
+    Loud at install/update time per principle §4: collisions break
+    `po <command>` dispatch (core verb wins) and would otherwise only
+    surface as a silent no-op much later. We do not auto-uninstall —
+    leaves the user in control. Lazily imports `commands` to avoid a
+    circular import at module load.
+    """
+    from prefect_orchestration import commands as _cmds
+
+    by_pack: dict[str, list[str]] = {}
+    for p in discover_packs():
+        names = p.contributions.get("po.commands") or []
+        if names:
+            by_pack[p.name] = list(names)
+    collisions = _cmds.find_command_collisions(by_pack)
+    if not collisions:
+        return
+    lines = [
+        "po command name(s) collide with core verbs — refusing to register:"
+    ]
+    for pack, offenders in sorted(collisions.items()):
+        lines.append(f"  {pack}: {', '.join(offenders)}")
+    lines.append(
+        "remove the offending entry from the pack's pyproject.toml, "
+        "or run `po uninstall <pack>` to roll back."
+    )
+    raise PackError("\n".join(lines))
 
 
 def uninstall(name: str) -> None:

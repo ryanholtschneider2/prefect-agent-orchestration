@@ -66,7 +66,8 @@ a Prefect server reachable at `PREFECT_API_URL`.
 
 | Module | Role |
 |---|---|
-| `cli.py` | Typer entry point; discovers `po.formulas` + `po.deployments` entry points; subcommands `list`/`show`/`run`/`logs`/`artifacts`/`sessions`/`watch`/`retry`/`status`/`deploy`/`doctor`/`install`/`update`/`uninstall`/`packs`. |
+| `cli.py` | Typer entry point; discovers `po.formulas` + `po.deployments` + `po.commands` entry points; subcommands `list`/`show`/`run`/`logs`/`artifacts`/`sessions`/`watch`/`retry`/`status`/`deploy`/`doctor`/`install`/`update`/`uninstall`/`packs`. `cli.main()` is the console-script entry: dispatches `po <command>` to `po.commands` callables, falls through to Typer for everything else. |
+| `commands.py` | `po.commands` registry — `load_commands()`, `core_verbs()` (read off `app.registered_commands`), `find_command_collisions()`. |
 | `packs.py` | Pack lifecycle — `install`/`update`/`uninstall`/`packs` shell out to `uv tool` and introspect `importlib.metadata` for `po.*` EP groups. |
 | `agent_session.py` | `AgentSession` + `SessionBackend` Protocol (`ClaudeCliBackend`, `TmuxClaudeBackend`, `StubBackend`). Per-role `--resume <uuid>` + `--fork-session`. |
 | `beads_meta.py` | `MetadataStore` Protocol; `BeadsStore` (shells `bd`) + `FileStore` (JSON fallback); `claim_issue`/`close_issue`/`list_epic_children`. |
@@ -398,6 +399,48 @@ soft timeout; on timeout the row is yellow (warn), not red. Any red row
 exits 1.
 
 Run `po update` after registering a new check so `importlib.metadata`
+sees the new entry-point.
+
+### Pack-shipped utility commands (`po.commands`)
+
+Packs can ship lightweight, **non-orchestrated** utility ops via the
+`po.commands` entry-point group. These dispatch as `po <command>` —
+NOT `po run <command>` — and skip Prefect overhead entirely
+(principle §4: utility ops are direct callables, not flows).
+
+```python
+# po_formulas/commands.py
+def summarize_verdicts(issue_id: str) -> None:
+    """One-line summary per verdicts/*.json for an issue's run dir."""
+    ...
+```
+
+```toml
+# pyproject.toml
+[project.entry-points."po.commands"]
+summarize-verdicts = "po_formulas.commands:summarize_verdicts"
+```
+
+Then:
+
+```bash
+po summarize-verdicts --issue-id prefect-orchestration-4ja.5
+```
+
+`po list` shows formulas + commands together with a `KIND` column
+(`formula` | `command`); `po show <name>` works for both.
+
+**Argument parsing**: identical to `po run` — `--key value`,
+`--key=value`, bare `--flag` (→ `True`), `--no-flag` (→ `False`).
+Values are coerced to bool/int/float when unambiguous.
+
+**Collision handling**: at `po install` / `po update` time, the
+post-install scan refuses any pack whose `po.commands` entry shadows
+a core Typer verb (`run`, `list`, `show`, `deploy`, …). The pack stays
+installed but the install command exits non-zero — fix the pack's
+`pyproject.toml` and reinstall, or `po uninstall <pack>`.
+
+Run `po update` after registering a new command so `importlib.metadata`
 sees the new entry-point.
 
 ## Related beads (read before touching core or prompts)
