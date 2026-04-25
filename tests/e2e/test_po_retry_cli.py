@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,7 @@ def _po(
         env.update(env_overrides)
     return subprocess.run(
         [str(po_bin), *args],
-        cwd=REPO_ROOT,
+        cwd=tempfile.mkdtemp(prefix="po-e2e-"),
         capture_output=True,
         text=True,
         env=env,

@@ -8,9 +8,8 @@ deployments module. No entry-point stubbing.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
-import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -18,7 +17,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _po(*args: str, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _po(
+    *args: str, env_overrides: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Invoke the installed `po` CLI via the project venv."""
     po_bin = REPO_ROOT / ".venv" / "bin" / "po"
     if not po_bin.exists():
@@ -30,7 +31,7 @@ def _po(*args: str, env_overrides: dict[str, str] | None = None) -> subprocess.C
         env.update(env_overrides)
     return subprocess.run(
         [str(po_bin), *args],
-        cwd=REPO_ROOT,
+        cwd=tempfile.mkdtemp(prefix="po-e2e-"),
         capture_output=True,
         text=True,
         env=env,
