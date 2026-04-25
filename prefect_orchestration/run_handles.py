@@ -25,6 +25,19 @@ from pathlib import Path
 from typing import Mapping
 
 
+def claude_session_jsonl(rig_path: Path, session_id: str) -> Path:
+    """Path to Claude Code's local session-history JSONL for a given run.
+
+    Claude writes per-session transcripts to
+    `~/.claude/projects/<slug>/<session_id>.jsonl`, where `<slug>` is
+    the cwd path with `/` replaced by `-`. This is the canonical place
+    to recover what a role's agent thought, called, and said — useful
+    for `claude --resume <uuid>` and for post-mortem inspection.
+    """
+    slug = str(rig_path.resolve()).replace("/", "-")
+    return Path.home() / ".claude" / "projects" / slug / f"{session_id}.jsonl"
+
+
 def prefect_run_url(flow_run_id: str | None) -> str | None:
     """Compose a Prefect UI URL from PREFECT_API_URL + flow_run id.
 
@@ -69,6 +82,7 @@ def write_run_handles(
     sessions: Mapping[str, str] | None = None,
     tmux_session_prefix: str | None = None,
     extra_links: Mapping[str, str] | None = None,
+    rig_path: Path | None = None,
 ) -> Path:
     """Write `<run_dir>/links.md` summarising where to find this run.
 
@@ -114,13 +128,26 @@ def write_run_handles(
 
     if roles:
         out.append("## Resume a Claude session\n\n")
-        out.append("| role | session_id |\n|---|---|\n")
+        show_jsonl = rig_path is not None
+        if show_jsonl:
+            out.append("| role | session_id | history |\n|---|---|---|\n")
+        else:
+            out.append("| role | session_id |\n|---|---|\n")
         any_sid = False
         for role in roles:
-            sid = sessions.get(role) or "—"
-            if sid != "—":
+            sid = sessions.get(role)
+            if sid:
                 any_sid = True
-            out.append(f"| {role} | `{sid}` |\n")
+                row = f"| {role} | `{sid}` |"
+                if show_jsonl:
+                    jsonl = claude_session_jsonl(rig_path, sid)  # type: ignore[arg-type]
+                    row += f" `{jsonl}` |"
+                out.append(row + "\n")
+            else:
+                row = f"| {role} | — |"
+                if show_jsonl:
+                    row += " — |"
+                out.append(row + "\n")
         if not any_sid:
             out.append(
                 "\n_(none yet — UUIDs land here after each role's first turn)_\n"
@@ -132,6 +159,12 @@ def write_run_handles(
             "```\n\n"
             f"Or via PO: `po sessions {issue_id} --resume <role>`\n"
         )
+        if show_jsonl:
+            out.append(
+                "\nThe `history` column points at Claude Code's local "
+                "transcript JSONL — every assistant turn, tool call, and "
+                "tool result the role made. Useful for post-mortem.\n"
+            )
 
     path = run_dir / "links.md"
     path.write_text("".join(out))
