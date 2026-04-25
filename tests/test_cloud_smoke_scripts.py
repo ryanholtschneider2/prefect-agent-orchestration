@@ -51,9 +51,7 @@ def test_script_is_executable(script: Path) -> None:
     assert script.stat().st_mode & 0o111, f"{script.name} is not executable"
 
 
-@pytest.mark.skipif(
-    shutil.which("shellcheck") is None, reason="shellcheck not on PATH"
-)
+@pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not on PATH")
 def test_shellcheck_clean() -> None:
     cmd = ["shellcheck", "--severity=warning", *(str(p) for p in _scripts())]
     res = subprocess.run(cmd, capture_output=True, text=True, check=False)
