@@ -40,6 +40,13 @@ services:
         # users with a pack repo, pass `--build-context pack=…` directly.
         # Default points at the sibling po-formulas repo when present.
         pack: ../software-dev/po-formulas
+        # User-global Claude context (CLAUDE.md, prompts/, skills/, commands/,
+        # sanitized settings.json). Populated by scripts/sync-claude-context.sh.
+        # Defaults to the in-tree ./claude-context/ which is `.gitkeep`-only
+        # until the dev runs the sync — image still builds either way (the
+        # `claude-context` Docker stage defaults to FROM scratch).
+        # See README "Shipping Claude context to workers" (tyf.2).
+        claude-context: ./claude-context
     image: po-worker:dev
     depends_on:
       prefect-server:
@@ -75,6 +82,7 @@ services:
       dockerfile: Dockerfile
       additional_contexts:
         pack: ../software-dev/po-formulas
+        claude-context: ./claude-context
     depends_on:
       prefect-server:
         condition: service_healthy

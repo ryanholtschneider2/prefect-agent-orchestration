@@ -178,6 +178,78 @@ mkdir -p rig && (cd rig && bd init)
 ISSUE_ID=demo-1 PO_BACKEND=stub ./scripts/smoke-compose.sh
 ```
 
+### Shipping Claude context to workers
+
+Workers inside containers need the same Claude Code context as the
+laptop user — `~/.claude/CLAUDE.md`, `prompts/`, `settings.json`,
+`skills/`, and `commands/` — otherwise slash commands don't resolve and
+the agent loses the user-global instructions baked into CLAUDE.md.
+
+The full tree (≈4 MiB, mostly `skills/`) exceeds Kubernetes' ~1 MiB
+ConfigMap budget, so PO **bakes the static tree into the worker image**
+at build time, with an optional **ConfigMap overlay** for the small
+subset operators iterate on (CLAUDE.md, settings.json, commands/).
+Issue: `prefect-orchestration-tyf.2`.
+
+**1. Sync local `~/.claude` into the build context** (whitelist-only,
+sanitizes `settings.json`, refuses to copy credentials/history/cache):
+
+```bash
+scripts/sync-claude-context.sh --force
+```
+
+This populates `./claude-context/` (gitignored). What's included:
+`CLAUDE.md`, `prompts/`, `skills/`, `commands/`, sanitized
+`settings.json`. What's refused: `.credentials.json`, `projects/`,
+`history.jsonl`, `cache/`, `secrets/`, `session-env/`, `ide/`,
+`backups/`, `archive/`, `plans/`, `plugins/`, `memory/`, `agents/`,
+`hooks/`. The sanitizer drops `hooks` / `mcpServers` / any
+`*token*`/`*key*`/`*secret*` keys from `settings.json`.
+
+**2. Build with the populated context:**
+
+```bash
+docker build \
+  --build-context claude-context=./claude-context \
+  -t po-worker:dev .
+```
+
+If you skip the `--build-context` flag the image still builds — the
+`claude-context` stage defaults to `FROM scratch` and the COPY is a
+no-op. Pod will simply lack `~/.claude/CLAUDE.md` etc., matching the
+pre-tyf.2 behavior exactly.
+
+**3. (Optional) ConfigMap override for runtime edits.** Generate and
+apply an overrideable ConfigMap so you can iterate on CLAUDE.md /
+settings.json / commands without rebuilding the image:
+
+```bash
+scripts/sync-claude-context.sh --force \
+  --emit-configmap k8s/claude-context-overrides.yaml
+kubectl apply -f k8s/claude-context-overrides.yaml
+kubectl rollout restart deployment po-worker      # pickup needs restart
+```
+
+The worker Deployment + base-job-template already wire a projected
+volume at `/home/coder/.claude-overrides/` with `optional: true`, so a
+missing ConfigMap just means the pod runs with image-baked context.
+The entrypoint `cp -rT`'s the overlay onto `~/.claude/` on boot.
+Skills/prompts always come from the bake — they're too big for a
+ConfigMap.
+
+**4. Verify slash commands resolve in the pod** (manual; needs Claude
+auth in the pod, so not part of the compose smoke):
+
+```bash
+kubectl exec deploy/po-worker -- claude --print /skill po
+# expected: skill body, not "unknown skill"
+```
+
+A note on the **project CLAUDE.md** at `/workspace/CLAUDE.md`: the rig
+PVC mount lands at `/rig` today, so `/rig/CLAUDE.md` is what's
+reachable inside the pod. The `/workspace` path is wired by
+`prefect-orchestration-tyf.4`.
+
 ## Agent messaging (beads-as-mail)
 
 Mid-run handoff between roles (critic → builder, verifier → doer, …) is

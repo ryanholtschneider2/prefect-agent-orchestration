@@ -36,7 +36,8 @@
                   }
                 ],
                 "volumeMounts": [
-                  { "name": "rig", "mountPath": "/rig" }
+                  { "name": "rig", "mountPath": "/rig" },
+                  { "name": "claude-context-overrides", "mountPath": "/home/coder/.claude-overrides", "readOnly": true }
                 ],
                 "resources": {
                   "requests": { "cpu": "500m", "memory": "512Mi" },
@@ -45,7 +46,8 @@
               }
             ],
             "volumes": [
-              { "name": "rig", "persistentVolumeClaim": { "claimName": "po-rig" } }
+              { "name": "rig", "persistentVolumeClaim": { "claimName": "po-rig" } },
+              { "name": "claude-context-overrides", "configMap": { "name": "claude-context-overrides", "optional": true } }
             ]
           }
         }

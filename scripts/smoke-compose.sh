@@ -37,6 +37,21 @@ fi
 echo ">>> building worker image"
 docker compose build worker
 
+# Optional: if scripts/sync-claude-context.sh has populated ./claude-context/
+# (more than just .gitkeep), verify the bake landed at /home/coder/.claude/.
+# See README "Shipping Claude context to workers" — prefect-orchestration-tyf.2.
+if [[ -n "$(find ./claude-context -mindepth 1 -not -name .gitkeep -print -quit 2>/dev/null || true)" ]]; then
+  echo ">>> verifying baked ~/.claude context inside worker image"
+  for path in CLAUDE.md prompts skills commands settings.json; do
+    if ! docker compose run --rm --entrypoint /bin/sh worker -c \
+        "test -e /home/coder/.claude/$path"; then
+      echo "error: /home/coder/.claude/$path missing in worker image" >&2
+      exit 1
+    fi
+  done
+  echo "    ok: CLAUDE.md, prompts/, skills/, commands/, settings.json all present"
+fi
+
 echo ">>> bringing up prefect-server + worker"
 docker compose up -d prefect-server worker
 

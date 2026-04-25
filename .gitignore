@@ -15,3 +15,8 @@ dist/
 .planning/software-dev-full/*/review-artifacts/
 .planning/software-dev-full/*/final-tests.txt
 .planning/software-dev-full/*/smoke-test-output.txt
+
+# Worker-image Claude context (populated by scripts/sync-claude-context.sh).
+# Generated locally from $HOME/.claude; never commit — leaks user config.
+claude-context/*
+!claude-context/.gitkeep

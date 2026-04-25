@@ -73,6 +73,16 @@ spec:
             # the matching `volumes` entry below:
             # - name: claude-home
             #   mountPath: /home/coder/.claude
+            # ConfigMap-driven override for the small subset of ~/.claude
+            # (CLAUDE.md, settings.json, commands/) so ops can iterate on
+            # user-global instructions without rebuilding the image
+            # (prefect-orchestration-tyf.2). Skills/prompts stay baked
+            # into the image (too big for ConfigMap). The matching volume
+            # uses optional:true so a missing ConfigMap just means the
+            # pod runs with image-baked context.
+            - name: claude-context-overrides
+              mountPath: /home/coder/.claude-overrides
+              readOnly: true
           resources:
             requests:
               cpu: 200m
@@ -88,6 +98,10 @@ spec:
         # - name: claude-home
         #   persistentVolumeClaim:
         #     claimName: po-claude-home
+        - name: claude-context-overrides
+          configMap:
+            name: claude-context-overrides
+            optional: true
 ---
 apiVersion: v1
 kind: ServiceAccount

@@ -32,6 +32,15 @@ ARG BD_VERSION=1.0.3
 # only.
 FROM scratch AS pack
 
+# -------------------------------------------------------- claude-context
+# Default stage so `COPY --from=claude-context` always resolves. Users
+# populate it via `scripts/sync-claude-context.sh` and pass:
+#   docker build --build-context claude-context=./claude-context …
+# When unset, the runtime stage skips the bake silently — image still
+# builds, pod just won't have ~/.claude/CLAUDE.md, prompts/, skills/, …
+# (matches the pre-tyf.2 behavior exactly).
+FROM scratch AS claude-context
+
 # ---------------------------------------------------------------- tools
 # Slim stage that produces the `uv` and `bd` binaries. node + claude come
 # from the apt/npm install in the runtime stage so we keep one node
@@ -115,7 +124,18 @@ RUN if id ubuntu >/dev/null 2>&1; then userdel -r ubuntu 2>/dev/null || true; fi
  && useradd -m -s /bin/bash -u 1000 -g 1000 -G sudo coder \
  && echo "coder ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
  && mkdir -p /workspace /rig \
- && chown -R coder:coder /workspace /rig
+ && chown -R coder:coder /workspace /rig \
+ && mkdir -p /home/coder/.claude \
+ && chown -R coder:coder /home/coder/.claude
+
+# Bake the user's CLAUDE.md / prompts / skills / commands / settings.json
+# into /home/coder/.claude/. Source is the `claude-context` build stage
+# (default `FROM scratch`), populated by:
+#   scripts/sync-claude-context.sh && \
+#   docker build --build-context claude-context=./claude-context …
+# Skipping the build-context arg is fine — COPY from an empty stage is a
+# no-op. Issue: prefect-orchestration-tyf.2.
+COPY --from=claude-context --chown=coder:coder . /home/coder/.claude/
 
 # Install prefect-orchestration (and optionally a sibling-repo pack) into
 # `coder`'s uv-tool environment. Copy core source into /src/po-core; copy

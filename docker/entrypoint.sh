@@ -114,12 +114,37 @@ else
 CLEOF
 fi
 
-cat > "$HOME/.claude/settings.json" <<'CSEOF'
+# settings.json: only write the default if no settings file is already
+# present. The image-baked `~/.claude/settings.json` (from the
+# `claude-context` build stage — see Dockerfile and
+# scripts/sync-claude-context.sh, prefect-orchestration-tyf.2) and any
+# ConfigMap-mounted override must win over this fallback.
+if [[ ! -f "$HOME/.claude/settings.json" ]]; then
+  cat > "$HOME/.claude/settings.json" <<'CSEOF'
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "theme": "dark"
 }
 CSEOF
+fi
+
+# ConfigMap override overlay (prefect-orchestration-tyf.2).
+# When deployed with the optional `claude-context-overrides` ConfigMap
+# projected at /home/coder/.claude-overrides/, copy its files on top of
+# the baked tree so operators can update CLAUDE.md / settings.json /
+# commands without rebuilding the image. Pod restart still required for
+# pickup — this is a per-boot overlay, not a live mount.
+OVERRIDES_DIR="${PO_CLAUDE_OVERRIDES_DIR:-$HOME/.claude-overrides}"
+if [[ -d "$OVERRIDES_DIR" ]]; then
+  # cp -rT keeps the existing baked files for anything the overrides
+  # don't replace (skills/, prompts/). Trailing slash on src copies
+  # contents, not the dir itself.
+  if cp -rT "$OVERRIDES_DIR/" "$HOME/.claude/" 2>/dev/null; then
+    echo "po-entrypoint: applied claude-context overrides from $OVERRIDES_DIR" >&2
+  else
+    echo "po-entrypoint: warning — failed to apply overrides from $OVERRIDES_DIR" >&2
+  fi
+fi
 
 # Ensure ~/.local/bin (uv-tool installs) is on PATH for whatever runs next.
 export PATH="$HOME/.local/bin:$PATH"

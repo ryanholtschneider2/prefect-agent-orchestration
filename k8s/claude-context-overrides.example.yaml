@@ -1,0 +1,39 @@
+# Example ConfigMap mounted at /home/coder/.claude-overrides/ inside
+# worker pods. The entrypoint cp -rT's any keys here onto
+# /home/coder/.claude/ on boot so ops can iterate on CLAUDE.md /
+# settings.json / commands without rebuilding the image.
+#
+# Generate from local ~/.claude:
+#   scripts/sync-claude-context.sh \
+#     --emit-configmap k8s/claude-context-overrides.yaml --force
+#
+# Apply:
+#   kubectl apply -f k8s/claude-context-overrides.yaml
+#   kubectl rollout restart deployment po-worker      # required for pickup
+#
+# Notes:
+# - Skills/prompts are baked into the image (too large for ConfigMap's
+#   ~1MiB cap). Run `scripts/sync-claude-context.sh` and rebuild the
+#   image to update those.
+# - Keys in a ConfigMap can't contain "/" — `commands/` files are
+#   flattened to `commands.<name>.md` keys; the entrypoint flattens
+#   them back. (For a real overlay flow with subdirs, prefer a
+#   projected volume of multiple ConfigMaps or a Secret-backed tar.)
+# - Issue: prefect-orchestration-tyf.2.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: claude-context-overrides
+  labels:
+    app: po-worker
+data:
+  CLAUDE.md: |
+    # Example user-global instructions. Replace with your real CLAUDE.md.
+    # The image-baked tree under /home/coder/.claude/ supplies skills/,
+    # prompts/, and commands/; this ConfigMap only overrides the small
+    # subset operators iterate on.
+  settings.json: |
+    {
+      "$schema": "https://json.schemastore.org/claude-code-settings.json",
+      "theme": "dark"
+    }
