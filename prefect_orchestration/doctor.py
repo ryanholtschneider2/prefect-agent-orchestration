@@ -384,9 +384,7 @@ def _ep_source(ep: object) -> str:
     return getattr(dist, "name", "") or "pack"
 
 
-def _run_pack_check(
-    ep: object, timeout: float = PACK_CHECK_TIMEOUT_S
-) -> CheckResult:
+def _run_pack_check(ep: object, timeout: float = PACK_CHECK_TIMEOUT_S) -> CheckResult:
     """Load + invoke a pack check under a soft timeout.
 
     Timeout is enforced via a single-shot thread; if the check truly hangs
@@ -431,9 +429,7 @@ def _run_pack_check(
         return CheckResult(
             name=name,
             status=Status.FAIL,
-            message=(
-                f"check returned {type(result).__name__}, expected DoctorCheck"
-            ),
+            message=(f"check returned {type(result).__name__}, expected DoctorCheck"),
             remediation=f"update pack {source} to return a DoctorCheck",
             source=source,
         )
@@ -515,9 +511,7 @@ def render_table(report: DoctorReport) -> str:
     pack-contributed checks).
     """
     headers = ("SOURCE", "CHECK", "STATUS", "MESSAGE")
-    rows = [
-        (r.source, r.name, r.status.value, r.message) for r in report.results
-    ]
+    rows = [(r.source, r.name, r.status.value, r.message) for r in report.results]
     widths = [
         max(len(headers[i]), *(len(r[i]) for r in rows)) if rows else len(headers[i])
         for i in range(4)
