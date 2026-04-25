@@ -145,6 +145,37 @@ def show(name: str) -> None:
         typer.echo(f"\nDoc:\n{doc}")
 
 
+_DEFAULT_PREFECT_API = "http://127.0.0.1:4200/api"
+
+
+def _autoconfigure_prefect_api() -> None:
+    """If a local Prefect server is reachable and PREFECT_API_URL is unset,
+    point at it. Avoids the per-`po run` ephemeral-server tax (and the
+    socket contention that comes from N concurrent ephemerals fighting
+    each other) when the user already has `prefect server start` going.
+
+    Side-effect: mutates `os.environ`, so subprocesses spawned by
+    flow tasks (the agent → pytest chain) inherit the same setting.
+    """
+    if os.environ.get("PREFECT_API_URL"):
+        return
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(
+            f"{_DEFAULT_PREFECT_API}/health", timeout=1.5
+        ) as resp:
+            if resp.status != 200:
+                return
+    except Exception:
+        return
+    os.environ["PREFECT_API_URL"] = _DEFAULT_PREFECT_API
+    typer.echo(
+        f"[po] PREFECT_API_URL was unset; using local server at {_DEFAULT_PREFECT_API}",
+        err=True,
+    )
+
+
 @app.command(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
@@ -156,6 +187,7 @@ def run(
 
     po run software-dev-full --issue-id sr-8yu.3 --rig site --rig-path ./site
     """
+    _autoconfigure_prefect_api()
     formulas = _load_formulas()
     if name not in formulas:
         typer.echo(f"no formula named {name!r}. Run `po list`.", err=True)
