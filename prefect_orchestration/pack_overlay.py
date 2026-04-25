@@ -29,7 +29,7 @@ from __future__ import annotations
 import importlib
 import logging
 import shutil
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib.metadata import distributions
 from pathlib import Path
@@ -133,34 +133,21 @@ def discover_packs() -> list[Pack]:
     return list(seen.values())
 
 
-def _copy_tree_skip_existing(src: Path, dst: Path) -> list[Path]:
-    """Copy ``src/**`` into ``dst/`` preserving mode, skipping any file that already exists at the destination."""
+def _copy_tree(src: Path, dst: Path, *, skip_existing: bool) -> list[Path]:
+    """Copy ``src/**`` into ``dst/`` preserving mode.
+
+    With ``skip_existing=True`` files already present at the target are
+    left alone; otherwise existing files are overwritten.
+    """
     written: list[Path] = []
     if not src.is_dir():
         return written
     for item in src.rglob("*"):
         if item.is_dir():
             continue
-        rel = item.relative_to(src)
-        target = dst / rel
-        if target.exists():
+        target = dst / item.relative_to(src)
+        if skip_existing and target.exists():
             continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(item, target, follow_symlinks=True)
-        written.append(target)
-    return written
-
-
-def _copy_tree_overwrite(src: Path, dst: Path) -> list[Path]:
-    """Copy ``src/**`` into ``dst/`` preserving mode, overwriting on conflict."""
-    written: list[Path] = []
-    if not src.is_dir():
-        return written
-    for item in src.rglob("*"):
-        if item.is_dir():
-            continue
-        rel = item.relative_to(src)
-        target = dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(item, target, follow_symlinks=True)
         written.append(target)
@@ -198,9 +185,9 @@ def apply_overlay(pack: Pack, cwd: Path, *, role: str | None = None) -> list[Pat
     written: list[Path] = []
     if role:
         for src in _candidate_role_overlay_dirs(pack, role):
-            written.extend(_copy_tree_skip_existing(src, cwd))
+            written.extend(_copy_tree(src, cwd, skip_existing=True))
     for src in _candidate_overlay_dirs(pack):
-        written.extend(_copy_tree_skip_existing(src, cwd))
+        written.extend(_copy_tree(src, cwd, skip_existing=True))
     return written
 
 
@@ -212,7 +199,7 @@ def apply_skills(pack: Pack, rig_path: Path) -> list[Path]:
         if not skills_root.is_dir():
             continue
         for skill_dir in sorted(p for p in skills_root.iterdir() if p.is_dir()):
-            written.extend(_copy_tree_overwrite(skill_dir, dest_root / skill_dir.name))
+            written.extend(_copy_tree(skill_dir, dest_root / skill_dir.name, skip_existing=False))
     return written
 
 
@@ -222,7 +209,7 @@ def materialize_packs(
     role: str | None,
     overlay: bool = True,
     skills: bool = True,
-    packs: Sequence[Pack] | Iterable[Pack] | None = None,
+    packs: Iterable[Pack] | None = None,
 ) -> dict[str, list[Path]]:
     """Apply overlay + skills for every installed pack into ``cwd``.
 
