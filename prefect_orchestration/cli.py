@@ -774,53 +774,6 @@ def packs() -> None:
     typer.echo(_packs.render_packs_table(found))
 
 
-def _locate_po_tui() -> Path | None:
-    """Find the po-tui binary.
-
-    Search order:
-      1. <repo>/bin/po-tui          (canonical install location)
-      2. <repo>/tui/dist/po-tui     (developer build output)
-      3. po-tui on $PATH
-
-    Returns the resolved Path if found, else None.
-    """
-    repo_root = Path(__file__).resolve().parent.parent
-    candidates = [
-        repo_root / "bin" / "po-tui",
-        repo_root / "tui" / "dist" / "po-tui",
-    ]
-    for p in candidates:
-        if p.is_file() and os.access(p, os.X_OK):
-            return p
-    on_path = shutil.which("po-tui")
-    if on_path:
-        return Path(on_path)
-    return None
-
-
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-)
-def tui(ctx: typer.Context) -> None:
-    """Live TUI dashboard for the swarm. Hands off to the bun-built `po-tui` binary.
-
-    Extra args are forwarded verbatim, e.g. `po tui --epic 4ja --refresh-ms 1000`.
-    """
-    binary = _locate_po_tui()
-    if binary is None:
-        repo_root = Path(__file__).resolve().parent.parent
-        typer.echo(
-            "po-tui binary not found.\n\n"
-            f"Build it first:\n"
-            f"  cd {repo_root / 'tui'} && bun install && bun run build\n"
-            f"  mkdir -p {repo_root / 'bin'} && cp dist/po-tui {repo_root / 'bin' / 'po-tui'}\n",
-            err=True,
-        )
-        raise typer.Exit(2)
-    # Hand the terminal to the TUI; never returns on success.
-    os.execvp(str(binary), [str(binary), *ctx.args])
-
-
 def main() -> None:
     """Entry point for the `po` console script.
 

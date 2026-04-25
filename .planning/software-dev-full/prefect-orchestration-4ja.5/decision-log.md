@@ -44,6 +44,33 @@
   rejected for testability and layering (commands module owns the
   reserved-verb concept, packs module owns lifecycle).
 
+- **Decision (iter 2, response to critic nit #2)**:
+  `_check_command_collisions()` re-scans **all** installed packs after
+  every `install()` / `update()`, not just the pack whose contributions
+  changed.
+  **Why**: simpler, consistent semantics. A pre-existing collision in
+  pack B will surface even when the user runs `po install <pack-A>`,
+  which is a feature: any time the tool env mutates we re-validate the
+  whole surface. If pack B was installed before this code shipped (or
+  via a manual `uv tool install`), the next `po` lifecycle op flags it.
+  **Alternatives considered**: scoping the check to "newly-added EPs
+  for this call" — rejected because we'd need to snapshot pre-install
+  state to diff, doubling the importlib.metadata round-trips for a
+  marginal UX win.
+
+- **Decision (iter 2, response to critic finding #1)**: Reverted the
+  unrelated `tui` Typer command (and `_locate_po_tui` helper) that was
+  swept into iter-1's commit. The `tui` line was also removed from the
+  expected set in `test_core_verbs_includes_all_typer_subcommands`.
+  **Why**: critic flagged it as scope creep — it's not in the plan,
+  not in any AC, references binaries the repo does not ship, and was
+  untested. It was already in the working tree when iter-1 began (cli
+  was `M` before I touched it) and `git add prefect_orchestration/cli.py`
+  swept it in. Stripping it now keeps this bead single-purpose.
+  **Alternatives considered**: leaving it in and filing a follow-up
+  bead — rejected, the critic explicitly asked for a revert and it
+  belongs in its own change.
+
 - **Decision**: Existing `test_install_invokes_uv_with_pack_spec` and
   `test_install_local_dir_becomes_editable` were updated to monkeypatch
   `discover_packs` to `[]`.

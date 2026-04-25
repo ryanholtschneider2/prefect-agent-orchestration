@@ -38,7 +38,6 @@ def test_core_verbs_includes_all_typer_subcommands() -> None:
         "update",
         "uninstall",
         "packs",
-        "tui",
     }
     missing = expected - verbs
     assert not missing, f"core_verbs missing: {missing}"
