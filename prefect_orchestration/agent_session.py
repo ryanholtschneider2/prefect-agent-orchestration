@@ -429,6 +429,37 @@ def _ensure_stop_hook(cwd: Path) -> None:
     settings_path.write_text(json.dumps(existing, indent=2))
 
 
+def _wait_for_tui_ready(
+    session_name: str,
+    *,
+    fallback_s: float = 8.0,
+    poll: float = 0.4,
+) -> None:
+    """Poll the tmux pane until the Claude Code TUI input box renders.
+
+    The input row always contains a `❯` glyph; once it shows up the TUI is
+    ready to accept paste. If we never see it within `fallback_s` (rare —
+    splash screen issue, OAuth prompt, etc.) we proceed anyway and let
+    the paste-buffer attempt surface whatever's wrong.
+    """
+    deadline = time.monotonic() + fallback_s
+    while time.monotonic() < deadline:
+        pane = subprocess.run(
+            ["tmux", "capture-pane", "-pt", session_name],
+            capture_output=True,
+            check=False,
+        )
+        text = pane.stdout.decode(errors="replace")
+        if "❯" in text or "Welcome back" in text:
+            # TUI rendered. Tiny extra delay so the key handler is wired.
+            time.sleep(0.2)
+            return
+        if "[claude exited" in text:
+            # Caller's exit-marker check will pick this up.
+            return
+        time.sleep(poll)
+
+
 def _wait_for_stop(
     sentinel: Path,
     session_name: str,
@@ -527,7 +558,10 @@ class TmuxInteractiveClaudeBackend:
     start_command: str = "claude --dangerously-skip-permissions"
     attach_hint: bool = True
     timeout_s: float | None = None
-    settle_s: float = 2.5
+    # Used as a fallback wait if `_wait_for_tui_ready` can't positively
+    # detect the input prompt — typically only matters for very long
+    # resumed conversations where claude takes longer to render.
+    settle_s: float = 8.0
 
     def _session_name(self, suffix: str = "") -> str:
         safe_issue = self.issue.replace(".", "_")
@@ -553,10 +587,6 @@ class TmuxInteractiveClaudeBackend:
         # prior valid UUID, resume it. Forks get a fresh id so concurrent
         # forked turns don't collide on the JSONL file.
         prior = session_id if session_id and _UUID_RE.match(session_id) else None
-        new_sid = (
-            str(uuid.uuid4()) if (fork or not prior) else prior
-        )
-        resume_sid = prior if (prior and not fork) else None
 
         suffix = uuid.uuid4().hex[:6] if fork else ""
         name = self._session_name(suffix)
@@ -566,6 +596,27 @@ class TmuxInteractiveClaudeBackend:
         prompt_path.write_text(prompt)
 
         _ensure_stop_hook(cwd)
+
+        # Three modes for `claude` argv:
+        #   * resume (prior, not fork): only `--resume <prior>`. Passing
+        #     `--session-id` along with `--resume` makes claude bail with
+        #     "session already exists", which is the bug that wedged
+        #     prefect-orchestration-tyf.1's first triage. Reused UUID is
+        #     known to caller (== prior).
+        #   * fork (resume + new sid): `--session-id <new> --resume <prior>
+        #     --fork-session`. Branches are isolated by UUID.
+        #   * fresh: `--session-id <new>`. We pre-pick the UUID so we know
+        #     where the JSONL transcript and Stop sentinel will land.
+        if prior and not fork:
+            new_sid = prior
+            session_args = ["--resume", prior]
+        elif fork and prior:
+            new_sid = str(uuid.uuid4())
+            session_args = ["--session-id", new_sid, "--resume", prior, "--fork-session"]
+        else:
+            new_sid = str(uuid.uuid4())
+            session_args = ["--session-id", new_sid]
+
         sentinel = _stop_dir() / f"{new_sid}.stopped"
         sentinel.unlink(missing_ok=True)
 
@@ -576,14 +627,21 @@ class TmuxInteractiveClaudeBackend:
             check=False,
         )
 
-        argv = shlex.split(self.start_command) + [
-            "--session-id", new_sid,
-            "--model", model,
-        ]
-        if resume_sid:
-            argv += ["--resume", resume_sid]
+        argv = shlex.split(self.start_command) + session_args + ["--model", model]
 
-        wrapper = f"cd {shlex.quote(str(cwd))} && {shlex.join(argv)}"
+        # Keep the tmux session alive even if claude exits early (rate
+        # limit, bad arg, missing UUID, etc.). Without the trailing
+        # `; sleep infinity`, an early claude exit collapses bash, which
+        # kills the tmux session, which makes the next `paste-buffer`
+        # fail with a useless "no current session" error and obscures
+        # the real cause. With the keep-alive the pane stays around so
+        # we can capture-pane it for diagnostics.
+        wrapper = (
+            f"cd {shlex.quote(str(cwd))} && "
+            f"{shlex.join(argv)} ; "
+            f"echo \"[claude exited $? — session held open for diagnostics]\" ; "
+            f"sleep infinity"
+        )
         subprocess.run(
             [
                 "tmux", "new-session", "-d", "-s", name,
@@ -601,9 +659,50 @@ class TmuxInteractiveClaudeBackend:
                 flush=True,
             )
 
-        # Give claude a moment to come up to its input box before we paste.
-        # (No race-free way to detect TUI ready short of capture-pane polling.)
-        time.sleep(self.settle_s)
+        # Wait for the TUI to actually finish rendering its input box. The
+        # bordered prompt always contains a `❯` glyph in the input row; if
+        # we paste before that lands the keystrokes go to /dev/null. Falls
+        # back to fixed `settle_s` after a hard cap so we never block
+        # forever on a stuck splash screen.
+        _wait_for_tui_ready(name, fallback_s=self.settle_s)
+
+        # Verify the tmux session is still around AND claude actually
+        # came up. If claude died on startup the session will still
+        # exist (sleep infinity keep-alive) but the pane will contain
+        # the "[claude exited ...]" marker — surface that as the error
+        # so callers see the real reason instead of a cryptic
+        # paste-buffer failure.
+        has_session = subprocess.run(
+            ["tmux", "has-session", "-t", name],
+            capture_output=True,
+            check=False,
+        )
+        if has_session.returncode != 0:
+            raise RuntimeError(
+                f"tmux session {name!r} disappeared before paste — "
+                f"new-session likely failed silently. stderr: "
+                f"{has_session.stderr.decode(errors='replace')}"
+            )
+        pane = subprocess.run(
+            ["tmux", "capture-pane", "-pt", name, "-S", "-200"],
+            capture_output=True,
+            check=False,
+        )
+        pane_text = pane.stdout.decode(errors="replace")
+        if "[claude exited" in pane_text:
+            # Surface the last ~30 lines of pane output so the user can
+            # see why claude exited (rate limit, bad flag, missing
+            # credentials, etc.) instead of guessing.
+            tail = "\n".join(pane_text.splitlines()[-30:])
+            subprocess.run(
+                ["tmux", "kill-session", "-t", name],
+                capture_output=True,
+                check=False,
+            )
+            raise RuntimeError(
+                f"claude exited before prompt could be injected (session "
+                f"{name!r}). pane tail:\n{tail}"
+            )
 
         # Inject prompt via bracketed paste so internal newlines stay
         # newlines (Shift+Enter equivalent), not "submit". Then send a
