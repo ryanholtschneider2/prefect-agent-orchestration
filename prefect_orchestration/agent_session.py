@@ -56,11 +56,18 @@ def _build_claude_argv(
     fork: bool,
     model: str,
 ) -> list[str]:
-    """Construct the `claude --print ...` argv shared by all backends."""
+    """Construct the `claude --print ...` argv shared by all backends.
+
+    Uses `stream-json` so a human attaching to the tmux session sees
+    the agent's thoughts and tool calls live, not a blank pane that
+    fills in only at completion. `--verbose` is required by the CLI
+    when combining `--print` with `--output-format stream-json`.
+    """
     argv = shlex.split(start_command) + [
         "--print",
+        "--verbose",
         "--output-format",
-        "json",
+        "stream-json",
         "--model",
         model,
     ]
@@ -72,14 +79,39 @@ def _build_claude_argv(
 
 
 def _parse_envelope(stdout: str, prior_sid: str | None) -> tuple[str, str]:
-    """Mirror of ClaudeCliBackend's envelope handling."""
-    try:
-        envelope = json.loads(stdout)
-    except json.JSONDecodeError:
-        return stdout, prior_sid or str(uuid.uuid4())
-    new_sid = envelope.get("session_id") or prior_sid or str(uuid.uuid4())
-    result = envelope.get("result", stdout)
-    return result, new_sid
+    """Parse a stream-json event log: return (final_result, session_id).
+
+    `stream-json` emits one JSON object per line. The final `type=result`
+    event has the same `session_id` + `result` shape that the legacy
+    single-blob `--output-format json` produced; everything else is for
+    human lurking. Falls back to single-blob parse when no `result` event
+    is seen (covers older runs / mocks).
+    """
+    last_result: dict | None = None
+    last_session_id = prior_sid
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if "session_id" in event and isinstance(event["session_id"], str):
+            last_session_id = event["session_id"]
+        if event.get("type") == "result":
+            last_result = event
+    if last_result is None:
+        try:
+            envelope = json.loads(stdout)
+        except json.JSONDecodeError:
+            return stdout, last_session_id or str(uuid.uuid4())
+        new_sid = envelope.get("session_id") or last_session_id or str(uuid.uuid4())
+        return envelope.get("result", stdout), new_sid
+    new_sid = last_result.get("session_id") or last_session_id or str(uuid.uuid4())
+    return last_result.get("result", stdout), new_sid
 
 
 @dataclass
