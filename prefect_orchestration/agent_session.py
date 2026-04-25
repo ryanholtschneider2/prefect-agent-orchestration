@@ -278,14 +278,15 @@ class TmuxClaudeBackend:
     attach_hint: bool = True
     timeout_s: float | None = None
 
-    def _session_name(self) -> str:
+    def _session_name(self, suffix: str = "") -> str:
         # tmux uses '.' as a pane separator in target specs (session.window.pane).
         # Replace dots in issue IDs like `prefect-orchestration-4ja.1` so
         # `kill-session -t <name>` and `send-keys -t <name>` resolve to the
         # whole session, not a pane inside it.
         safe_issue = self.issue.replace(".", "_")
         safe_role = self.role.replace(".", "_")
-        return f"po-{safe_issue}-{safe_role}"
+        base = f"po-{safe_issue}-{safe_role}"
+        return f"{base}-{suffix}" if suffix else base
 
     def run(
         self,
@@ -299,7 +300,12 @@ class TmuxClaudeBackend:
         if shutil.which("tmux") is None:
             raise RuntimeError("TmuxClaudeBackend requires the `tmux` binary on PATH")
 
-        name = self._session_name()
+        # Forked calls (e.g. parallel run_tests for unit/e2e/playwright on the
+        # same tester role) need a unique tmux name + file paths, otherwise
+        # the concurrent calls race for the same session and stomp each
+        # other's stdout/.rc files.
+        suffix = uuid.uuid4().hex[:6] if fork else ""
+        name = self._session_name(suffix)
         workdir = cwd / ".tmux"
         workdir.mkdir(parents=True, exist_ok=True)
         out_path = workdir / f"{name}.out"
@@ -308,8 +314,7 @@ class TmuxClaudeBackend:
 
         # Clear stale artifacts and any session with the same name.
         for p in (out_path, rc_path):
-            if p.exists():
-                p.unlink()
+            p.unlink(missing_ok=True)
         prompt_path.write_text(prompt)
 
         kill = subprocess.run(
