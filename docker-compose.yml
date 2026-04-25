@@ -47,17 +47,22 @@ services:
     environment:
       PREFECT_API_URL: http://prefect-server:4200/api
       PO_BACKEND: ${PO_BACKEND:-cli}
-      # Refuse to start without a key when running real Claude. Override
-      # `PO_BACKEND=stub` (e.g. for the smoke) to skip the requirement.
+      # Auth: either CLAUDE_CREDENTIALS (OAuth — preferred for dev via
+      # Claude.ai subscription) OR ANTHROPIC_API_KEY (API-key fallback —
+      # matches k8s default). The entrypoint picks OAuth if
+      # CLAUDE_CREDENTIALS is set, else falls back to the API key.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_CREDENTIALS: ${CLAUDE_CREDENTIALS:-}
     volumes:
       # Bind a host directory as the rig. Defaults to ./rig — create it
       # (with a .beads/) before running the smoke. For multi-tenant
       # isolation, see engdocs/work-pools.md (sibling bead).
       - ./rig:/rig
-      # OAuth credentials fallback for laptop dev that prefers the
-      # Claude.ai subscription over an API key. Commented out by default
-      # because the worker pattern is API-key-driven (matches k8s).
+      # Local OAuth path: bind-mount the host's Claude.ai credentials
+      # file read-only. Uncomment when you want the worker to use your
+      # subscription instead of an API key — the file lives at this
+      # path on most laptops, and the entrypoint will leave it untouched
+      # in OAuth mode.
       # - ${HOME}/.claude/.credentials.json:/home/coder/.claude/.credentials.json:ro
 
   client:

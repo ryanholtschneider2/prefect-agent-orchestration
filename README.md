@@ -128,10 +128,49 @@ non-root `coder` user) builds `po-worker:base`; `Dockerfile.pack`
 overlays a formula pack. `docker-compose.yml` runs a Prefect server +
 worker locally; `k8s/*.yaml` + `k8s/po-base-job-template.json` cover
 the cluster path (PVC, Secret, Deployment, base-job-template).
-Workers authenticate with `ANTHROPIC_API_KEY` (mounted as a Secret in
-k8s, host env var locally); the entrypoint bootstraps `~/.claude.json`
-so Claude Code skips onboarding without a TTY. See
-[`engdocs/work-pools.md`](engdocs/work-pools.md) for the full
+### Auth modes
+
+Workers support two auth paths; the entrypoint picks one at startup
+(OAuth wins when both are set):
+
+1. **OAuth (Claude.ai subscription)** — preferred for non-prod / dev.
+   Set `CLAUDE_CREDENTIALS` to the contents of `~/.claude/.credentials.json`
+   and the entrypoint materializes it to `/home/coder/.claude/.credentials.json`
+   (mode 0600) before exec. `ANTHROPIC_API_KEY` is unset in this mode so
+   the SDK doesn't silently prefer the key.
+
+   *k8s recipe:*
+   ```bash
+   kubectl create secret generic claude-oauth \
+       --from-file=credentials.json="$HOME/.claude/.credentials.json"
+   # then in the worker Deployment env:
+   #   - name: CLAUDE_CREDENTIALS
+   #     valueFrom: { secretKeyRef: { name: claude-oauth, key: credentials.json } }
+   ```
+   Template at [`k8s/claude-oauth.example.yaml`](k8s/claude-oauth.example.yaml).
+
+   *Local docker-compose recipe:* uncomment the bind-mount in
+   `docker-compose.yml`:
+   ```yaml
+   - ${HOME}/.claude/.credentials.json:/home/coder/.claude/.credentials.json:ro
+   ```
+   No env-var copy is needed — the entrypoint detects a pre-existing
+   credentials file and switches to OAuth automatically.
+
+2. **API key (`ANTHROPIC_API_KEY`)** — production fallback; matches the
+   k8s default in [`k8s/po-worker-deployment.yaml`](k8s/po-worker-deployment.yaml).
+   Mounted as a Secret in k8s, host env var locally. The entrypoint
+   bootstraps `~/.claude.json` with a `customApiKeyResponses` approval
+   block so Claude Code skips onboarding without a TTY.
+
+   *k8s recipe:*
+   ```bash
+   kubectl create secret generic anthropic-api-key \
+       --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+   ```
+   Template at [`k8s/anthropic-api-key.example.yaml`](k8s/anthropic-api-key.example.yaml).
+
+See [`engdocs/work-pools.md`](engdocs/work-pools.md) for the full
 playbook. Quick local smoke (no API key required):
 
 ```bash

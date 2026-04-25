@@ -5,11 +5,27 @@
 #
 # Pre-reqs (apply order):
 #   kubectl apply -f k8s/po-rig-pvc.yaml
+#   # Choose ONE of the two auth modes:
+#   #   API-key (default, matches docker-compose):
 #   kubectl create secret generic anthropic-api-key \
 #       --from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+#   #   OAuth (Claude.ai subscription — preferred for non-prod):
+#   kubectl create secret generic claude-oauth \
+#       --from-file=credentials.json="$HOME/.claude/.credentials.json"
 #   prefect work-pool create po-k8s --type kubernetes \
 #       --base-job-template k8s/po-base-job-template.json
 #   kubectl apply -f k8s/po-worker-deployment.yaml
+#
+# To switch this Deployment to OAuth, swap the `ANTHROPIC_API_KEY` env
+# block below for:
+#   - name: CLAUDE_CREDENTIALS
+#     valueFrom:
+#       secretKeyRef:
+#         name: claude-oauth
+#         key: credentials.json
+# The entrypoint will materialize CLAUDE_CREDENTIALS to
+# /home/coder/.claude/.credentials.json (mode 0600) and unset
+# ANTHROPIC_API_KEY before exec. See k8s/claude-oauth.example.yaml.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

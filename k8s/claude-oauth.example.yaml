@@ -1,0 +1,33 @@
+# Template ONLY — do not commit real OAuth credentials.
+#
+# Create the actual secret out-of-band from your local Claude.ai login:
+#
+#   kubectl create secret generic claude-oauth \
+#       --from-file=credentials.json="$HOME/.claude/.credentials.json"
+#
+# The worker entrypoint reads the `CLAUDE_CREDENTIALS` env var and
+# materializes it to `$HOME/.claude/.credentials.json` (mode 0600) before
+# exec'ing the worker. Two equivalent injection styles:
+#
+#   1. envFrom / valueFrom.secretKeyRef of `credentials.json` -> CLAUDE_CREDENTIALS
+#      (the entrypoint writes the file). This is the default this manifest
+#      documents.
+#
+#   2. Mount the secret as a file at `/home/coder/.claude/.credentials.json`
+#      directly. The entrypoint detects a pre-existing credentials file
+#      and skips the write step. Useful if you want kubelet to manage the
+#      file lifecycle.
+#
+# Precedence: CLAUDE_CREDENTIALS (OAuth) wins over ANTHROPIC_API_KEY.
+# Set only one of the two Secrets on the worker; if both are set, OAuth
+# is used and the API key is unset before exec.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: claude-oauth
+type: Opaque
+stringData:
+  # Whole-file blob of ~/.claude/.credentials.json — the OAuth tokens
+  # Claude Code writes after `claude login`. Mount as env or file.
+  credentials.json: |
+    REPLACE_ME_WITH_~/.claude/.credentials.json_CONTENTS
