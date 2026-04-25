@@ -67,7 +67,9 @@ def test_install_invokes_uv_with_pack_spec(monkeypatch: pytest.MonkeyPatch) -> N
 
     def fake_run(args: list[str]) -> subprocess.CompletedProcess[str]:
         called.append(args)
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(packs, "_run_uv", fake_run)
     packs.install("po-formulas-software-dev")
@@ -90,7 +92,9 @@ def test_install_local_dir_becomes_editable(
 
     def fake_run(args: list[str]) -> subprocess.CompletedProcess[str]:
         called.append(args)
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(packs, "_run_uv", fake_run)
     packs.install(str(tmp_path))
@@ -139,7 +143,9 @@ def test_uninstall_rebuilds_env_without_target(monkeypatch: pytest.MonkeyPatch) 
 
     def fake_run(args: list[str]) -> subprocess.CompletedProcess[str]:
         called.append(args)
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(packs, "_run_uv", fake_run)
     packs.uninstall("po-formulas-target")
@@ -174,7 +180,10 @@ def test_update_all_reinstalls_each_pack(monkeypatch: pytest.MonkeyPatch) -> Non
         packs,
         "_run_uv",
         lambda args: (
-            called.append(args) or subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+            called.append(args)
+            or subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="", stderr=""
+            )
         ),
     )
     refreshed = packs.update()
@@ -215,7 +224,10 @@ def test_update_named_one_pack(monkeypatch: pytest.MonkeyPatch) -> None:
         packs,
         "_run_uv",
         lambda args: (
-            called.append(args) or subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+            called.append(args)
+            or subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="", stderr=""
+            )
         ),
     )
     refreshed = packs.update("po-formulas-b")
@@ -273,7 +285,8 @@ def test_discover_filters_to_po_groups(monkeypatch: pytest.MonkeyPatch) -> None:
         _FakeDist("po-formulas-x", "0.1", [_FakeEP("f1", "po.formulas")]),
         _FakeDist("unrelated", "1.0", [_FakeEP("console", "console_scripts")]),
         _FakeDist(
-            "po-all", "0.2",
+            "po-all",
+            "0.2",
             [
                 _FakeEP("f", "po.formulas"),
                 _FakeEP("d", "po.deployments"),
@@ -293,12 +306,19 @@ def test_discover_filters_to_po_groups(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_discover_source_classification(monkeypatch: pytest.MonkeyPatch) -> None:
     dists = [
         _FakeDist(
-            "pack-ed", "0.1", [_FakeEP("f", "po.formulas")],
+            "pack-ed",
+            "0.1",
+            [_FakeEP("f", "po.formulas")],
             direct_url={"url": "file:///abs/path", "dir_info": {"editable": True}},
         ),
         _FakeDist(
-            "pack-git", "0.1", [_FakeEP("f", "po.formulas")],
-            direct_url={"url": "https://github.com/o/r.git", "vcs_info": {"vcs": "git"}},
+            "pack-git",
+            "0.1",
+            [_FakeEP("f", "po.formulas")],
+            direct_url={
+                "url": "https://github.com/o/r.git",
+                "vcs_info": {"vcs": "git"},
+            },
         ),
         _FakeDist("pack-pypi", "0.1", [_FakeEP("f", "po.formulas")], direct_url=None),
     ]
@@ -310,7 +330,9 @@ def test_discover_source_classification(monkeypatch: pytest.MonkeyPatch) -> None
     assert by_name["pack-pypi"].source == "pypi"
 
 
-def test_discover_includes_core_even_with_no_eps(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discover_includes_core_even_with_no_eps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     dists = [_FakeDist(packs.CORE_DISTRIBUTION, "1.0", [])]
     monkeypatch.setattr(packs, "distributions", lambda: dists)
     out = packs.discover_packs()

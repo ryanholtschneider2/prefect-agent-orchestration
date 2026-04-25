@@ -20,7 +20,9 @@ def _fake_ok(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
     def fake(args: list[str]) -> subprocess.CompletedProcess[str]:
         called.append(args)
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
 
     monkeypatch.setattr(packs, "_run_uv", fake)
     return called

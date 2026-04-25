@@ -148,7 +148,11 @@ def uninstall(name: str) -> None:
         # `uv tool install --reinstall <core>` with no --with drops the
         # named pack from the env. But uv has no per-extra removal, so
         # we re-install core with every OTHER pack except this one.
-        remaining = [p for p in discover_packs() if p.name != name and p.name != CORE_DISTRIBUTION]
+        remaining = [
+            p
+            for p in discover_packs()
+            if p.name != name and p.name != CORE_DISTRIBUTION
+        ]
         argv: list[str] = ["tool", "install", "--reinstall", CORE_DISTRIBUTION]
         for pack in remaining:
             if pack.source == "editable" and pack.source_detail:

@@ -623,9 +623,7 @@ def watch(
         raise typer.Exit(2) from exc
 
     async def _find_flow_run(client: Any) -> Any | None:
-        runs = await _status.find_runs_by_issue_id(
-            client, issue_id=issue_id, limit=10
-        )
+        runs = await _status.find_runs_by_issue_id(client, issue_id=issue_id, limit=10)
         return runs[0] if runs else None
 
     def _write(line: str) -> None:
