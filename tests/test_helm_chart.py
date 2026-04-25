@@ -93,11 +93,15 @@ def test_helm_template_oauth_mode_emits_credentials_env() -> None:
 @pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
 def test_helm_template_oauth_persistence_adds_pvc() -> None:
     rendered = _helm_template(
-        "--set", "auth.mode=oauth",
-        "--set", "auth.oauth.persistence.enabled=true",
+        "--set",
+        "auth.mode=oauth",
+        "--set",
+        "auth.oauth.persistence.enabled=true",
     )
     docs = _docs(rendered)
-    pvc_names = [d["metadata"]["name"] for d in docs if d["kind"] == "PersistentVolumeClaim"]
+    pvc_names = [
+        d["metadata"]["name"] for d in docs if d["kind"] == "PersistentVolumeClaim"
+    ]
     assert any("claude-home" in n for n in pvc_names)
 
 
@@ -122,10 +126,16 @@ def test_helm_template_disable_prefect_server() -> None:
 def test_helm_template_apikey_create_secret_requires_value() -> None:
     res = subprocess.run(
         [
-            "helm", "template", "po", str(CHART_DIR),
-            "--set", "auth.apikey.createSecret=true",
+            "helm",
+            "template",
+            "po",
+            str(CHART_DIR),
+            "--set",
+            "auth.apikey.createSecret=true",
         ],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert res.returncode != 0
     assert "auth.apikey.apiKey" in (res.stdout + res.stderr)
