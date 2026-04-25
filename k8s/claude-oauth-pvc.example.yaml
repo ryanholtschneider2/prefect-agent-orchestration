@@ -1,0 +1,74 @@
+# Optional: persist Claude CLI OAuth credentials across worker pod
+# restarts (issue prefect-orchestration-tyf.3, option (a)).
+#
+# Why this exists
+# ---------------
+# Claude CLI refreshes its OAuth tokens in place by writing to
+# ~/.claude/.credentials.json. In a pod that path is ephemeral, so on
+# restart the next start would read the stale token from the seeded
+# `claude-oauth` Secret unless we either (a) persist $HOME/.claude on
+# a PVC (this file) or (c) accept that the pod must restart inside the
+# refresh-token sliding window. See engdocs/auth.md for the full
+# decision matrix.
+#
+# When to use this
+# ----------------
+# - Long-lived `po-worker` Deployment running OAuth (Claude.ai sub).
+# - Single-replica only — RWO storage means we can't scale this
+#   Deployment beyond `replicas: 1` while the PVC is attached. For
+#   horizontal scale, use API-key auth or move to a StatefulSet with
+#   per-pod PVCs (out of scope here).
+#
+# When NOT to use this
+# --------------------
+# - Per-flow-run Job pods spawned via `po-base-job-template.json` —
+#   those are short-lived, well inside any plausible refresh window,
+#   and don't accumulate refreshes across restarts.
+# - API-key (production) auth path. PVC adds nothing there.
+#
+# Apply order
+# -----------
+#   kubectl apply -f k8s/claude-oauth-pvc.example.yaml
+#   # Then patch the worker Deployment per the snippet at the bottom of
+#   # this file (or copy that block into k8s/po-worker-deployment.yaml).
+#
+# First-boot seeding
+# ------------------
+# The PVC starts empty. On first pod start, the entrypoint sees no
+# on-disk credentials file and materializes one from the
+# CLAUDE_CREDENTIALS Secret-backed env var. Subsequent restarts find a
+# (potentially refreshed) file on the PVC and skip the materialize step
+# — that's the persistence behavior tyf.3 ships.
+#
+# Rotation
+# --------
+# To force a re-seed from the Secret (e.g. after rotating
+# `claude-oauth`), exec into the pod and `rm ~/.claude/.credentials.json`,
+# then restart. Or delete + recreate the PVC.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: po-claude-home
+  labels:
+    app: po-worker
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 64Mi
+  # storageClassName: <leave unset to use the default StorageClass>
+---
+# ---- Worker Deployment patch (illustrative; not applied by this file)
+# Add to spec.template.spec.volumes:
+#   - name: claude-home
+#     persistentVolumeClaim:
+#       claimName: po-claude-home
+# Add to spec.template.spec.containers[0].volumeMounts:
+#   - name: claude-home
+#     mountPath: /home/coder/.claude
+# And switch the env block from ANTHROPIC_API_KEY to CLAUDE_CREDENTIALS:
+#   - name: CLAUDE_CREDENTIALS
+#     valueFrom:
+#       secretKeyRef:
+#         name: claude-oauth
+#         key: credentials.json

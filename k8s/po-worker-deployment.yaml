@@ -26,6 +26,17 @@
 # The entrypoint will materialize CLAUDE_CREDENTIALS to
 # /home/coder/.claude/.credentials.json (mode 0600) and unset
 # ANTHROPIC_API_KEY before exec. See k8s/claude-oauth.example.yaml.
+#
+# OAuth + restart persistence (tyf.3, option a)
+# ---------------------------------------------
+# The Claude CLI refreshes OAuth tokens in place. By default that
+# refresh is lost on pod restart (the credentials file is ephemeral
+# and the next start re-seeds from the stale Secret). To persist
+# across restarts, mount a PVC at /home/coder/.claude:
+#   kubectl apply -f k8s/claude-oauth-pvc.example.yaml
+# Then add to volumes/volumeMounts (see snippets below; commented).
+# RWO PVC ⇒ replicas stays at 1. See engdocs/auth.md for the full
+# decision matrix and rejected option (b).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -58,6 +69,10 @@ spec:
           volumeMounts:
             - name: rig
               mountPath: /rig
+            # OAuth-persistence opt-in (tyf.3 option a) — uncomment with
+            # the matching `volumes` entry below:
+            # - name: claude-home
+            #   mountPath: /home/coder/.claude
           resources:
             requests:
               cpu: 200m
@@ -69,6 +84,10 @@ spec:
         - name: rig
           persistentVolumeClaim:
             claimName: po-rig
+        # OAuth-persistence opt-in (tyf.3 option a):
+        # - name: claude-home
+        #   persistentVolumeClaim:
+        #     claimName: po-claude-home
 ---
 apiVersion: v1
 kind: ServiceAccount

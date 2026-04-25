@@ -153,6 +153,10 @@ kubectl logs -f job/<name>
 
 ## Auth: API key vs OAuth
 
+See [`engdocs/auth.md`](auth.md) for the full decision matrix
+(precedence rules, OAuth refresh persistence, opt-in PVC). Quick
+summary:
+
 Workers default to `ANTHROPIC_API_KEY`. The entrypoint
 (`docker/entrypoint.sh`) bootstraps `~/.claude.json` so Claude Code
 skips onboarding and accepts the key without a TTY prompt — modeled on
@@ -225,8 +229,9 @@ of `po doctor`.
 
 ## Known limitations
 
-- **OAuth secrets in k8s** — out of scope here; tracked separately.
-  The k8s path uses API keys.
+- **OAuth secrets in k8s** — supported as opt-in (see
+  [`engdocs/auth.md`](auth.md) "Opt-in persistence"). Default k8s
+  path remains API-key for production.
 - **Multi-tenant rig isolation** — out of scope. One rig PVC per
   cluster; `bd` claim discipline is the only writer guarantee.
 - **Ephemeral rig (clone+push)** — deferred (see "Rig-state strategy").

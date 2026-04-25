@@ -25,11 +25,23 @@ set -euo pipefail
 mkdir -p "$HOME/.claude"
 
 # ---------------------------------------------------------------- OAuth
-# If CLAUDE_CREDENTIALS is set, materialize it to the credentials file
-# Claude Code reads on startup and unset ANTHROPIC_API_KEY so the SDK
-# doesn't silently prefer the key.
+# Precedence (deliberately on-disk-first so PVC-persisted refreshes are
+# not clobbered by a stale Secret on every pod restart — see tyf.3):
+#   1. existing $HOME/.claude/.credentials.json (PVC mount, bind-mount)
+#   2. CLAUDE_CREDENTIALS env (Secret seed on first boot)
+#   3. ANTHROPIC_API_KEY env (production fallback)
 PO_AUTH_MODE="apikey"
-if [[ -n "${CLAUDE_CREDENTIALS:-}" ]]; then
+PO_AUTH_SOURCE=""
+if [[ -s "$HOME/.claude/.credentials.json" ]]; then
+  # On-disk wins. Either docker-compose bind-mount, k8s PVC at
+  # $HOME/.claude/, or a previously-materialized file that the Claude
+  # CLI has since refreshed in place. We must NOT overwrite from
+  # CLAUDE_CREDENTIALS here or option (a) PVC persistence breaks.
+  unset CLAUDE_CREDENTIALS || true
+  unset ANTHROPIC_API_KEY || true
+  PO_AUTH_MODE="oauth"
+  PO_AUTH_SOURCE="disk"
+elif [[ -n "${CLAUDE_CREDENTIALS:-}" ]]; then
   umask 077
   # printf '%s' (not echo) so JSON braces / backslashes aren't reinterpreted.
   printf '%s' "$CLAUDE_CREDENTIALS" > "$HOME/.claude/.credentials.json"
@@ -37,13 +49,10 @@ if [[ -n "${CLAUDE_CREDENTIALS:-}" ]]; then
   unset CLAUDE_CREDENTIALS
   unset ANTHROPIC_API_KEY
   PO_AUTH_MODE="oauth"
-elif [[ -s "$HOME/.claude/.credentials.json" ]]; then
-  # Local docker-compose path: host bind-mounts the credentials file
-  # read-only. No write needed; just prefer OAuth and clear the API
-  # key so the SDK doesn't silently use it.
-  unset ANTHROPIC_API_KEY
-  PO_AUTH_MODE="oauth"
+  PO_AUTH_SOURCE="env"
 fi
+# One-line audit log: which path won. Never echoes secret contents.
+echo "po-entrypoint: auth=${PO_AUTH_MODE} source=${PO_AUTH_SOURCE:-apikey}" >&2
 
 # ----------------------------------------------------------- API-key path
 # Workers normally need ANTHROPIC_API_KEY to actually call Claude when
@@ -120,5 +129,6 @@ export PATH="$HOME/.local/bin:$PATH"
 export PO_RIG_PATH="${PO_RIG_PATH:-/rig}"
 
 export PO_AUTH_MODE
+export PO_AUTH_SOURCE
 
 exec "$@"

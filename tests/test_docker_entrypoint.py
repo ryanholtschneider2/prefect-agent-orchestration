@@ -73,6 +73,7 @@ def test_oauth_mode_materializes_credentials(home: Path) -> None:
 
     # PO_AUTH_MODE exported to the child process
     assert "PO_AUTH_MODE=oauth" in res.stdout
+    assert "PO_AUTH_SOURCE=env" in res.stdout
     # ANTHROPIC_API_KEY scrubbed before exec
     assert "ANTHROPIC_API_KEY=" not in res.stdout
     # CLAUDE_CREDENTIALS scrubbed before exec
@@ -82,6 +83,41 @@ def test_oauth_mode_materializes_credentials(home: Path) -> None:
     assert cfg["hasCompletedOnboarding"] is True
     # OAuth mode drops the API-key approval block
     assert "customApiKeyResponses" not in cfg
+
+
+def test_oauth_env_does_not_overwrite_existing_credential_file(home: Path) -> None:
+    """tyf.3: when both CLAUDE_CREDENTIALS env and an on-disk credentials
+    file exist, the on-disk file wins. This is what makes a PVC mount
+    actually persistent — the Claude CLI refreshes the token in place,
+    and the next pod start reads the fresh file instead of being
+    clobbered by the (stale) Secret payload."""
+    cred_dir = home / ".claude"
+    cred_dir.mkdir()
+    cred_path = cred_dir / ".credentials.json"
+    on_disk = '{"access_token": "fresh-from-pvc", "refresh_token": "rt-fresh"}'
+    cred_path.write_text(on_disk)
+    cred_path.chmod(0o600)
+    pre_mtime = cred_path.stat().st_mtime_ns
+
+    res = _run(
+        {
+            "CLAUDE_CREDENTIALS": '{"access_token": "stale-from-secret"}',
+            "ANTHROPIC_API_KEY": "sk-shouldnt-be-used",
+            "PO_BACKEND": "cli",
+        },
+        home,
+        "/usr/bin/env",
+    )
+    assert res.returncode == 0, res.stderr
+
+    # File contents and mtime unchanged → no overwrite.
+    assert cred_path.read_text() == on_disk
+    assert cred_path.stat().st_mtime_ns == pre_mtime
+
+    assert "PO_AUTH_MODE=oauth" in res.stdout
+    assert "PO_AUTH_SOURCE=disk" in res.stdout
+    assert "CLAUDE_CREDENTIALS=" not in res.stdout
+    assert "ANTHROPIC_API_KEY=" not in res.stdout
 
 
 def test_oauth_via_bindmount_credential_file(home: Path) -> None:
@@ -103,6 +139,7 @@ def test_oauth_via_bindmount_credential_file(home: Path) -> None:
     assert res.returncode == 0, res.stderr
     assert cred_path.read_text() == original
     assert "PO_AUTH_MODE=oauth" in res.stdout
+    assert "PO_AUTH_SOURCE=disk" in res.stdout
     assert "ANTHROPIC_API_KEY=" not in res.stdout
 
     cfg = json.loads((home / ".claude.json").read_text())
