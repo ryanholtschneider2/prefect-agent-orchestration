@@ -14,10 +14,10 @@ GETs, env reads, and `importlib.metadata` introspection.
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from importlib.metadata import entry_points
@@ -387,10 +387,9 @@ def _ep_source(ep: object) -> str:
 def _run_pack_check(ep: object, timeout: float = PACK_CHECK_TIMEOUT_S) -> CheckResult:
     """Load + invoke a pack check under a soft timeout.
 
-    Timeout is enforced via a single-shot thread; if the check truly hangs
-    the thread is orphaned for the lifetime of this Python process. That's
-    acceptable for a CLI: `po doctor` prints and exits, taking the orphan
-    with it. We never re-raise from inside this helper.
+    Timeout is enforced via a daemon thread + join; if the check hangs we
+    return WARN and let the daemon expire when the interpreter exits. We
+    never re-raise from inside this helper.
     """
     name = getattr(ep, "name", "unknown")
     source = _ep_source(ep)
@@ -404,27 +403,35 @@ def _run_pack_check(ep: object, timeout: float = PACK_CHECK_TIMEOUT_S) -> CheckR
             remediation=f"reinstall or fix pack {source}",
             source=source,
         )
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(fn)
-            try:
-                result = future.result(timeout=timeout)
-            except concurrent.futures.TimeoutError:
-                return CheckResult(
-                    name=name,
-                    status=Status.WARN,
-                    message=f"check timed out after {timeout:g}s",
-                    remediation="optimize the check or raise the timeout",
-                    source=source,
-                )
-    except Exception as exc:
+    box: list[object] = []
+    err: list[BaseException] = []
+
+    def _runner() -> None:
+        try:
+            box.append(fn())
+        except BaseException as exc:  # noqa: BLE001
+            err.append(exc)
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message=f"check timed out after {timeout:g}s",
+            remediation="optimize the check or raise the timeout",
+            source=source,
+        )
+    if err:
         return CheckResult(
             name=name,
             status=Status.FAIL,
-            message=f"check raised: {exc}",
+            message=f"check raised: {err[0]}",
             remediation=f"fix the check in pack {source}",
             source=source,
         )
+    result = box[0]
     if not isinstance(result, DoctorCheck):
         return CheckResult(
             name=name,
