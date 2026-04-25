@@ -33,8 +33,12 @@ def patched_materialize(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]
     """Capture each materialize_packs call so tests can assert on args."""
     captured: list[dict[str, Any]] = []
 
-    def fake(cwd: Path, *, role: str | None, overlay: bool, skills: bool, **kw: Any) -> dict:
-        captured.append({"cwd": cwd, "role": role, "overlay": overlay, "skills": skills})
+    def fake(
+        cwd: Path, *, role: str | None, overlay: bool, skills: bool, **kw: Any
+    ) -> dict:
+        captured.append(
+            {"cwd": cwd, "role": role, "overlay": overlay, "skills": skills}
+        )
         return {}
 
     import prefect_orchestration.pack_overlay as po
@@ -42,7 +46,9 @@ def patched_materialize(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]
     monkeypatch.setattr(po, "materialize_packs", fake)
     # AgentSession imports lazily; patch the module attribute so the
     # `from ... import materialize_packs` inside the method picks ours up.
-    monkeypatch.setattr(agent_session_mod, "_materialize_packs_for_test", fake, raising=False)
+    monkeypatch.setattr(
+        agent_session_mod, "_materialize_packs_for_test", fake, raising=False
+    )
     return captured
 
 

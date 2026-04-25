@@ -294,8 +294,12 @@ def test_embedded_overlay_in_module_root(tmp_path: Path) -> None:
     ).read_text() == "from-module"
 
 
-@pytest.mark.parametrize("name,expected", [("po-stripe", "po-stripe"), ("po-gmail", "po-gmail")])
-def test_skill_destination_uses_distribution_name(tmp_path: Path, name: str, expected: str) -> None:
+@pytest.mark.parametrize(
+    "name,expected", [("po-stripe", "po-stripe"), ("po-gmail", "po-gmail")]
+)
+def test_skill_destination_uses_distribution_name(
+    tmp_path: Path, name: str, expected: str
+) -> None:
     pack = _make_pack(
         tmp_path / name,
         name=name,
