@@ -330,10 +330,19 @@ class TmuxClaudeBackend:
             )
 
         argv = _build_claude_argv(self.start_command, session_id, fork, model)
+        # Pipeline: claude → tee (raw JSON to .out for the parser) →
+        # stream_format (pretty terminal view in the tmux pane). The
+        # `.out` file stays parseable; the human attaching to the pane
+        # sees Claude-Code-TUI-style thinking/tool/result blocks.
+        # PIPESTATUS[0] is claude's exit code, which is what we care
+        # about; the formatter's exit code is ignored.
+        formatter_cmd = (
+            f"{shlex.quote(sys.executable)} -m prefect_orchestration.stream_format"
+        )
         wrapper = (
             f"cd {shlex.quote(str(cwd))} && "
             f"{shlex.join(argv)} < {shlex.quote(str(prompt_path))} "
-            f"2>&1 | tee {shlex.quote(str(out_path))}; "
+            f"2>&1 | tee {shlex.quote(str(out_path))} | {formatter_cmd}; "
             f"echo ${{PIPESTATUS[0]}} > {shlex.quote(str(rc_path))}"
         )
 
