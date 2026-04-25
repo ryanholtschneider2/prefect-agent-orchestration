@@ -405,28 +405,59 @@ def _stop_dir() -> Path:
 def _ensure_stop_hook(cwd: Path) -> None:
     """Lay down `<cwd>/.claude/settings.json` with our Stop hook.
 
-    Idempotent — preserves existing settings, only inserts/replaces the
-    Stop hook entry. Multiple sessions in the same cwd share this file;
-    they're keyed by `session_id` in the sentinel filename, so no race.
+    Idempotent and concurrency-safe — three roles spawning in parallel
+    (e.g. lint + run_tests-unit + run_tests-e2e) used to race on
+    read-modify-write and produce corrupt JSON, which claude then
+    rejected, which hung the whole run. We:
+
+      1. Use a fcntl-style lock on the settings file during read/write.
+      2. Skip the write entirely if the file already has our Stop hook
+         configured (the hook command is content-addressable).
+      3. Write atomically via tmpfile + os.replace so a partial write
+         never leaves bad JSON on disk for a peer to read.
     """
+    import fcntl
+    import os as _os
+    import tempfile
+
     settings_dir = cwd / ".claude"
     settings_dir.mkdir(parents=True, exist_ok=True)
     settings_path = settings_dir / "settings.json"
-    existing: dict[str, Any] = {}
-    if settings_path.exists():
-        try:
-            existing = json.loads(settings_path.read_text()) or {}
-        except json.JSONDecodeError:
-            existing = {}
-    if not isinstance(existing, dict):
-        existing = {}
-    hooks = existing.setdefault("hooks", {}) if isinstance(existing.get("hooks", {}), dict) else {}
-    if not isinstance(hooks, dict):
-        hooks = {}
-        existing["hooks"] = hooks
+    lock_path = settings_dir / ".settings.lock"
     hook_cmd = f"{shlex.quote(sys.executable)} -m prefect_orchestration.stop_hook"
-    hooks["Stop"] = [{"matcher": "", "hooks": [{"type": "command", "command": hook_cmd}]}]
-    settings_path.write_text(json.dumps(existing, indent=2))
+    desired_stop = [{"matcher": "", "hooks": [{"type": "command", "command": hook_cmd}]}]
+
+    with open(lock_path, "w") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        existing: dict[str, Any] = {}
+        if settings_path.exists():
+            try:
+                existing = json.loads(settings_path.read_text()) or {}
+            except json.JSONDecodeError:
+                existing = {}
+        if not isinstance(existing, dict):
+            existing = {}
+        hooks = existing.get("hooks") if isinstance(existing.get("hooks"), dict) else {}
+        if not isinstance(hooks, dict):
+            hooks = {}
+        if hooks.get("Stop") == desired_stop:
+            # Already configured; no write needed.
+            return
+        hooks["Stop"] = desired_stop
+        existing["hooks"] = hooks
+
+        # Atomic write: tmpfile in same dir, then replace.
+        fd, tmp_path = tempfile.mkstemp(prefix=".settings-", suffix=".json", dir=settings_dir)
+        try:
+            with _os.fdopen(fd, "w") as f:
+                f.write(json.dumps(existing, indent=2))
+            _os.replace(tmp_path, settings_path)
+        except Exception:
+            try:
+                _os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 def _wait_for_tui_ready(
