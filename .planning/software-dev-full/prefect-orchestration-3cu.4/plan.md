@@ -1,246 +1,174 @@
-# Plan — `prefect-orchestration-3cu.4` · `po-attio` tool pack
+# Plan — prefect-orchestration-3cu.4 (po-attio tool pack)
 
 ## Context
 
-Build `po-attio`, a tool pack for the Attio CRM, following
-`engdocs/pack-convention.md`. Attio ships no first-party CLI at the
-time of writing, so the pack leads with the Python SDK and exposes
-thin CLI wrappers as `po.commands`. Because `po-attio` maps to a
-distinct external system (CRM), it is a **separate pack repo** — per
-`pw4` and CLAUDE.md ("land pack-contrib code in the pack's repo, not
-in the caller's rig-path").
+Build a new PO pack `po-attio` — a CRM tool pack for Attio. Lands as a
+sibling repo per principle `pw4` (pack-contrib code lives in its own
+repo, not in the rig). The rig only carries planning/decision-log
+artifacts for this issue.
 
-Sibling tool pack convention is established by the existing
-`po-formulas-software-dev` pack at
-`/home/ryan-24/Desktop/Code/personal/nanocorps/software-dev/po-formulas/`.
-We mirror its layout.
+Sibling pack location: `/home/ryan-24/Desktop/Code/personal/nanocorps/po-attio/`
 
-## Pack location
+A prior build iteration already scaffolded the pack at that path; this
+plan documents the intended shape and lets the critic / verifier
+validate against it.
 
-`/home/ryan-24/Desktop/Code/personal/nanocorps/po-attio/`
+## Affected files
 
-This is a sibling of `prefect-orchestration/` and mirrors the existing
-`software-dev/po-formulas/` placement convention. The pack will be its
-own git repo (`git init` at the pack root); the rig under which we
-run is `prefect-orchestration/`, so all bd/PO artifacts stay there
-while code lands at the sibling path.
-
-## Affected files (all newly created under `po-attio/`)
+### Sibling pack (`/home/ryan-24/Desktop/Code/personal/nanocorps/po-attio/`)
 
 ```
-po-attio/
-├── pyproject.toml
-├── README.md
-├── .gitignore
-├── po_attio/
-│   ├── __init__.py
-│   ├── client.py          # tiny SDK wrapper: load API key, build Attio client
-│   ├── commands.py        # 3 command callables → po.commands
-│   └── checks.py          # 2 doctor checks → po.doctor_checks
-├── skills/
-│   └── attio/
-│       └── SKILL.md
-└── overlay/
-    ├── CLAUDE.md
-    └── .env.example
+pyproject.toml                       # name=po-attio, dep on attio>=0.21,
+                                     # entry points: po.commands (3),
+                                     # po.doctor_checks (2)
+README.md                            # short usage blurb
+.gitignore
+po_attio/__init__.py
+po_attio/client.py                   # ENV_VAR, _api_key(), client() — lazy
+                                     # imports `from attio import SDK`,
+                                     # returns SDK(oauth2=key)
+po_attio/commands.py                 # find / create_person / note callables
+po_attio/checks.py                   # env_set / workspace_reachable
+                                     # DoctorCheck factories
+skills/attio/SKILL.md                # YAML frontmatter + canonical doc
+                                     # links + "SDK is primary because
+                                     # vendor lacks CLI" rationale +
+                                     # command summary table + recipe
+overlay/CLAUDE.md                    # short rules for agents using
+                                     # the pack inside an overlayed cwd
+overlay/.env.example                 # ATTIO_API_KEY=
+tests/__init__.py
+tests/test_smoke.py                  # 6 offline tests (env-set paths,
+                                     # entry-point declarations, dep)
 ```
 
-No edits to `prefect-orchestration/` core.
+### Rig (`prefect-orchestration`)
+
+- `.planning/software-dev-full/prefect-orchestration-3cu.4/plan.md` — this file
+- `.planning/software-dev-full/prefect-orchestration-3cu.4/decision-log.md`
+- `.planning/software-dev-full/prefect-orchestration-3cu.4/build-iter-N.diff`
+
+No core changes. `prefect-orchestration` already supports
+`po.commands` / `po.doctor_checks` / `skills/` / `overlay/` discovery —
+this pack is purely additive.
 
 ## Approach
 
-### `pyproject.toml`
+1. **Pack location** (resolves triage open-question): sibling repo per
+   `pw4`. Initialize as a standalone git repo so it can later get its
+   own remote / lifecycle independent of the rig.
 
-- `name = "po-attio"`, version `0.1.0`, `requires-python = ">=3.11"`
-- Dependency on the official Attio Python SDK. PyPI distribution is
-  `attio` (verify at build time; if the canonical name turns out to
-  be `attio-python`, swap accordingly with a `>=` floor that pins to
-  a current release).
-- `dependencies = ["attio>=0.1", "prefect-orchestration"]`
-- Entry points:
-  ```toml
-  [project.entry-points."po.commands"]
-  attio-find          = "po_attio.commands:find"
-  attio-create-person = "po_attio.commands:create_person"
-  attio-note          = "po_attio.commands:note"
+2. **SDK choice** (resolves "Attio Python SDK" open question): the
+   `attio` PyPI package (Speakeasy-generated from the OpenAPI spec —
+   verified `attio==0.21.2` exists; `attio-python` does NOT exist on
+   PyPI despite being referenced in the issue design). Pin
+   `attio>=0.21`. Auth surface: `SDK(oauth2=<api_key>)`.
 
-  [project.entry-points."po.doctor_checks"]
-  attio-env       = "po_attio.checks:env_set"
-  attio-reachable = "po_attio.checks:workspace_reachable"
-  ```
-- Hatchling build backend with `packages = ["po_attio"]`.
+3. **Client helper** (`po_attio/client.py`): `ENV_VAR = "ATTIO_API_KEY"`,
+   `MissingApiKey(RuntimeError)`, `_api_key()` reads + validates,
+   `client()` lazy-imports `from attio import SDK` so checks/imports
+   stay cheap when the SDK isn't installed yet.
 
-### `po_attio/client.py`
+4. **Three commands** (`po_attio/commands.py`, AC #3):
+   - `attio-find --query <q> [--object-type people|companies] [--limit N]`
+     — calls `sdk.records.post_v2_objects_target_records_query(...)`
+     with a `$contains` filter; defaults to `people`; falls back to
+     people on unknown object_type. Prints `id  name  email/domain`.
+   - `attio-create-person --name <n> [--email <e>] [--company <c>]`
+     — builds a values dict (always `name`; conditionally
+     `email_addresses`, `company` lookup); calls
+     `sdk.records.post_v2_objects_target_records(target="people", ...)`;
+     prints `created person <id>  https://app.attio.com/_/people/<id>`.
+   - `attio-note --target-id <id> --body <b> [--title <t>] [--parent-object people|companies]`
+     — `body == "-"` reads stdin; defaults `title` to first 80 chars of
+     body; calls `sdk.notes.post_v2_notes(...)` in markdown format.
 
-One zero-arg `client()` helper that:
+   All three: `MissingApiKey → SystemExit(2)`; other SDK errors →
+   `SystemExit(1)` with stderr explanation. Defensive helpers
+   (`_record_id`, `_attr_first`) tolerate Pydantic-or-dict shapes.
 
-- Reads `ATTIO_API_KEY` from env (raise `RuntimeError` if unset — let
-  the command CLI catch and exit non-zero with hint).
-- Constructs the SDK client and returns it.
-- Does NOT cache (commands are short-lived; cleaner to re-init).
+5. **Two doctor checks** (`po_attio/checks.py`, AC #4):
+   - `env_set()` — red if `ATTIO_API_KEY` unset, green otherwise (with
+     8-char truncated preview in message; never the full key).
+   - `workspace_reachable()` — yellow short-circuit if env unset (avoid
+     cascading red); on import-error → red with hint to `po install`;
+     calls `sdk.objects.get_v2_objects()` (cheap, idempotent metadata
+     endpoint), returns green w/ object count or red w/ upstream error.
 
-### `po_attio/commands.py`
+6. **Skill** (`skills/attio/SKILL.md`, AC #2): YAML frontmatter
+   `name: attio`; sections: canonical doc URLs
+   (developers.attio.com, REST reference, OpenAPI spec); explicit
+   "SDK is primary because Attio ships no CLI" note (verbatim per AC);
+   command summary table; SDK fallback recipe with
+   `from attio import SDK` example; nanocorp-specific rules
+   (one workspace, append-only notes, dedupe via find-before-create).
 
-Three Typer-free plain callables matching the `po.commands` signature
-contract used by `po_formulas/commands.py` (kwargs only; CLI dispatcher
-in core does the parsing). Each accepts string kwargs and prints
-human-friendly output to stdout. JSON output mode (`output_format`)
-deferred — keep v1 small.
+7. **Overlay** (`overlay/`, AC #5):
+   - `overlay/CLAUDE.md` — short rules: prefer `po attio-*`, set
+     `ATTIO_API_KEY`, read `.claude/skills/po-attio/attio/SKILL.md`,
+     use `--body=-` for long content.
+   - `overlay/.env.example` — single line `ATTIO_API_KEY=`.
 
-- `find(query: str, object_type: str = "people", limit: int = 10) -> None`
-  - Calls SDK list/search for the requested object type
-    (`people` | `companies`). Falls back to people if unrecognized.
-  - Prints one-line-per-record with id, primary name, primary email
-    (or domain for companies). Exits 2 on auth failure.
-- `create_person(name: str, email: str | None = None, company: str | None = None) -> None`
-  - Creates a person record. If `email` provided, attaches as primary
-    email attribute; if `company` provided, attempts to look up the
-    company by name and attach (best-effort — log a warning if not
-    found, still creates the person).
-  - Prints the new record id + Attio web URL on success.
-- `note(target_id: str, body: str, title: str | None = None,
-       parent_object: str = "people") -> None`
-  - Creates a note attached to `target_id` (a person or company
-    record id). `body` is the note content (Markdown allowed). If
-    `body == "-"`, read from stdin (lets agents pipe long content).
-  - Prints note id on success.
+   Overlay merge is skip-existing per pack-convention.md, so this
+   never clobbers caller files.
 
-All three:
-- Wrap SDK exceptions; on auth failures print a clear message and
-  `raise SystemExit(2)` (mirrors `summarize_verdicts` exit-code
-  convention in the software-dev pack).
-- Accept the standard `--key value` / `--key=value` flag forms — core
-  argparse handles coercion (int, bool) automatically.
+8. **Dependency** (`pyproject.toml`, AC #1): `attio>=0.21`.
 
-### `po_attio/checks.py`
-
-Two `DoctorCheck` callables:
-
-- `env_set()` — reads `ATTIO_API_KEY`. Returns
-  - `red` if unset, hint: `export ATTIO_API_KEY` from your vault.
-  - `green` with `f"ATTIO_API_KEY set ({key[:8]}…)"` otherwise.
-  No format validation (Attio doesn't publish a stable token prefix).
-- `workspace_reachable()` — short-circuits to `yellow` if
-  `ATTIO_API_KEY` is unset (so the row is informative even pre-key);
-  otherwise calls a cheap SDK endpoint (e.g. `client.workspaces.me()`
-  or list-objects with `limit=1`) inside a `try/except` with a
-  4-second timeout. `green` on success with the workspace name in the
-  message; `red` with the upstream error string on failure.
-
-Both follow the `claude_cli_present` template in
-`po_formulas/checks.py`.
-
-### `skills/attio/SKILL.md`
-
-Standard Claude Code skill:
-
-- YAML frontmatter (`name: attio`, one-line `description`).
-- "Canonical vendor docs" section — links:
-  - Attio API ref: https://developers.attio.com/reference
-  - Attio docs root: https://developers.attio.com
-  - Note that Attio publishes no `llms.txt` at time of writing.
-- "SDK first (no vendor CLI)" callout explaining the inversion of the
-  usual CLI-first preference and pointing agents at the
-  `po attio-*` commands as the day-to-day surface.
-- "This nanocorp's rules" — placeholder for tenant-specific policy
-  (which workspace, project-list discipline, do-not-touch list-types).
-- "Quick recipes" — two small SDK code blocks (find a person, attach
-  a note) plus the matching `po attio-*` command lines.
-
-### `overlay/CLAUDE.md`
-
-Pack-specific agent overlay (copied into rig cwd at session start by
-the overlay machinery from `4ja.4`). Repeats the headline rules from
-`SKILL.md`:
-
-- "Use `po attio-find`, `po attio-create-person`, `po attio-note`
-  rather than constructing HTTP calls."
-- "Set `ATTIO_API_KEY` before invoking; check with `po doctor`."
-
-### `overlay/.env.example`
-
-Single line: `ATTIO_API_KEY=`
-
-### `README.md`
-
-Short human-facing readme: what the pack is, install one-liner
-(`po install --editable /path/to/po-attio`), pointer to SKILL.md.
-
-### `.gitignore`
-
-Standard Python gitignore (`__pycache__/`, `*.egg-info/`, `dist/`,
-`.venv/`).
+9. **Tests** (`tests/test_smoke.py`): all offline — no live API calls,
+   no SDK network mocks. Six tests:
+   - imports resolve (`po_attio.client`, `po_attio.commands`, `po_attio.checks`)
+   - `env_set()` red when env unset
+   - `env_set()` green when env set, with truncated key preview
+   - `workspace_reachable()` yellow when env unset (short-circuit branch)
+   - `pyproject.toml` declares the exact 3 commands + 2 doctor checks
+     under the right entry-point groups, pointing to real module paths
+   - `pyproject.toml` declares dep on `attio` SDK (`>=0.21`)
 
 ## Acceptance criteria (verbatim from issue)
 
-1. dep: attio client lib
-2. `skills/attio/SKILL.md` with doc links + note that SDK is primary because vendor lacks CLI
-3. 3 commands
-4. 2 doctor checks
-5. overlay
+> (1) dep: attio client lib; (2) skills/attio/SKILL.md with doc links + note that SDK is primary because vendor lacks CLI; (3) 3 commands; (4) 2 doctor checks; (5) overlay.
 
 ## Verification strategy
 
-| AC | How verified |
-|---|---|
-| 1 | `grep '"attio' po-attio/pyproject.toml` shows the dep; `cat pyproject.toml` confirms it sits in `[project] dependencies`. |
-| 2 | File exists at `po-attio/skills/attio/SKILL.md`; `grep -i 'developers.attio.com' SKILL.md` returns hits; `grep -i 'sdk' SKILL.md` returns the "SDK is primary because Attio ships no CLI" sentence. |
-| 3 | `pyproject.toml` lists `attio-find`, `attio-create-person`, `attio-note` under `[project.entry-points."po.commands"]`; each maps to a callable defined in `po_attio/commands.py`; `python -c "from po_attio.commands import find, create_person, note"` succeeds. |
-| 4 | `pyproject.toml` lists two entries under `[project.entry-points."po.doctor_checks"]`; both callables return `DoctorCheck` instances when imported and called (verified via a smoke run with `ATTIO_API_KEY` unset → `env_set` returns red, `workspace_reachable` returns yellow). |
-| 5 | `po-attio/overlay/CLAUDE.md` and `po-attio/overlay/.env.example` exist. |
-
-End-to-end smoke (manual, post-install):
-
-```bash
-po install --editable /home/ryan-24/Desktop/Code/personal/nanocorps/po-attio
-po update
-po packs                              # po-attio listed
-po list                               # attio-find / attio-create-person / attio-note shown
-po show attio-find                    # signature + docstring
-po doctor                             # 2 attio-* rows present (red/yellow if no key)
-```
+| AC | Concrete check |
+|----|----------------|
+| (1) attio client lib dep | `python -c "import tomllib; assert any(d.startswith('attio') for d in tomllib.load(open('pyproject.toml','rb'))['project']['dependencies'])"` + smoke test `test_dependency_on_attio_sdk` |
+| (2) skill doc | `test -f skills/attio/SKILL.md && grep -q 'developers.attio.com' skills/attio/SKILL.md && grep -qi 'SDK is primary' skills/attio/SKILL.md` |
+| (3) 3 commands | `pip install -e . && po update && po list \| grep -E '^attio-(find\|create-person\|note)' \| wc -l` returns 3; smoke test `test_pyproject_declares_entry_points` asserts the exact key set under `po.commands` |
+| (4) 2 doctor checks | `po doctor` shows two `attio-*` rows under the SOURCE column; smoke test asserts the exact key set under `po.doctor_checks` |
+| (5) overlay | `test -f overlay/CLAUDE.md && test -f overlay/.env.example` |
 
 ## Test plan
 
-This is a small tool pack; full unit-test coverage is overkill but a
-minimal smoke layer prevents regressions.
-
-- **Unit tests** (`po-attio/tests/test_smoke.py`):
-  - Import each command callable and each check callable.
-  - With `ATTIO_API_KEY` unset, `env_set()` returns `status == "red"`.
-  - With `ATTIO_API_KEY` unset, `workspace_reachable()` returns
-    `status == "yellow"` (no SDK call attempted).
-  - Confirm `pyproject.toml` entry points resolve via
-    `importlib.metadata.entry_points(group="po.commands")` and
-    `group="po.doctor_checks"` after editable install.
-- **Live SDK calls** are NOT tested — they require a real key and
-  network. Tests mock or skip; live verification is a manual smoke
-  step the human runs once.
-- **Playwright / e2e**: not applicable (no UI, no flow registered).
+- **Unit** (`tests/test_smoke.py` in the sibling pack): the 6 tests
+  above. Run via `uv run python -m pytest tests/` from inside the
+  pack repo.
+- **E2E**: not added — the rig's e2e suite covers core PO flows; this
+  pack is purely additive and offline-testable. A manual smoke (set
+  `ATTIO_API_KEY`, run each command against a sandbox workspace) is
+  in scope for the verifier but not codified as automated e2e.
+- **Playwright**: N/A (no UI).
 
 ## Risks
 
-- **SDK package name uncertainty.** PyPI publishes `attio` (Attio's
-  official SDK as of 2025). If that resolves but is unmaintained, fall
-  back to direct `httpx` calls against `https://api.attio.com/v2/`.
-  Builder verifies via `pip index versions attio` before committing.
-- **API surface drift.** Attio's API is in active development; any
-  endpoint signature we hit (search, create, notes) may change. We
-  thinly wrap the SDK; signature drift surfaces as upstream-SDK
-  exception messages, which the commands print verbatim. No retries,
-  no clever recovery.
-- **Workspace-reachable check cost.** Calling Attio on every `po
-  doctor` adds latency. We bound it to 4s and run inside the existing
-  5s soft-timeout the core wraps each check in. If even 4s is too
-  long, we degrade to env-only and remove the live probe — this is a
-  policy call we'll revisit if `po doctor` slows perceptibly.
-- **No git remote on `po-attio` yet.** The pack is local-only;
-  `po install --editable <path>` covers the dev install. PyPI
-  publishing is a follow-up issue.
-- **No breaking consumer impact.** The pack is additive;
-  no core code changes; existing rigs without `po-attio` installed
-  see no behavior change.
-- **Overlay collision.** `overlay/CLAUDE.md` lands in rig cwd at
-  session start. The overlay machinery is skip-existing, so it does
-  not clobber a user-authored `CLAUDE.md`. No risk of stomping on
-  the rig's existing top-level `CLAUDE.md`.
+- **Attio SDK package name** — issue design said `attio-python`, but
+  PyPI inspection shows `attio` is the real distribution. Pinning the
+  wrong name would break `po install`. *Mitigation*: verified at
+  build-time via `pip index versions attio` and a smoke test asserting
+  the dep string.
+- **SDK API drift** — Speakeasy-generated SDKs use awkward, version-
+  coupled method names (`post_v2_objects_target_records_query`).
+  A minor SDK bump could rename methods. *Mitigation*: pin
+  `attio>=0.21` (compat range) and rely on smoke tests + doctor's
+  `workspace_reachable` to surface drift fast; defensive shape access
+  in `_record_id`/`_attr_first` tolerates Pydantic↔dict drift.
+- **`po doctor` latency** — `workspace_reachable` makes a real
+  network call. *Mitigation*: core wraps each pack check in a 5-second
+  soft timeout already (`prefect_orchestration.doctor`), so a slow
+  Attio response degrades to yellow rather than hanging the table.
+- **No git remote on rig** — finishing requires only local commits per
+  rig CLAUDE.md; pack repo is also local-only for now.
+- **Breaking consumers** — none. Pack is purely additive: new entry
+  points, new commands, no edits to core or other packs.
+- **Overlay collision** — overlay merge is skip-existing in core, so
+  `overlay/CLAUDE.md` never overwrites a caller's existing CLAUDE.md.

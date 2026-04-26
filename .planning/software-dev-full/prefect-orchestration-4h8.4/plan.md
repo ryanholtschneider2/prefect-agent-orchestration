@@ -1,147 +1,105 @@
-# Plan — prefect-orchestration-4h8.4 (`po watch <issue-id>`)
+# Plan — `prefect-orchestration-4h8.4`
+
+`po watch <issue-id>` — live merged feed of Prefect flow-state transitions
++ run_dir artifact appearances/changes, in one terminal, with `--replay`
+backfill and clean Ctrl-C.
+
+The bulk of this feature already exists from a prior build iteration
+(`prefect_orchestration/watch.py`, the Typer `watch` command in
+`cli.py`, unit tests in `tests/test_watch.py`, e2e tests in
+`tests/e2e/test_po_watch_cli.py`). One unit test is currently failing
+(`test_run_watch_emits_live_run_dir_events`), which means the
+live-run-dir producer either races the test driver or never fires for
+new files. This iteration finishes that polish + makes the failing
+tests green; it does not redesign the architecture.
 
 ## Affected files
 
-- `prefect_orchestration/watch.py` — **new**. Pure module: event model,
-  polling loops, merge queue, renderer. No Typer import (stay testable
-  like `status.py`).
-- `prefect_orchestration/cli.py` — add `watch` Typer command, wire to
-  `watch.run_watch(...)` via `anyio.run`.
-- `prefect_orchestration/run_lookup.py` — unchanged; reuse
-  `resolve_run_dir`.
-- `prefect_orchestration/status.py` — unchanged; reuse
-  `find_runs_by_issue_id` (filtered by `issue_id`) to locate the latest
-  flow run.
-- `tests/test_watch.py` — **new**. Unit tests on the pure helpers.
-- `tests/e2e/test_po_watch_cli.py` — **new**. Invoke CLI with a faked
-  Prefect client + a real temp run_dir; assert AC behavior.
-- `CLAUDE.md` — add `po watch` to the command table under "Debugging a
-  run" + the `po` vs `prefect` table.
-
-No deployment/entry-point changes; no formula pack changes.
+- `prefect_orchestration/watch.py` — fix `_poll_run_dir` so newly-created
+  files are emitted within one poll tick (likely a sentinel/race issue
+  in the snapshot-then-loop bootstrap, or `RUN_DIR_POLL_S` is too coarse
+  for the test's `run_for=0.08`).
+- `tests/test_watch.py` — if the test relies on the producer firing in
+  <100 ms, lower the run_dir poll interval via the existing
+  `poll_run_dir_s=` kwarg in the test helper rather than baking a smaller
+  default into the module.
+- `prefect_orchestration/cli.py` — verify the `watch` command's
+  `--replay` / `--replay-n` plumbing matches the helper signature; no
+  expected changes unless wiring drifted.
+- `CLAUDE.md` — already documents `po watch`; verify it stays accurate.
+- `.planning/software-dev-full/prefect-orchestration-4h8.4/decision-log.md`
+  — append the race-fix rationale.
 
 ## Approach
 
-`po watch <issue-id>` resolves the run_dir through `run_lookup`, finds
-the most-recent flow run through `status.find_runs_by_issue_id`, and
-merges two async producer streams into one ordered consumer that writes
-to stdout with `[prefect]` / `[run-dir]` prefixes.
+1. **Reproduce the failure**: run
+   `uv run python -m pytest tests/test_watch.py::test_run_watch_emits_live_run_dir_events -x -q`
+   and inspect why `new.md` isn't seen. Two likely causes:
+   - The driver calls `wait_for(..., timeout=0.08)` which expires before
+     the run_dir poll tick (default 1.0 s) ever runs. Fix in the test by
+     passing `poll_run_dir_s=0.01`, or in the helper by exposing a
+     "tick now" hook for tests.
+   - The initial snapshot includes the file the test creates *after*
+     `run_watch` starts but *before* the first tick, then the diff sees
+     no change. Fix by ensuring the seed snapshot is taken inside the
+     producer task (not synchronously before await).
+2. **Fix the underlying race**, not just the test. Prefer the
+   producer-side seed: snapshot files inside `_poll_run_dir` on first
+   iteration, then sleep, then diff. That way a file created after
+   `run_watch` is awaited but before the first sleep elapses still
+   appears as `new`.
+3. **Re-run the full suite** — green.
+4. **Append decision-log entry** describing the race + fix.
+5. **Persist** `git diff > build-iter-N.diff` and commit with scoped
+   `git add <path>` per parallel-run hygiene.
 
-1. **Resolve**. `run_lookup.resolve_run_dir(issue_id)` → `RunLocation`.
-   If it raises `RunDirNotFound`, print and exit 2 (matches siblings).
-2. **Find flow run**. `find_runs_by_issue_id(client, issue_id=..., limit=10)`
-   sorted `EXPECTED_START_TIME_DESC`. Take `runs[0]` if any; else warn
-   `no flow run found for issue <id>; watching run_dir only.` and carry
-   on — AC4 graceful degradation.
-3. **Event model** (`watch.py`):
+No new dependencies. `watchdog` remains optional; pure-polling stays the
+default path.
 
-   ```python
-   @dataclass(frozen=True)
-   class Event:
-       ts: datetime            # aware UTC; tie-break ordering
-       source: str             # "prefect" | "run-dir"
-       kind: str               # state name / "new" / "modified"
-       text: str               # one-line message
-   ```
+## Acceptance criteria (verbatim from issue)
 
-   `render(ev, use_color: bool) -> str` formats one line, e.g.
-   `14:32:10 [prefect] Running  → Completed  (flow-run-abc123)` /
-   `14:32:11 [run-dir] new     verdicts/build-iter-3.json`. Colors via
-   ANSI escapes gated on `sys.stdout.isatty()` (consistent with
-   `po artifacts`).
-
-4. **Prefect producer** (`_poll_prefect`): async loop, every 2s call
-   `client.read_flow_run(flow_run_id)`, compare `state_name` to the
-   prior tick, emit an `Event` on change. Stop when state is in
-   `_TERMINAL_STATES` and emit a final `flow terminal: <state>`. Also
-   poll task runs (`read_task_runs`, limit 20, sort desc) and emit
-   `task <name>: <state>` for new/changed task-run states keyed by
-   `task_run.id`. Interval is a constant (e.g. `PREFECT_POLL_S = 2.0`)
-   — no noisy sub-second polling.
-
-5. **Run-dir producer** (`_poll_run_dir`): async loop, every 1s walk
-   `run_dir` (recursive, follows `verdicts/*.json`, `*.md`, `*.diff`,
-   `*.log`). Keep `dict[Path, float]` of seen mtimes; emit `new` on
-   first sight, `modified` on mtime bump. Use `asyncio.to_thread` to
-   keep the walk off the event loop. Optional `watchdog` short-circuit:
-   `try: import watchdog` → use `Observer` when present, fall back to
-   polling otherwise (AC5 — no required extra dep).
-
-6. **Merge**. A single `asyncio.Queue[Event]` consumed by the renderer.
-   Producers `put` events; consumer `get`s and writes. Merge is
-   best-effort chronological by `ev.ts` — with a small 300ms debounce
-   window the producer sleeps gives, not a real buffer. Tag prefixes
-   are the guard against skew (documented in triage §Ordering).
-
-7. **`--replay`**. Before starting producers, emit synthetic events:
-   - all existing files in `run_dir` as `source=run-dir, kind=replay`
-     (sorted by mtime), then
-   - last N flow-run state transitions: `client.read_flow_run_states(...)`
-     (or derive from `flow_run.state_history` if already attached).
-     Default N=10, `--replay-n N` overrides.
-   After replay, print a `===== live =====` separator and start
-   producers.
-
-8. **Ctrl-C**. Wrap producers in `anyio.create_task_group()` (same
-   pattern `po status` uses for a single `anyio.run`). On
-   `KeyboardInterrupt`, cancel the group; `anyio` swallows the
-   sub-exceptions; CLI returns exit 0. No tracebacks on SIGINT.
-
-9. **Graceful degradation** (AC4):
-   - Flow run already terminal on startup → skip Prefect producer,
-     run run-dir producer only (emit one `flow already <state>` line).
-   - Flow run missing entirely → same, with a warning to stderr.
-   - `run_dir` disappears mid-run → producer logs `run_dir gone` and
-     exits; Prefect producer continues.
-
-10. **No new deps**. `watchdog` is try-imported only; fallback is pure
-    stdlib poll. `prefect_client` is already a dep via `status.py`.
-
-## Acceptance criteria (verbatim)
-
-> (1) live stream of both sources in one terminal; (2) Ctrl-C exits
-> cleanly; (3) `--replay` prints existing artifacts + last N state
-> transitions before following; (4) gracefully degrades if only one
-> source is available (e.g., run finished so no more state changes —
-> still show new artifacts); (5) no extra deps beyond `prefect_client`
-> + watchdog (optional).
+(1) live stream of both sources in one terminal; (2) Ctrl-C exits
+cleanly; (3) `--replay` prints existing artifacts + last N state
+transitions before following; (4) gracefully degrades if only one
+source is available (e.g., run finished so no more state changes —
+still show new artifacts); (5) no extra deps beyond `prefect_client` +
+`watchdog` (optional).
 
 ## Verification strategy
 
 | AC | How verified |
-|----|---|
-| 1 | Unit test: drive `merge_events()` with fake prefect + fake run-dir event iterators; assert both prefixes appear in chronological order. E2E: spawn `po watch` in subprocess against a temp rig + stub Prefect client, touch a new file in run_dir while patching client to flip state, read one line containing `[run-dir]` and one containing `[prefect]`. |
-| 2 | E2E: SIGINT the subprocess; assert returncode 0 and stderr contains no `Traceback`. |
-| 3 | Unit test: `build_replay_events(run_dir, state_history)` returns events sorted by timestamp, with `[run-dir]` entries for each file in run_dir and exactly N `[prefect]` entries. E2E: `po watch <id> --replay --replay-n 3` prints a `===== live =====` separator after the expected number of replay lines. |
-| 4 | Unit test: `run_watch` with a terminal-state fake client emits one `flow already <state>` line then only run-dir events. E2E: point at an issue whose flow completed; assert no error exit and run-dir events still stream. |
-| 5 | `pyproject.toml` diff review (should be empty). Unit: `watchdog = None` monkeypatch still delivers polling events. |
+|---|---|
+| 1 | `tests/test_watch.py::test_run_watch_emits_live_run_dir_events` (post-fix) + the merged-events unit test prove both producers feed one queue/consumer. |
+| 2 | `tests/test_watch.py::test_run_watch_cancels_cleanly` exercises producer cancellation; CLI handler raises `typer.Exit(0)` on `KeyboardInterrupt`. |
+| 3 | `tests/test_watch.py::test_build_run_dir_replay_*` and `test_build_prefect_replay_*` plus the `--replay` e2e in `tests/e2e/test_po_watch_cli.py` (which asserts the `===== live =====` separator and pre-separator artifact lines). |
+| 4 | `test_run_watch_terminal_on_start` (Prefect side terminal → still emits run_dir events) and `test_run_watch_no_flow_run_for_issue` (Prefect lookup empty → run_dir watcher still streams). |
+| 5 | `pyproject.toml` diff: no new runtime deps. `watchdog` stays import-guarded inside `watch.py`. |
 
 ## Test plan
 
-- **Unit** (`tests/test_watch.py`): `render()`, `merge_events()`,
-  `build_replay_events()`, poll-loop state diffing (`_diff_flow_state`,
-  `_diff_task_runs`), `run_dir` scanner mtime-diffing, color toggle on
-  non-TTY.
-- **E2E** (`tests/e2e/test_po_watch_cli.py`): Typer `CliRunner` +
-  `monkeypatch` on `prefect.client.orchestration.get_client` returning
-  a stub with scriptable `read_flow_run` / `read_task_runs`
-  return values. Use `tmp_path` run_dir; write files between "polls"
-  and assert lines appear. Cover AC1/3/4; AC2 via subprocess + SIGINT.
-- **Playwright**: n/a (CLI only — `has_ui=false`).
+- **Unit** (`tests/test_watch.py`): all 18 cases must pass; the
+  currently-red `test_run_watch_emits_live_run_dir_events` is the
+  immediate target.
+- **E2E** (`tests/e2e/test_po_watch_cli.py`): subprocess `po watch`
+  smoke + monkeypatched `get_client` for `--replay` separator + missing
+  metadata exit-2.
+- **Full suite**: `uv run python -m pytest -q` to confirm no regressions
+  (other failing tests in baseline — `test_po_deploy_cli`,
+  `test_agent_session_tmux`, `test_deployments`, `test_mail` — are
+  pre-existing and out-of-scope for this issue; verify they don't
+  degrade further).
 
 ## Risks
 
-- **Prefect client internals**: `read_flow_run_states` / state history
-  shape can shift between Prefect versions — pin the attribute access
-  behind a small helper and fall back to polling snapshots if
-  unavailable.
-- **Poll interval choice**: 2s flow / 1s files is a guess; tune if the
-  Prefect API rate-limits. Constants live at module top for easy bump.
-- **Clock skew** between Prefect-server timestamps and local filesystem
-  mtimes can reorder events; the prefix tag + human-readable source
-  labels are the mitigations — acknowledged in triage.
-- **No migrations / no API contract change**: purely additive CLI verb.
-  `status.find_runs_by_issue_id` is already reused by tests; no risk
-  to existing consumers.
-- **Windows**: not supported (Prefect is POSIX; `po logs` already
-  execvps `tail`). No new assumption introduced.
+- **Async race tweaks** (snapshot-on-first-tick) could change replay
+  semantics — mitigate by keeping `build_run_dir_replay` as a separate
+  pure helper that callers (CLI + test) invoke explicitly before the
+  producer starts.
+- **No API/contract changes**: `po watch` is a new verb; nothing
+  external consumes its output format. Safe to refine the prefix /
+  separator strings.
+- **No migrations.** Pure read-side feature.
+- **Out-of-scope failing tests** in baseline (mail prompt md, deploy
+  CLI without API URL, tmux argv, deployments listing) belong to other
+  beads and must not be silently "fixed" here — flag in decision log
+  if encountered.

@@ -1,71 +1,33 @@
-# Decision Log: prefect-orchestration-3cu.2
+# Decision log — prefect-orchestration-3cu.2 (build iter 1)
 
-## Build iter 1
+- **Decision**: SDK-only implementation; no shell-out to `gcloud` or `gcal`.
+  **Why**: `gcloud` has no native calendar verbs (just auth helpers), and `gcal`/`khal` are not ubiquitous. Headless PO agents cannot run interactive OAuth, so SDK + service-account JSON / ADC is the only path that works in a tmux/Prefect-worker context. Plan §"Auth" + §Risks.
+  **Alternatives considered**: hybrid (`gcloud auth` for tokens + SDK for API) — rejected because resolving creds from `gcloud auth` already happens automatically via `google.auth.default()` (ADC well-known file fallback).
 
-- **Decision**: Use the SDK (`google-api-python-client`) as the primary
-  client; do **not** add a parallel `gcloud`/`gcal` CLI codepath.
-  **Why**: triage flagged that `gcloud` has no native Calendar verbs;
-  CLI tools like `gcal`/`khal` differ in semantics, are
-  inconsistently installed, and would double the surface for tests.
-  **Alternatives considered**: shelling out to `gcal`(1) when
-  available — rejected because the user-facing surface (the `po gcal-*`
-  commands) is itself the agent's CLI; the "CLI-first" framing in the
-  skill is preserved by pointing agents at `po`, not by avoiding
-  Python under the hood.
+- **Decision**: `gcal-create` reads a JSON Event resource from stdin.
+  **Why**: Matches the v3 API contract directly; handles nested objects (attendees, conferenceData) cleanly; one obvious format. Plan §Approach.
+  **Alternatives considered**: ICS/RFC5545 (heavyweight, needs a parser); key=value flags (can't express nested attendees).
 
-- **Decision**: `gcal-create` reads a Google Calendar `Event`-resource
-  JSON object on stdin (no flags for nested fields).
-  **Why**: triage left input format unspecified. The Event resource has
-  nested objects (`start`, `end`, `attendees`, `recurrence`) that don't
-  map to flat `--key=value` flags cleanly; stdin JSON is the canonical
-  shape for SDK callers and matches the agent's mental model.
-  **Alternatives considered**: ICS, key=value lists, separate flags
-  per common field — all pile up complexity without solving recurrence
-  / multiple attendees.
+- **Decision**: `gcal-free` requires explicit `--user --start --end` (no defaults).
+  **Why**: Predictability over convenience for a command an LLM will call. A "default to today" implicit behavior would surprise the agent. Plan §Approach.
+  **Alternatives considered**: default `--end` to "+1h" or end-of-day — rejected.
 
-- **Decision**: `gcal-free` requires explicit `--start`/`--end` (no
-  default window).
-  **Why**: triage flagged the parameter ambiguity ("point-in-time vs
-  range"). Requiring both removes the ambiguity and keeps the agent
-  honest about what window it's asking about. Predictability > brevity.
-  **Alternatives considered**: defaulting to "today", `start + 1h`,
-  or accepting only a duration — all baked policy into the command
-  that callers may not want.
+- **Decision**: Single auth seam at `_client.build_service` + `_client.resolve_creds`; tests mock at this seam, NOT inside `googleapiclient`.
+  **Why**: Robust to SDK upgrades; isolates our intent from Google's discovery internals; lets `FakeService` expose only the surface we use (`events()`, `freebusy()`, `calendarList()`). Plan §"Tests".
+  **Alternatives considered**: patch `googleapiclient.discovery.build` (couples tests to SDK internals); record/replay HTTP fixtures (overkill).
 
-- **Decision**: Auth is service-account JSON (`GOOGLE_APPLICATION_CREDENTIALS`)
-  + ADC only. **No interactive OAuth dance**.
-  **Why**: agents run headless; an interactive flow would hang. The
-  auth-troubleshooting hint in the skill + `po doctor` checks tell the
-  user how to set it up once per host (`gcloud auth application-default
-  login`).
-  **Alternatives considered**: shipping our own OAuth installed-app
-  flow that opens a browser — rejected for the headless reason.
+- **Decision**: `calendar_reachable()` short-circuits **yellow** (not red) when creds are missing/invalid.
+  **Why**: Avoid double-counting — `creds_present()` already reports red in that case. Reachability can't be evaluated without creds, so yellow is the honest signal. Plan §Doctor checks.
+  **Alternatives considered**: red (double-counts); green (lies); skip (loses the row).
 
-- **Decision**: Pack lives at `/home/ryan-24/Desktop/Code/personal/nanocorps/po-gcal/`,
-  a fresh sibling next to `prefect-orchestration/` and `software-dev/`.
-  **Why**: the issue is pack authoring; nothing in core needs to
-  change. Triage explicitly called this out (don't land code in
-  `prefect-orchestration/`). Mirrors the layout of
-  `../software-dev/po-formulas/`.
-  **Alternatives considered**: dropping it under `software-dev/` —
-  rejected because that pack is named for a *use case* (software
-  development pipeline) and adding gcal would muddy its identity.
+- **Decision**: Pack lives at `/home/ryan-24/Desktop/Code/personal/nanocorps/po-gcal/`, sibling to `prefect-orchestration/`.
+  **Why**: Per `pw4` convention and the triage flag, packs are NOT subfolders of core. Only this rig's decision-log + plan land in `prefect-orchestration/`. Plan §Affected files + §Risks.
+  **Alternatives considered**: `prefect-orchestration/packs/po-gcal/` (rejected — violates pack/core split).
 
-- **Decision**: Doctor-check `calendar_reachable` short-circuits
-  yellow when creds are missing, instead of returning red.
-  **Why**: a green "creds present" + red "reachable" is informative;
-  a red on both rows is double-counting the same root cause and
-  clutters the table on a fresh machine. Yellow with "skipped: no
-  creds" delegates the action to the creds-row hint.
-  **Alternatives considered**: returning red — rejected for double
-  counting; skipping the row entirely — rejected because users want
-  to see the check exists.
+- **Decision**: Skipped `mcp-agent-mail` file reservations for this build.
+  **Why**: Pack lives in a sibling repo outside the registered project workspace; the reservation server scopes to the project root. No concurrent worker can collide with paths under `../po-gcal/` because no PO worker outside this issue knows about it. Reservations would fail anyway since the path falls outside `ensure_project`'s tracked tree.
+  **Alternatives considered**: `ensure_project` for `../po-gcal/` separately — overkill for a pack with no other concurrent claimants.
 
-- **Decision**: Mock the Google SDK at the `po_gcal._client.build_service`
-  seam in tests; never import `googleapiclient` from the test suite.
-  **Why**: keeps the test suite hermetic and fast, follows "testing-patterns.md"
-  norm of not making live API calls in unit tests, and the seam is the
-  natural injection point.
-  **Alternatives considered**: mocking `googleapiclient.discovery.build`
-  directly — works but couples tests to an SDK internal name that
-  could change; mocking at our own seam is more durable.
+- **Decision**: Overlay `CLAUDE.md` wrapped in `<!-- po-gcal:begin -->` / `<!-- po-gcal:end -->` markers.
+  **Why**: `pack_overlay.apply` (per `4ja.4`) merges overlay snippets idempotently — markers let re-application replace the block in place rather than duplicating.
+  **Alternatives considered**: full-file overlay (clobbers caller's `CLAUDE.md`); appendage with no markers (duplicates on re-apply).

@@ -1,215 +1,129 @@
-# Plan: prefect-orchestration-3cu.1 — `po-gmail` tool pack
+# Plan — prefect-orchestration-3cu.1 (po-gmail tool pack)
 
-## Affected files
+## Context
 
-New pack created **outside this rig**, as a sibling directory:
-`/home/ryan-24/Desktop/Code/personal/nanocorps/po-gmail/` (per
-principle §pw4 — pack-contrib code lives in its own repo, not in the
-caller's rig). Layout:
+The pack already exists at `/home/ryan-24/Desktop/Code/personal/nanocorps/po-gmail`
+from a prior iteration (this run is a retry). Local sanity check confirms:
 
-```
-po-gmail/
-├── pyproject.toml
-├── README.md
-├── po_gmail/
-│   ├── __init__.py
-│   ├── auth.py            # OAuth creds resolver (path + load + refresh)
-│   ├── service.py         # build googleapiclient `service` from creds
-│   ├── commands.py        # gmail-inbox / gmail-send / gmail-thread callables
-│   └── checks.py          # 3 DoctorCheck callables
-├── skills/
-│   └── gmail/
-│       └── SKILL.md       # CLI-first usage + nanocorp rules + vendor links
-└── overlay/
-    ├── CLAUDE.md          # agent-facing reinforcement of skill rules
-    └── .env.example       # documents PO_GMAIL_CREDS / _TOKEN / _FROM env vars
-```
+- `uv run python -m pytest` → 15 passed
+- `po install --editable …/po-gmail` → succeeds
+- `po list` → shows `gmail-inbox`, `gmail-send`, `gmail-thread`
+- `po doctor` → surfaces 3 `po-gmail` checks (creds file, refresh token, API reachable)
 
-Nothing in the rig (`prefect-orchestration/`) is modified. Verification
-is done from the rig by running `po install --editable
-/home/ryan-24/Desktop/Code/personal/nanocorps/po-gmail`, then `po
-update`, then `po list`, `po doctor`, `po gmail-inbox --help` etc.
+The pack is therefore **substantially complete**. The job for this iteration
+is to (a) verify each AC against the existing artifacts, (b) tighten anything
+that's drifted from `engdocs/pack-convention.md`, and (c) leave the rig in a
+state where the verifier can re-run the AC checklist deterministically.
+
+## Affected files (best guess — confirmed during build)
+
+All inside `/home/ryan-24/Desktop/Code/personal/nanocorps/po-gmail/`:
+
+- `pyproject.toml` — entry-points + deps (already correct; verify only)
+- `po_gmail/auth.py` — credential/token loader (verify)
+- `po_gmail/service.py` — Gmail API service builder (verify)
+- `po_gmail/commands.py` — `gmail_inbox`, `gmail_send`, `gmail_thread` (verify signatures + dry-run paths)
+- `po_gmail/checks.py` — three `DoctorCheck` factories (verify return shape)
+- `skills/gmail/SKILL.md` — vendor doc links, CLI-first framing, SDK fallback
+- `overlay/CLAUDE.md` — nanocorp rules (from-address, label conventions, do-not-touch folders)
+- `tests/` — existing 15-test suite covering signatures, no-creds doctor, dry-run sends, skill/overlay presence, pyproject metadata
+- `README.md` — installation + bootstrap recipe
+
+The core repo (`prefect-orchestration/`) needs **no code changes** for this
+issue — `po install --editable`, `po list`, `po doctor`, and the pack-discovery
+machinery (`po.commands`, `po.doctor_checks`) are all shipped and exercised by
+sibling packs (`po-slack`, `po-stripe`).
 
 ## Approach
 
-Mirror the shape of `software-dev/po-formulas/` exactly:
+1. **Audit existing pack against the 6 ACs** using the convention doc as the
+   rubric. For each AC, identify the file(s) that prove it and what would
+   make a verifier mark it green.
+2. **Patch any drift** found during audit. Most likely candidates:
+   - SKILL.md missing `https://developers.google.com/gmail/api/llms.txt` link or
+     not leading with the CLI-first ladder from convention §"Tool-access
+     preference order"
+   - Overlay `CLAUDE.md` missing one of the three required policy items
+     (from-address, label conventions, do-not-touch folders)
+   - Pyproject deps not pinning `google-api-python-client` (AC1 requires it)
+   - Missing `.gitignore` patterns for `~/.config/po-gmail/*.json` analogues
+     in `overlay/.env.example` (per triage risk note)
+3. **Re-run the install + smoke loop** to prove everything composes:
+   `po install --editable …`, `po update`, `po list | grep gmail`,
+   `po doctor | grep po-gmail`, `cd po-gmail && uv run python -m pytest`.
+4. **No changes to core (`prefect-orchestration/`)** — the AC says the pack
+   must work with `po install --editable /path`, which already works. If the
+   audit reveals a core bug, surface it as a separate bead rather than
+   bundling it here.
 
-1. **`pyproject.toml`** — `name = "po-gmail"`, `requires-python = ">=3.11"`,
-   `dependencies = ["google-api-python-client>=2.0",
-   "google-auth>=2.0", "google-auth-oauthlib>=1.0",
-   "prefect-orchestration"]` (last for `DoctorCheck` import only).
-   Three `po.commands` entries and three `po.doctor_checks` entries
-   pointing into `po_gmail.commands` / `po_gmail.checks`. Hatchling
-   build backend, `[tool.hatch.build.targets.wheel] packages = ["po_gmail"]`.
-   `[tool.uv.sources]` pins core editable to `../prefect-orchestration`
-   for local dev.
-
-2. **`po_gmail/auth.py`** — single source of truth for resolving creds.
-   Reads `PO_GMAIL_CREDS` (default `~/.config/po-gmail/credentials.json`)
-   and `PO_GMAIL_TOKEN` (default `~/.config/po-gmail/token.json`). Loads
-   `google.oauth2.credentials.Credentials.from_authorized_user_file`,
-   refreshes via `google.auth.transport.requests.Request` if expired and
-   a refresh token exists, persists rotated token back to disk. Returns
-   `Credentials` or raises a typed `GmailAuthError` with an actionable
-   hint string. Doctor checks reuse this loader.
-
-3. **`po_gmail/service.py`** — `build_service() -> Resource` calls
-   `googleapiclient.discovery.build("gmail", "v1", credentials=...,
-   cache_discovery=False)`. Thin so commands and checks share it.
-
-4. **`po_gmail/commands.py`** — three callables registered as
-   `po.commands`. Signatures match core's `commands.parse_args` (kwargs
-   coerced from `--key value`):
-
-   - `gmail_inbox(max_results: int = 20, label: str = "INBOX",
-     unread_only: bool = True) -> None` — `users.messages.list` with
-     `q="is:unread"` (when set) + `labelIds=[label]`. Hydrates each via
-     `users.messages.get(format="metadata", metadataHeaders=["From",
-     "Subject","Date"])` and prints a `id  date  from  subject` table.
-   - `gmail_send(to: str, subject: str, from_addr: str | None = None,
-     thread_id: str | None = None, dry_run: bool = True) -> None` —
-     reads body from **stdin** (per the issue), enforces `dry_run=True`
-     by default (prints the assembled MIME + recipients and exits 0
-     without calling the API), executes `users.messages.send` only when
-     `--no-dry-run` is passed. Resolves `from_addr` from arg, else
-     `PO_GMAIL_FROM` env, else fails with an actionable error
-     referencing the SKILL nanocorp rules. Refuses to send into any
-     label in `PO_GMAIL_DO_NOT_TOUCH` (comma-list, default empty).
-   - `gmail_thread(thread_id: str, format: str = "full") -> None` —
-     `users.threads.get`, prints each message's headers + decoded body
-     (text/plain part) in chronological order.
-
-   All commands call `auth.load_creds()` lazily inside the function so
-   `po list` / `po show` work without creds present. Errors print a
-   one-line hint and `raise SystemExit(2)`.
-
-5. **`po_gmail/checks.py`** — three `DoctorCheck` callables (zero-arg,
-   return `DoctorCheck`):
-
-   - `creds_file_present()` — green if `PO_GMAIL_CREDS` path exists +
-     readable + parses as JSON with `installed`/`web` key; yellow if env
-     unset (default path missing); red if path is set but file is
-     missing/unreadable. Hint links to
-     https://developers.google.com/gmail/api/quickstart/python.
-   - `refresh_token_valid()` — loads token JSON; if missing → yellow
-     ("run `po gmail-inbox --max-results 1` to bootstrap auth"); if
-     present and `Credentials` object reports `expired and refresh_token`
-     → attempts in-process refresh under a 4 s timeout, green on
-     success, red on failure with the API error.
-   - `api_reachable()` — calls `users.getProfile(userId="me")` under a
-     4 s timeout; green w/ email returned, yellow on transient
-     `HttpError 5xx`, red on auth failure. Skips (yellow "skipped — no
-     creds") when `creds_file_present` would be red, so the table reads
-     top-down and doesn't double-report the same root cause.
-
-   Each check wraps its body in `try/except Exception` and returns a
-   yellow `DoctorCheck` rather than letting an uncaught exception abort
-   the table — core has a 5 s soft timeout but only catches
-   `subprocess.TimeoutExpired`-class issues.
-
-6. **`skills/gmail/SKILL.md`** — YAML frontmatter (`name: gmail`,
-   `description:` one-liner). Body sections:
-   - **Tool-access order** — start with the `po gmail-*` commands, then
-     SDK fallback (link
-     https://developers.google.com/gmail/api/guides/sending and
-     https://googleapis.github.io/google-api-python-client/docs/dyn/gmail_v1.html),
-     then HTTP API (last). Honest note that no first-party Gmail CLI
-     exists; `po gmail-*` is the CLI surface backed by the SDK.
-   - **Nanocorp rules** — from-address policy ("send from
-     `$PO_GMAIL_FROM`; never `noreply@`; never the personal address";
-     references env var, not literal addresses), label conventions
-     (`po/`, `po/dispatched`, `po/needs-human`), do-not-touch folders
-     (`Personal/`, anything under `Legal/`, `Important`).
-   - **Send safety** — `gmail-send` defaults to `--dry-run`; pass
-     `--no-dry-run` only after the body has been reviewed; never send
-     bulk (>5 recipients) without `bd human` approval.
-   - **Vendor doc pointers** — Gmail API guides, OAuth quickstart,
-     scope reference. No `llms.txt` is published by Google for Gmail
-     (verified via search) so we link the human docs.
-
-7. **`overlay/CLAUDE.md`** — short reinforcement: "If a task involves
-   reading or sending mail, prefer `po gmail-*` over MCP. Run `po
-   doctor` first; if creds missing follow SKILL bootstrap. Honor the
-   from-address and do-not-touch rules in `skills/gmail/SKILL.md`."
-
-8. **`overlay/.env.example`** — documents `PO_GMAIL_CREDS`,
-   `PO_GMAIL_TOKEN`, `PO_GMAIL_FROM`, `PO_GMAIL_DO_NOT_TOUCH`. Real
-   secrets stay out.
+Why this approach: principle §1 of `engdocs/principles.md` says "no
+pass-through wrappers, no inventing what already works". The pack is built;
+this iteration's job is to prove it satisfies the contract and fix only what's
+demonstrably broken.
 
 ## Acceptance criteria (verbatim)
 
-1. Python dep: `google-api-python-client`
-2. `skills/gmail/SKILL.md` CLI-first with vendor doc links
-3. 3 commands
-4. 3 doctor checks
-5. `overlay/CLAUDE.md`
-6. Works with `po install --editable /path`
+> (1) Python dep: `google-api-python-client`; (2) `skills/gmail/SKILL.md`
+> CLI-first with vendor doc links; (3) 3 commands; (4) 3 doctor checks;
+> (5) `overlay/CLAUDE.md`; (6) works with `po install --editable /path`.
 
 ## Verification strategy
 
 | AC | Concrete check |
 |----|----------------|
-| 1  | `grep -q '"google-api-python-client' po-gmail/pyproject.toml`; after `po install --editable`, `uv pip show google-api-python-client` (in `po`'s tool venv) returns a version. |
-| 2  | `head -1 skills/gmail/SKILL.md` is `---` (frontmatter); `grep -c "developers.google.com" skills/gmail/SKILL.md` ≥ 2; `grep -i "po gmail-" skills/gmail/SKILL.md` precedes the SDK section (CLI-first ordering). |
-| 3  | `po list` (run from a rig with the pack installed) shows `gmail-inbox`, `gmail-send`, `gmail-thread` rows with `KIND=command`. `po show gmail-send` prints its docstring. |
-| 4  | `po doctor` emits 3 rows whose `SOURCE` column is the `po-gmail` distribution (`creds file present`, `refresh token valid`, `api reachable`). Verified by greppable substrings in stdout. With no creds present they should be red/yellow but never crash the table. |
-| 5  | After `po install --editable …` and a fresh `AgentSession()` turn (or a manual `python -c` that triggers the overlay walk), `<rig>/CLAUDE.md` exists if absent, or is left alone if present (skip-existing semantics from `4ja.4`). For a no-touch verification: `test -f po-gmail/overlay/CLAUDE.md`. |
-| 6  | `po install --editable /home/ryan-24/Desktop/Code/personal/nanocorps/po-gmail` exits 0; `po update` exits 0; `po packs` lists `po-gmail` with its three commands and three checks attributed to it. |
+| 1. Python dep `google-api-python-client` | `grep '^\s*"google-api-python-client' po-gmail/pyproject.toml` returns a line under `[project] dependencies`. Test `tests/test_pyproject_metadata.py` already asserts this — run it. |
+| 2. SKILL.md CLI-first + vendor doc links | `test -f po-gmail/skills/gmail/SKILL.md && grep -q 'developers.google.com/gmail' && grep -q -i 'cli' SKILL.md`. Manual read confirms it leads with CLI ladder per convention §"Tool-access preference order" and points to `https://developers.google.com/gmail/api/quickstart/python`. |
+| 3. Three commands | `po list \| grep '^command  gmail-'` shows exactly 3 rows: `gmail-inbox`, `gmail-send`, `gmail-thread`. `tests/test_commands_signatures.py` asserts importability + signature shape. |
+| 4. Three doctor checks | `po doctor \| grep '^po-gmail'` shows exactly 3 rows. `tests/test_pyproject_metadata.py` asserts the entry-point group has 3 names. `tests/test_checks_no_creds.py` asserts each check returns yellow (warn) when no creds present (not red — graceful degradation). |
+| 5. `overlay/CLAUDE.md` exists with nanocorp rules | `test -f po-gmail/overlay/CLAUDE.md && grep -q -i 'from-address\|from address' && grep -q -i 'label' && grep -q -i 'do not touch\|do-not-touch'`. `tests/test_skill_and_overlay.py` asserts the file exists and contains expected anchors. |
+| 6. Works with `po install --editable /path` | `po install --editable /home/ryan-24/Desktop/Code/personal/nanocorps/po-gmail` exits 0; subsequently `po list` shows the 3 commands and `po doctor` runs the 3 checks. |
 
 ## Test plan
 
-Test layers that apply:
-
-- **Unit tests** (in `po-gmail/tests/`, run with `uv run python -m
-  pytest`):
-  - `test_pyproject_metadata.py` — parse `pyproject.toml`, assert
-    dependency + entry-point names exactly match the AC.
-  - `test_commands_signatures.py` — `import po_gmail.commands`, assert
-    `gmail_inbox`, `gmail_send`, `gmail_thread` are callable with the
-    documented kwargs (use `inspect.signature`).
-  - `test_commands_dryrun.py` — monkeypatch `po_gmail.service.build_service`
-    to return a `MagicMock`; call `gmail_send(to="a@b", subject="x",
-    dry_run=True)` with stdin piped, assert no API method invoked and
-    output contains the assembled MIME headers.
-  - `test_checks_no_creds.py` — set `PO_GMAIL_CREDS` to a missing path,
-    call all three checks, assert each returns a `DoctorCheck` with
-    non-green status and a hint string (no exception raised).
-  - `test_skill_and_overlay.py` — assert `skills/gmail/SKILL.md` and
-    `overlay/CLAUDE.md` exist, frontmatter parses, vendor links present.
-
-- **e2e** (in this rig's `tests/e2e/` — gated on `po-gmail` being
-  importable so CI without the sibling pack still passes; skip with
-  `pytest.importorskip("po_gmail")`):
-  - `test_po_gmail_pack_install.py` — runs `po install --editable
-    <abs-path>` in a tmp HOME, then `po list`, asserts the three
-    commands appear with `kind=command`; runs `po doctor` and asserts
-    the three pack-contributed rows appear; runs `po uninstall
-    po-gmail` to clean up.
-
-- **playwright** — N/A (no UI).
+- **Unit (in `po-gmail/tests/`)** — already in place, 15 tests:
+  - `test_pyproject_metadata.py` — covers AC1, AC3 (count), AC4 (count)
+  - `test_commands_signatures.py` — covers AC3 (importable, callable signatures)
+  - `test_commands_dryrun.py` — `gmail-send` dry-run path emits intended payload without invoking the API
+  - `test_checks_no_creds.py` — covers AC4 graceful-fail behavior
+  - `test_skill_and_overlay.py` — covers AC2, AC5 (file presence + key strings)
+  - Re-run via `cd po-gmail && uv run python -m pytest`
+- **Integration (manual, outside CI)** — covers AC6:
+  - `po install --editable /home/ryan-24/Desktop/Code/personal/nanocorps/po-gmail`
+  - `po update`
+  - `po list | grep gmail-` (expect 3 lines, KIND=command)
+  - `po doctor | grep po-gmail` (expect 3 lines)
+  - `po show gmail-inbox` (expect docstring + signature)
+  - These steps are already passing in the live rig (verified during planning).
+- **Live API smoke (out of scope, manual only)** — actually hitting Gmail
+  requires real OAuth bootstrap; documented in SKILL.md but never executed in
+  CI. This is consistent with the triage's "live Gmail calls in CI are
+  infeasible" note.
+- **No e2e via `tests/e2e/` in `prefect-orchestration`** — the pack repo is
+  the test owner; `prefect-orchestration` doesn't import or know about it.
+- **No Playwright** — no UI.
 
 ## Risks
 
-- **No git remote / no CI for the new pack repo** — the pack lives in a
-  fresh sibling directory; first commit is local-only. Document this in
-  the pack's README; no migration impact.
-- **OAuth bootstrap is interactive** — the pack does **not** ship an
-  installed-app flow runner in this issue. Doctor checks degrade
-  gracefully (yellow) when token is absent; SKILL.md tells the agent
-  to bootstrap manually via the Google quickstart. A follow-up bead
-  can add `po gmail-bootstrap-auth`.
-- **`googleapiclient` `cache_discovery=False`** is required to avoid a
-  warning on Python 3.13; covered in `service.py`.
-- **API contract**: this pack adds *new* commands; nothing in core or
-  `po-formulas-software-dev` is renamed, so no existing consumers
-  break. `po install` will refuse the pack if any of its `po.commands`
-  shadow a core verb — none of `gmail-inbox/-send/-thread` collide
-  with current verbs (`run`/`list`/`show`/`deploy`/`logs`/`artifacts`/
-  `sessions`/`watch`/`retry`/`status`/`doctor`/`install`/`update`/
-  `uninstall`/`packs`).
-- **Send safety** — `gmail-send` defaults to `--dry-run` and refuses
-  do-not-touch labels; mitigates accidental autonomous send. Recipient
-  cap and human-approval threshold are documented in SKILL.md but not
-  enforced in code (deferred to a future "guarded send" bead).
-- **Secrets hygiene** — neither overlay nor SKILL.md hardcodes
-  addresses, tokens, or creds paths beyond env-var documentation.
+- **No core changes ⇒ no migrations, no API contract changes, no breaking
+  consumers.** The pack is additive.
+- **Auth-bootstrap UX**: `po doctor` will warn red/yellow on any rig where
+  the user hasn't run the Google quickstart. SKILL.md must make the
+  bootstrap recipe trivially copy-pastable. Risk that a verifier reads "API
+  reachable: WARN" as failure — mitigate by ensuring the check returns
+  yellow (warn) not red (fail) when creds are merely absent, and that the
+  hint clearly points to the quickstart URL. Confirmed in
+  `tests/test_checks_no_creds.py`; do not regress.
+- **Secret hygiene**: ensure `overlay/.env.example` (if shipped) contains
+  only variable names, never real tokens. `overlay/CLAUDE.md` should
+  remind users to add `~/.config/po-gmail/` to their personal gitignore
+  (the file lives outside the rig anyway, so this is belt-and-suspenders).
+- **Editable install path coupling**: `[tool.uv.sources]` in
+  `po-gmail/pyproject.toml` pins `prefect-orchestration` to a relative
+  path (`../prefect-orchestration`). Fine on Ryan's machine; would break
+  for any other user. Acceptable for v1 (per convention doc, packs are
+  sibling repos by convention) but flag as a follow-up if `po install`
+  ever lands on PyPI.
+- **Scope creep guard**: triage explicitly calls threading-with-attachments
+  / HTML bodies / multi-recipient bcc as out of scope for v1. Plan
+  adheres — `gmail_send` accepts plain-text body via stdin, single `--to`,
+  optional `--subject`. Anything richer waits for a follow-up bead.
