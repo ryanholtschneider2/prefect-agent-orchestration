@@ -1,61 +1,41 @@
-# Decision log — prefect-orchestration-3cu.1 (po-gmail tool pack)
+# Decision log — prefect-orchestration-3cu.1 (build iter 1)
 
-- **Decision**: Pack lives at `/home/ryan-24/Desktop/Code/personal/nanocorps/po-gmail/`,
-  a sibling of the rig — not inside `prefect-orchestration/`.
-  **Why**: principle §pw4 (pack-contrib code in its own repo) and the
-  triage's "likely needs to be created at `../po-gmail/`".
-  **Alternatives considered**: a subdir under `prefect-orchestration/`
-  (would couple core's git history to pack churn — rejected); a subdir
-  under `software-dev/` (that namespace is for the formula pack — rejected).
+- **Decision**: Ship build iter 1 with **no code changes** — audited the
+  existing `po-gmail` pack against the 6 ACs and every check came up green.
+  **Why**: The pack was substantially complete from a prior iteration of this
+  retried run. The plan's stated approach was "audit, patch only on drift,
+  re-run smoke loop"; audit found no drift. Adding speculative changes would
+  violate the plan's principle §1 callout ("no inventing what already works").
+  **Alternatives considered**:
+  - Refactor `commands.py` for stylistic cleanup — rejected as scope creep.
+  - Bundle a `--bootstrap` consent-flow runner — rejected; SKILL.md
+    explicitly defers it to a follow-up bead, and AC list does not require it.
+  - Add live-Gmail integration tests — rejected; triage explicitly calls
+    live API CI infeasible.
 
-- **Decision**: Mail agent identity is `WildForge`, not the requested
-  `prefect-orchestration-3cu.1-builder`.
-  **Why**: the mcp-agent-mail server enforces adjective+noun naming
-  and silently auto-generated `WildForge` when my requested name was
-  rejected.
-  **Alternatives considered**: re-register with a manually picked
-  adjective+noun (no upside; auto-generated name is already persisted
-  and the reservation succeeded under it).
+- **AC verification trace** (all green):
+  - **AC1 — `google-api-python-client` dep**: present in `po-gmail/pyproject.toml`
+    line 7; asserted by `tests/test_pyproject_metadata.py`.
+  - **AC2 — SKILL.md CLI-first + vendor links**: `skills/gmail/SKILL.md` opens
+    with the 4-tier tool-access ladder (CLI → SDK → HTTP → MCP) and links to
+    `developers.google.com/gmail/api/{guides,quickstart/python,auth/scopes}`
+    plus the python-client dyn-docs.
+  - **AC3 — 3 commands**: `po list` shows `gmail-inbox`, `gmail-send`,
+    `gmail-thread`; entry points wired in `pyproject.toml` lines 16-19.
+  - **AC4 — 3 doctor checks**: `po doctor` shows three `po-gmail` rows
+    (creds-file-present, refresh-token-valid, api-reachable). All return WARN
+    (yellow) when creds absent — graceful, not RED — confirmed by
+    `tests/test_checks_no_creds.py`.
+  - **AC5 — `overlay/CLAUDE.md`**: present, references all three nanocorp
+    policy items (from-address via `PO_GMAIL_FROM`, label conventions via
+    cross-reference to SKILL.md, do-not-touch via `PO_GMAIL_DO_NOT_TOUCH`).
+  - **AC6 — editable install**: re-ran `po install --editable
+    /home/ryan-24/Desktop/Code/personal/nanocorps/po-gmail` — exit 0; `po list`
+    and `po doctor` both surface the pack's contributions.
 
-- **Decision**: `gmail-send` defaults `dry_run=True` and reads body
-  from `sys.stdin`.
-  **Why**: plan §4 + triage "Send safety". Autonomous agents must not
-  silently emit mail; dry-run-by-default keeps the AC ("stdin body")
-  workable while making the destructive path explicit.
-  **Alternatives considered**: `--confirm` interactive prompt (no TTY
-  in CI / Prefect workers — rejected); separate `gmail-send-dryrun`
-  command (doubles surface area for the same op — rejected).
-
-- **Decision**: `_run_with_timeout` uses a `threading.Thread(daemon=True)`
-  with `.join(timeout)` rather than `signal.SIGALRM` or asyncio.
-  **Why**: SIGALRM only works on the main thread; checks may be invoked
-  from non-main contexts when core's doctor harness eventually
-  parallelizes. asyncio adds a runtime dependency for two checks.
-  **Alternatives considered**: `concurrent.futures.ThreadPoolExecutor`
-  (heavier than needed for one-shot timeouts — rejected).
-
-- **Decision**: Auth bootstrap (initial OAuth consent flow) is
-  intentionally out of scope; SKILL.md points users at the Google
-  quickstart.
-  **Why**: bootstrap requires a browser and `google-auth-oauthlib`'s
-  `InstalledAppFlow.run_local_server`. Doing it correctly (port pick,
-  redirect URI registration, headless detection) is a beadable chunk
-  on its own and would dilute this issue.
-  **Alternatives considered**: shipping `po gmail-bootstrap-auth` as a
-  fourth command (deferred to a follow-up bead per plan §Risks).
-
-- **Decision**: Lazy imports of `google.*` libs inside callable bodies
-  (not at module top).
-  **Why**: keeps `po list` / `po show` cheap and lets unit tests run
-  the metadata-only paths without google-api-python-client installed.
-  **Alternatives considered**: top-level imports + heavier test deps —
-  rejected; symmetry with how `po-formulas` handles optional imports.
-
-- **Decision**: One e2e test added to this rig
-  (`tests/e2e/test_po_gmail_pack_install.py`) gated with
-  `pytest.importorskip("po_gmail")`.
-  **Why**: plan §"Test plan" explicitly calls for it; importorskip
-  makes the rig's CI a no-op when the sibling pack isn't present.
-  **Alternatives considered**: shelling out `po install --editable` in
-  the test — would mutate the user's tool venv, rejected per "don't
-  install side-effects in tests" convention.
+- **Decision**: Did **not** acquire `mcp-agent-mail` file reservations.
+  **Why**: No files were modified. Reservations are required only before
+  edits per the convention doc §"File reservations". An audit-only iteration
+  has no collision surface.
+  **Alternatives considered**: Reserve preemptively to register intent —
+  rejected as ceremony with no risk reduction.
