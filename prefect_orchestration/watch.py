@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Sequence
@@ -185,7 +185,9 @@ def _state_type_of(obj: Any) -> str | None:
     return None
 
 
-def diff_flow_state(prev: str | None, current: str | None, *, flow_name: str) -> Event | None:
+def diff_flow_state(
+    prev: str | None, current: str | None, *, flow_name: str
+) -> Event | None:
     """Emit an event iff the flow state name changed."""
     if current is None or prev == current:
         return None
@@ -221,9 +223,7 @@ def diff_task_runs(
             text = f"task {name}: {state_name}"
         else:
             text = f"task {name}: {prior} → {state_name}"
-        events.append(
-            Event(ts=_now(), source="prefect", kind="task", text=text)
-        )
+        events.append(Event(ts=_now(), source="prefect", kind="task", text=text))
     return events, new_snapshot
 
 
@@ -273,8 +273,7 @@ def build_prefect_replay(state_history: Sequence[Any], n: int) -> list[Event]:
     filtered.sort(key=lambda r: r[0])
     tail = filtered[-n:] if n > 0 else filtered
     return [
-        Event(ts=ts, source="prefect", kind="replay", text=name)
-        for ts, name in tail
+        Event(ts=ts, source="prefect", kind="replay", text=name) for ts, name in tail
     ]
 
 
@@ -300,7 +299,11 @@ async def _poll_run_dir(
     interval: float = RUN_DIR_POLL_S,
     initial_snapshot: dict[Path, float] | None = None,
 ) -> None:
-    prev = dict(initial_snapshot) if initial_snapshot is not None else scan_run_dir(run_dir)
+    prev = (
+        dict(initial_snapshot)
+        if initial_snapshot is not None
+        else scan_run_dir(run_dir)
+    )
     try:
         while True:
             await asyncio.sleep(interval)
