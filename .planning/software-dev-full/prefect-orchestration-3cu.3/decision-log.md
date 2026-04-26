@@ -1,79 +1,62 @@
-# Decision log — prefect-orchestration-3cu.3 (po-slack tool pack)
+# Decision log — prefect-orchestration-3cu.3 (build iter 1)
 
-## Build iter 1
+- **Decision**: No new code or content changes this iteration; pack
+  was already complete on disk from prior iterations (sibling repo
+  `/home/ryan-24/Desktop/Code/personal/nanocorps/po-slack/` at commit
+  `127df03`).
+  **Why**: Plan §"Current state" + §"What's already correct (do not
+  touch)" — re-implementing without a critic gap is wasted work and
+  risks regressing passing tests.
+  **Alternatives considered**: Rewriting the pack into the PO core
+  repo (rejected — violates the "land pack-contrib code in pack's
+  repo, not core" rule from CLAUDE.md / issue `pw4`).
 
-- **Decision**: Pack lives in a brand-new sibling repo at
-  `/home/ryan-24/Desktop/Code/personal/nanocorps/po-slack/`, not inside
-  the `prefect-orchestration` rig.
-  **Why**: Plan + issue `pw4` rule — pack-contrib code lands in its own
-  repo so core stays slim and `po install --editable <path>` is the
-  single dev-loop knob. Mirrors the `software-dev/po-formulas/` layout.
-  **Alternatives considered**: top-level package inside this repo
-  (would couple lifecycle to core), nested under `nanocorps/`
-  collection repo (no such repo exists).
+- **Decision**: Re-ran `po install --editable /…/po-slack` from the
+  rig.
+  **Why**: `po packs` showed `po-slack` was missing from the global
+  `po` tool venv at the start of this turn (only `po-gmail` and
+  `prefect-orchestration` were registered), so the AC verification
+  would have failed even though the pack files were on disk. The
+  pack's editable install was likely evicted when another worker
+  reinstalled the tool venv.
+  **Alternatives considered**: Editing the pack to "force" install
+  (no-op, the install state is per-machine, not in code).
 
-- **Decision**: `slack_sdk` is the only runtime dep; the official
-  Slack CLI is documented in the skill but never shelled out to.
-  **Why**: Plan §"Slack client" — the Slack CLI is a Deno-based
-  automation-app builder, not a "send a message" tool. Triage
-  recommended this; the CLI link still satisfies AC#2 ("CLI-first
-  with links").
-  **Alternatives considered**: subprocess `slack` for posts (heavy
-  Deno dep on the host, no real upside).
+- **Decision**: Did not modify or commit anything inside
+  `prefect-orchestration/` for build artifacts other than the run-dir
+  files (`decision-log.md`, `build-iter-1.diff`).
+  **Why**: All code/asset deliverables for AC 1–5 live in the sibling
+  pack repo. The PO core has no contract changes; touching it would
+  drift outside the plan's "Affected files" scope.
+  **Alternatives considered**: Adding an e2e test in
+  `tests/e2e/test_po_slack_pack.py` (rejected per plan Risks — would
+  create soft cross-repo coupling and need `pytest.importorskip` /
+  pack-discovery skip gates; the pack's own `tests/test_commands.py`
+  + `tests/test_checks.py` already cover the surface).
 
-- **Decision**: Overlay file lands at
-  `overlay/nanocorp-rules/slack.md` (rig-root nested), not at
-  `overlay/AGENTS.md` and not under `overlay/.claude/`.
-  **Why**: (1) The rig already has an `AGENTS.md`; placing the rules
-  there would silently no-op via `_copy_tree`'s skip-existing
-  semantics. (2) Writing to `.claude/` paths is gated by Claude
-  Code's sensitive-file policy. A non-`.claude` nested dir is
-  discoverable, never collides, and verified by `materialize_packs`
-  in a tempdir to land at `<rig>/nanocorp-rules/slack.md`.
-  **Alternatives considered**: `overlay/AGENTS.md` (collision risk),
-  `overlay/.claude/nanocorp-rules/slack.md` (sensitive-path block).
+## AC verification evidence
 
-- **Decision**: Doctor check `slack-bot-token` returns **yellow** for
-  unset env, never red.
-  **Why**: The pack is opt-in. A rig that simply doesn't use Slack
-  shouldn't have a red `po doctor` row just because it installed the
-  pack. Red is reserved for "set but malformed" (bad prefix) — that's
-  a real misconfiguration.
-  **Alternatives considered**: red on missing (too noisy), green
-  with a note (hides the fact it's unconfigured).
+```
+$ grep slack_sdk /home/ryan-24/Desktop/Code/personal/nanocorps/po-slack/pyproject.toml
+    "slack_sdk>=3.27",                                                  # AC 1 ✓
 
-- **Decision**: `slack-workspace-reach` uses a 3-second client timeout
-  and returns yellow on `socket.timeout` / `OSError` / unknown
-  Slack errors (e.g. `ratelimited`); only `invalid_auth` /
-  `not_authed` / `account_inactive` are red.
-  **Why**: Stays within core's 5-second pack-check budget; doesn't
-  page the operator on a flaky network — only on genuine auth
-  failures.
-  **Alternatives considered**: longer timeout (would risk core's
-  pack-check killing the row to yellow anyway).
+$ ls /home/ryan-24/Desktop/Code/personal/nanocorps/po-slack/skills/slack/SKILL.md
+…/skills/slack/SKILL.md                                                 # AC 2 file present
+$ grep -c 'https://api.slack.com/' …/skills/slack/SKILL.md
+9                                                                       # AC 2 CLI + docs links ✓
 
-- **Decision**: `slack-react` treats `already_reacted` as success
-  and prints `ok already_reacted`.
-  **Why**: Reactions are naturally idempotent from the caller's
-  perspective; surfacing it as a non-zero exit would force every
-  caller script to wrap in conditional logic.
-  **Alternatives considered**: hard-fail (over-strict), silent
-  success (loses the signal that the reaction was already there).
+$ po list | grep '^command  slack-'
+command  slack-post    po_slack.commands:slack_post    Post a message to `channel`…
+command  slack-react   po_slack.commands:slack_react   Add reaction `name` to message…
+command  slack-upload  po_slack.commands:slack_upload  Upload `file` to `channel`…   # AC 3 ✓ (3 commands)
 
-- **Decision**: Cross-repo wiring is verified by a new test file
-  `tests/e2e/test_po_slack_pack_install.py` in the rig that uses
-  `pytest.importorskip("po_slack")`.
-  **Why**: Mirrors the existing `test_po_gmail_pack_install.py`
-  precedent — tests the entry-point wiring without coupling rig CI
-  to the sibling pack being checked out. Skip cleanly when missing.
-  **Alternatives considered**: tests live only in po-slack's repo
-  (would miss the wiring contract on the core side); shell out
-  `po install` from the test (would mutate user state).
+$ po doctor | grep po-slack
+po-slack  slack-bot-token         OK      SLACK_BOT_TOKEN present + SLACK_APP_TOKEN
+po-slack  slack-workspace-reach   OK      team=Jataware user=clyde_agent             # AC 4 ✓ (2 checks)
 
-- **Decision**: Pack ships its own `tests/test_commands.py` +
-  `tests/test_checks.py` with a `FakeWebClient` monkeypatch — no
-  network, no Slack credentials needed.
-  **Why**: Hermetic CI; covers all eight branch combinations called
-  out in the plan's test plan. Verified locally: 19 passed in 0.15s.
-  **Alternatives considered**: hit Slack with a real token (flaky,
-  requires CI secrets, against repo principle of hermetic tests).
+$ ls /home/ryan-24/Desktop/Code/personal/nanocorps/po-slack/overlay/nanocorp-rules/slack.md
+…/overlay/nanocorp-rules/slack.md                                       # AC 5 ✓
+
+$ cd /home/ryan-24/Desktop/Code/personal/nanocorps/po-slack && uv run python -m pytest
+19 passed in 0.05s                                                      # all pack tests green
+```
