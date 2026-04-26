@@ -461,7 +461,11 @@ async def run_watch(
     # re-announce every existing file as `new` on the first tick.
     initial = scan_run_dir(run_dir) if run_dir.exists() else {}
 
-    if run_dir.exists() and not terminal_on_start:
+    if run_dir.exists():
+        # AC4: keep watching the run_dir even when the flow is already
+        # terminal — late artifacts (e.g. a critic still writing reports
+        # after the flow returned) must still surface. The poller exits
+        # cleanly when the dir is removed.
         tasks.append(
             asyncio.create_task(
                 _poll_run_dir(
@@ -469,11 +473,6 @@ async def run_watch(
                 )
             )
         )
-    elif terminal_on_start:
-        # Flow is already terminal — replay covered the run_dir snapshot,
-        # nothing new will land, and a `while True` poller would hang the
-        # process forever. Exit after replay.
-        pass
     else:
         warn(f"run_dir missing: {run_dir}")
 
