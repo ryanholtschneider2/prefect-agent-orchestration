@@ -196,7 +196,9 @@ def test_entrypoint_does_not_set_x() -> None:
 # --------------------------------------------------------------------------
 
 
-def _run_with_hostname(env: dict[str, str], home: Path, hostname: str) -> subprocess.CompletedProcess:
+def _run_with_hostname(
+    env: dict[str, str], home: Path, hostname: str
+) -> subprocess.CompletedProcess:
     base = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": str(home),

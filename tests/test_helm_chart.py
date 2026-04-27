@@ -148,8 +148,9 @@ def test_helm_template_apikey_create_secret_requires_value() -> None:
 
 def _worker_env(docs: list[dict]) -> list[dict]:
     workers = [
-        d for d in docs if d["kind"] == "Deployment"
-        and "worker" in d["metadata"]["name"]
+        d
+        for d in docs
+        if d["kind"] == "Deployment" and "worker" in d["metadata"]["name"]
     ]
     assert len(workers) == 1
     return workers[0]["spec"]["template"]["spec"]["containers"][0]["env"]
@@ -158,10 +159,14 @@ def _worker_env(docs: list[dict]) -> list[dict]:
 @pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
 def test_oauth_pool_wires_pool_env() -> None:
     rendered = _helm_template(
-        "--set", "auth.mode=oauth",
-        "--set", "auth.oauth.pool.enabled=true",
-        "--set", "auth.oauth.pool.secretName=claude-oauth-pool",
-        "--set", "auth.oauth.pool.secretKey=pool",
+        "--set",
+        "auth.mode=oauth",
+        "--set",
+        "auth.oauth.pool.enabled=true",
+        "--set",
+        "auth.oauth.pool.secretName=claude-oauth-pool",
+        "--set",
+        "auth.oauth.pool.secretKey=pool",
     )
     docs = _docs(rendered)
     env = _worker_env(docs)
@@ -177,8 +182,10 @@ def test_oauth_pool_wires_pool_env() -> None:
 @pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
 def test_apikey_pool_wires_pool_env() -> None:
     rendered = _helm_template(
-        "--set", "auth.mode=apikey",
-        "--set", "auth.apikey.pool.enabled=true",
+        "--set",
+        "auth.mode=apikey",
+        "--set",
+        "auth.apikey.pool.enabled=true",
     )
     docs = _docs(rendered)
     env = _worker_env(docs)
@@ -194,11 +201,16 @@ def test_apikey_pool_wires_pool_env() -> None:
 @pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
 def test_oauth_pool_create_secret_renders_pool_secret() -> None:
     rendered = _helm_template(
-        "--set", "auth.mode=oauth",
-        "--set", "auth.oauth.pool.enabled=true",
-        "--set", "auth.oauth.pool.createSecret=true",
-        "--set", "auth.oauth.pool.size=2",
-        "--set-json", 'auth.oauth.pool.credentials=[{"access_token":"a"},{"access_token":"b"}]',
+        "--set",
+        "auth.mode=oauth",
+        "--set",
+        "auth.oauth.pool.enabled=true",
+        "--set",
+        "auth.oauth.pool.createSecret=true",
+        "--set",
+        "auth.oauth.pool.size=2",
+        "--set-json",
+        'auth.oauth.pool.credentials=[{"access_token":"a"},{"access_token":"b"}]',
     )
     docs = _docs(rendered)
     secrets = [d for d in docs if d["kind"] == "Secret"]
@@ -214,12 +226,20 @@ def test_oauth_pool_create_secret_renders_pool_secret() -> None:
 def test_apikey_pool_size_mismatch_fails() -> None:
     res = subprocess.run(
         [
-            "helm", "template", "po", str(CHART_DIR),
-            "--set", "auth.mode=apikey",
-            "--set", "auth.apikey.pool.enabled=true",
-            "--set", "auth.apikey.pool.createSecret=true",
-            "--set", "auth.apikey.pool.size=5",
-            "--set", "auth.apikey.pool.apiKeys={sk-aa,sk-bb}",
+            "helm",
+            "template",
+            "po",
+            str(CHART_DIR),
+            "--set",
+            "auth.mode=apikey",
+            "--set",
+            "auth.apikey.pool.enabled=true",
+            "--set",
+            "auth.apikey.pool.createSecret=true",
+            "--set",
+            "auth.apikey.pool.size=5",
+            "--set",
+            "auth.apikey.pool.apiKeys={sk-aa,sk-bb}",
         ],
         capture_output=True,
         text=True,
@@ -234,10 +254,16 @@ def test_apikey_pool_size_mismatch_fails() -> None:
 def test_oauth_pool_create_secret_requires_credentials() -> None:
     res = subprocess.run(
         [
-            "helm", "template", "po", str(CHART_DIR),
-            "--set", "auth.mode=oauth",
-            "--set", "auth.oauth.pool.enabled=true",
-            "--set", "auth.oauth.pool.createSecret=true",
+            "helm",
+            "template",
+            "po",
+            str(CHART_DIR),
+            "--set",
+            "auth.mode=oauth",
+            "--set",
+            "auth.oauth.pool.enabled=true",
+            "--set",
+            "auth.oauth.pool.createSecret=true",
         ],
         capture_output=True,
         text=True,
