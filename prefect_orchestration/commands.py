@@ -45,23 +45,37 @@ def core_verbs() -> set[str]:
 
     Reads off the live `cli.app` Typer object so adding a new
     `@app.command()` automatically extends the reserved-verb set.
-    Imports `cli` lazily to avoid circular import at module load.
+    Also walks `add_typer` sub-groups (e.g. `po packs install`) so
+    nested verbs and the group name itself are reserved against
+    pack-shipped command shadowing. Imports `cli` lazily to avoid
+    circular import at module load.
     """
     from prefect_orchestration import cli  # local import to break cycle
 
-    names: set[str] = set()
-    for cmd in getattr(cli.app, "registered_commands", []):
-        # Typer stores the explicit name (if given) on the CommandInfo,
-        # else falls back to the callback function name (with `_` → `-`).
+    def _name_of(cmd: object) -> str | None:
         explicit = getattr(cmd, "name", None)
         if explicit:
-            names.add(explicit)
-            continue
+            return str(explicit)
         cb = getattr(cmd, "callback", None)
         fn_name = getattr(cb, "__name__", None)
         if fn_name:
-            # Typer auto-derives subcommand name from snake_case → kebab-case.
-            names.add(fn_name.replace("_", "-").rstrip("-"))
+            return fn_name.replace("_", "-").rstrip("-")
+        return None
+
+    names: set[str] = set()
+    for cmd in getattr(cli.app, "registered_commands", []):
+        n = _name_of(cmd)
+        if n:
+            names.add(n)
+    for group in getattr(cli.app, "registered_groups", []):
+        group_name = getattr(group, "name", None)
+        if group_name:
+            names.add(str(group_name))
+        sub_app = getattr(group, "typer_instance", None)
+        for sub_cmd in getattr(sub_app, "registered_commands", []) if sub_app else []:
+            n = _name_of(sub_cmd)
+            if n:
+                names.add(n)
     return names
 
 
