@@ -83,6 +83,16 @@ def _build_claude_argv(
         "stream-json",
         "--model",
         model,
+        # Skip user-level settings (~/.claude/settings.json). PO fans
+        # out many parallel claude subprocesses; if the user-level
+        # SessionStart hook shells out to a contended resource (e.g.
+        # `bd prime` against a single dolt-server), 20+ concurrent
+        # hook invocations kill each other and claude exits 1
+        # mid-startup. Project + local settings still load — PO writes
+        # its Stop hook to .claude/settings.local.json, which lives
+        # under "local".
+        "--setting-sources",
+        "project,local",
     ]
     if session_id and _UUID_RE.match(session_id):
         argv += ["--resume", session_id]
@@ -326,9 +336,18 @@ def _spawn_tmux(
         if has_session.returncode == 0:
             proc = subprocess.run(
                 [
-                    "tmux", "new-window", "-t", session_name,
-                    "-n", window_name, "-P", "-F", "#{window_id}",
-                    "bash", "-lc", wrapper,
+                    "tmux",
+                    "new-window",
+                    "-t",
+                    session_name,
+                    "-n",
+                    window_name,
+                    "-P",
+                    "-F",
+                    "#{window_id}",
+                    "bash",
+                    "-lc",
+                    wrapper,
                 ],
                 check=True,
                 capture_output=True,
@@ -338,10 +357,23 @@ def _spawn_tmux(
         else:
             proc = subprocess.run(
                 [
-                    "tmux", "new-session", "-d", "-s", session_name,
-                    "-n", window_name, "-x", str(width), "-y", str(height),
-                    "-P", "-F", "#{window_id}",
-                    "bash", "-lc", wrapper,
+                    "tmux",
+                    "new-session",
+                    "-d",
+                    "-s",
+                    session_name,
+                    "-n",
+                    window_name,
+                    "-x",
+                    str(width),
+                    "-y",
+                    str(height),
+                    "-P",
+                    "-F",
+                    "#{window_id}",
+                    "bash",
+                    "-lc",
+                    wrapper,
                 ],
                 check=True,
                 capture_output=True,
@@ -367,9 +399,18 @@ def _spawn_tmux(
         )
     subprocess.run(
         [
-            "tmux", "new-session", "-d", "-s", session_name,
-            "-x", str(width), "-y", str(height),
-            "bash", "-lc", wrapper,
+            "tmux",
+            "new-session",
+            "-d",
+            "-s",
+            session_name,
+            "-x",
+            str(width),
+            "-y",
+            str(height),
+            "bash",
+            "-lc",
+            wrapper,
         ],
         check=True,
         env=dict(env),
@@ -386,7 +427,9 @@ def _cleanup_tmux(target: str, *, scoped: bool) -> None:
     matching pre-scope behaviour.
     """
     cmd = ["tmux", "kill-window" if scoped else "kill-session", "-t", target]
-    subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
 
 
 @dataclass
@@ -948,7 +991,11 @@ class TmuxInteractiveClaudeBackend:
         # can filter out stale sentinel files from prior turns.
         spawn_start = time.time()
 
-        argv = shlex.split(self.start_command) + session_args + ["--model", model]
+        argv = (
+            shlex.split(self.start_command)
+            + session_args
+            + ["--model", model, "--setting-sources", "project,local"]
+        )
 
         # Keep the tmux pane alive even if claude exits early (rate
         # limit, bad arg, missing UUID, etc.). Without the trailing
