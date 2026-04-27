@@ -94,6 +94,34 @@ def test_rig_overlay_overrides_pack(tmp_path: Path) -> None:
     assert "slack: @x" in out
 
 
+def test_rig_path_kwarg_is_also_substitution_var(tmp_path: Path) -> None:
+    """Regression: when callers do `render_template(..., **ctx)` with ctx
+    containing both `rig_path` (consumed by the keyword-only param for
+    identity overlay) AND the prompt text references `{{rig_path}}`,
+    the explicit binding stole `rig_path` from `**vars` and the
+    substitution failed with 'rig_path was not provided'.
+
+    Fix: render_template echoes `rig_path` back into merged_vars when
+    none of the **vars carried it.
+    """
+    pack = tmp_path / "pack"
+    rig = tmp_path / "rig"
+    rig.mkdir()
+    _write(pack / "triager" / "prompt.md", "rig at: {{rig_path}}")
+
+    # Mirror the formula's call shape: ctx unpacked into **vars where
+    # rig_path is one of the entries.
+    ctx = {"rig_path": str(rig), "issue_id": "x"}
+    out = render_template(pack, "triager", rig_path=rig, **{k: v for k, v in ctx.items() if k != "rig_path"})
+    assert f"rig at: {rig}" in out
+
+    # Also verify the case where the formula passes rig_path explicitly
+    # only (without it being in the ctx-as-vars at all): it should still
+    # be available as a substitution var.
+    out2 = render_template(pack, "triager", rig_path=rig)
+    assert f"rig at: {rig}" in out2
+
+
 def test_agent_name_var_from_identity(tmp_path: Path) -> None:
     _write(
         tmp_path / "builder" / "prompt.md",

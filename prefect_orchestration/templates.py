@@ -65,6 +65,14 @@ def render_template(
 
     # Identity-derived vars merge BEHIND caller-supplied vars (caller wins).
     merged_vars: dict[str, object] = {**identity_vars(identity), **vars}
+    # `rig_path` is a keyword-only parameter so identity overlay can find
+    # `<rig>/.claude/agents/<role>/identity.toml`. But callers commonly do
+    # `render_template(..., **ctx)` where ctx already contains `rig_path`
+    # — Python binds it to the named param, removing it from `**vars`. We
+    # echo it back into merged_vars so prompts can still reference
+    # `{{rig_path}}` without callers needing to pass it twice.
+    if rig_path is not None and "rig_path" not in merged_vars:
+        merged_vars["rig_path"] = str(rig_path)
 
     def sub(m: re.Match[str]) -> str:
         key = m.group(1).strip()
