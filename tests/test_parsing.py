@@ -47,7 +47,9 @@ def test_read_verdict_invalid_json_raises(tmp_path: Path) -> None:
 
 
 def test_prompt_for_verdict_passes_prompt_and_returns_file(tmp_path: Path) -> None:
-    (verdicts_dir(tmp_path) / "step.json").write_text(json.dumps({"verdict": "approved"}))
+    (verdicts_dir(tmp_path) / "step.json").write_text(
+        json.dumps({"verdict": "approved"})
+    )
     sess = _StubSession()
     out = prompt_for_verdict(sess, "do thing", tmp_path, "step")
     assert sess.calls == [("do thing", False)]
