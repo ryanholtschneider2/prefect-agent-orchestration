@@ -401,6 +401,50 @@ def check_uv_tool_fresh() -> CheckResult:
     )
 
 
+def check_beads_dolt_mode() -> CheckResult:
+    """Warn when the rig's `.beads/` is on embedded-dolt (single-writer).
+
+    Concurrent `po run` flows hit "another process holds the exclusive lock"
+    when `.beads/` runs in embedded mode. Recommended setup is
+    `bd init --server` (see CLAUDE.md → "Beads backend (dolt-server)").
+    No-op outside a rig (no `.beads/metadata.json` in cwd).
+    """
+    import json
+    from pathlib import Path
+
+    name = "beads dolt mode"
+    meta_path = Path.cwd() / ".beads" / "metadata.json"
+    if not meta_path.exists():
+        return CheckResult(
+            name=name, status=Status.OK, message="no .beads/ in cwd; skipping"
+        )
+    try:
+        meta = json.loads(meta_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message=f".beads/metadata.json unreadable: {exc}",
+            remediation="repair or re-init .beads/",
+        )
+    mode = meta.get("dolt_mode")
+    if mode == "server":
+        db = meta.get("dolt_database", "?")
+        host = meta.get("dolt_host", "?")
+        return CheckResult(
+            name=name, status=Status.OK, message=f"dolt-server (db={db}, host={host})"
+        )
+    return CheckResult(
+        name=name,
+        status=Status.WARN,
+        message=f"dolt_mode={mode!r} (embedded — single-writer)",
+        remediation=(
+            "re-init with `bd init --server` for concurrent po-run safety; "
+            "see CLAUDE.md → 'Beads backend (dolt-server)'"
+        ),
+    )
+
+
 def check_logfire_token() -> CheckResult:
     """LOGFIRE_TOKEN set (warn-only)."""
     name = "LOGFIRE_TOKEN"
@@ -426,6 +470,7 @@ ALL_CHECKS: list[Callable[[], CheckResult]] = [
     check_deployments_load,
     check_po_list_nonempty,
     check_uv_tool_fresh,
+    check_beads_dolt_mode,
     check_logfire_token,
 ]
 

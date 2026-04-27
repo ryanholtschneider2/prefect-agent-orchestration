@@ -108,6 +108,22 @@ Prefect's UI (Automations).
 software-dev pipeline (16 steps, 5 loops) + `epic` fan-out. Read that
 if you want a concrete template to copy.
 
+## Prerequisites
+
+Install these before `uv sync` / `uv tool install`:
+
+- **`uv`** — Python tool runner. `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+- **`dolt`** — sql-server backend for `bd` (beads). PO rigs default to a
+  dolt sql-server so concurrent `po run` flows can claim/update beads in
+  parallel without single-writer lock errors. Install:
+  `curl -L https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash`
+  (or `brew install dolt`). See [`CLAUDE.md`](CLAUDE.md#backend-dolt-server)
+  for the recommended `bd init --server …` invocation.
+- **`bd`** — beads CLI on PATH. See <https://github.com/steveyegge/beads>.
+- **`tmux`** *(optional)* — enables lurkable per-role agent sessions
+  (`tmux attach -t po-<issue>-<role>`). PO falls back to subprocess pipes
+  when tmux is missing.
+
 ## Install
 
 ```bash

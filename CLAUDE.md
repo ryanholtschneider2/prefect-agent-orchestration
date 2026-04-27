@@ -31,6 +31,31 @@ bd close <id>         # Complete work
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 
+### Backend (dolt-server)
+
+PO rigs default to the **dolt sql-server** beads backend, not embedded-dolt.
+Concurrent `po run` flows in the same rig hit "another process holds the
+exclusive lock" under embedded-dolt — every `bd update` from a parallel
+worker fails or retries. dolt-server makes parallel epics safe.
+
+Recommended `bd init` for a new rig:
+
+```bash
+bd init --server \
+        --server-host=127.0.0.1 \
+        --server-port=3307 \
+        --server-user=root \
+        --database=<rig-slug>          # optional; otherwise prefix-derived
+```
+
+(Start the server out-of-band: `dolt sql-server -P 3307 --user root` from a
+directory with the dolt database — beads data lives at `.beads/dolt`.)
+
+`po doctor` runs `check_beads_dolt_mode` against `.beads/metadata.json` and
+warns when `dolt_mode != "server"`. This rig is already on dolt-server —
+see `.beads/dolt-server.port` for the live port and `.beads/metadata.json`
+for the connection details.
+
 ## Session Completion
 
 **This repo has no git remote configured** — local-only. The beads
