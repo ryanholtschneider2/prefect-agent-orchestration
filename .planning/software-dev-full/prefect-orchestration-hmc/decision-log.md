@@ -1,5 +1,18 @@
 # Decision log — prefect-orchestration-hmc
 
+## Build iter 1 (replan-only pass)
+
+- **Decision**: No new code commits this iter; the in-rig pack already
+  shipped at commit 9faa71e (`prefect-orchestration-hmc: po-stripe
+  v0.1.0 — first reference tool pack (in-rig)`).
+  **Why**: The plan was reverted on disk to the older sibling-dir
+  version and re-staged with the in-rig version; the implementation
+  already matches the in-rig plan. `uv run python -m pytest` in
+  po-stripe passes 28/28. Re-committing the same files would create
+  empty churn.
+  **Alternatives considered**: Re-do the build from scratch — pure
+  waste; the working tree is already consistent with the plan.
+
 ## Build iter 1 (initial — sibling-of-po-formulas attempt, superseded)
 
 - Pack landed at `…/nanocorps/po-stripe/` (true sibling of

@@ -2,50 +2,64 @@
 
 ## Decision: where the pack lives
 
-Per triage, AC #1 says "sibling dir of `software-dev/po-formulas`". The current
-on-disk layout already has that pattern: this rig is at
-`…/nanocorps/prefect-orchestration/`, and `…/nanocorps/software-dev/po-formulas/`
-exists as a sibling. So **the pack lands at `…/nanocorps/po-stripe/`**, a true
-sibling of `software-dev/po-formulas/`. Files created **outside** the rig are
-still git-staged from inside their own tree (no remote yet).
+Build constraint: code edits and git commits must land in
+`/home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration`. So
+the pack lives **inside the rig** at
+`/home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration/po-stripe/`.
 
-If the build agent finds it can't write outside the rig (sandboxing), fall
-back to `prefect-orchestration/po-stripe/` inside the rig and note the
-deviation in the decision log; engdocs/pack-convention.md treats the location
-as a convention, not a hard rule.
+AC #1 ("po-stripe/ exists as sibling dir of `software-dev/po-formulas`") is
+a *convention-level* statement — `engdocs/pack-convention.md` treats pack
+location as convention, not contract. Triage explicitly authorized the
+in-tree fallback ("Default to top-level `po-stripe/` inside the rig unless
+told otherwise"). Top-level inside the rig keeps all PO pack code in one
+git tree until a polyrepo split is justified, and matches the build
+constraint exactly. The rig itself is a sibling of `software-dev/`, so the
+in-tree pack is "sibling-adjacent" via one extra hop; defensible and
+cleanly documented in the decision log.
 
-## Affected files
+A previous attempt placed the pack at `…/nanocorps/po-stripe/` (out of
+tree); that location is superseded by this plan.
 
-New pack `…/nanocorps/po-stripe/`:
+## Affected files (all under `/home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration`)
 
-- `po-stripe/pyproject.toml` — name `po-stripe`, deps `stripe>=9.0`, entry
-  points for 3 commands + 3 doctor checks; hatchling build; wheel includes
-  `po_stripe`, `skills/`, `overlay/` so the wheel-layout overlay probe works.
-- `po-stripe/po_stripe/__init__.py` — empty.
-- `po-stripe/po_stripe/commands.py` — `balance()`, `recent_charges()`, `mode()`.
-- `po-stripe/po_stripe/checks.py` — `cli_installed()`, `env_set()`, `api_reachable()`.
-- `po-stripe/skills/stripe/SKILL.md` — Claude Code skill (frontmatter + body).
-- `po-stripe/overlay/CLAUDE.md` — agent-facing reinforcement of the skill.
-- `po-stripe/README.md` — human-facing doc.
-- `po-stripe/.gitignore` — minimal (`__pycache__`, `.venv`, `dist/`).
+- `po-stripe/pyproject.toml`
+- `po-stripe/po_stripe/__init__.py`
+- `po-stripe/po_stripe/commands.py`
+- `po-stripe/po_stripe/checks.py`
+- `po-stripe/skills/stripe/SKILL.md`
+- `po-stripe/overlay/CLAUDE.md`
+- `po-stripe/README.md`
+- `po-stripe/.gitignore`
+- `po-stripe/tests/__init__.py`
+- `po-stripe/tests/test_commands.py`
+- `po-stripe/tests/test_checks.py`
+- `pyproject.toml` — add `[tool.pytest.ini_options].testpaths = ["tests"]`
+  so the rig's pytest doesn't recurse into `po-stripe/tests/` and try to
+  import `po_stripe` outside its own venv.
 
-No core (`prefect-orchestration/`) changes are required. The pack is consumed
-purely via the existing `po.commands` / `po.doctor_checks` entry-point groups
-(both already wired in `prefect_orchestration/commands.py` and
-`prefect_orchestration/doctor.py`) and the existing overlay/skills mechanism
-(shipped in `4ja.4`, already merged).
+**No edits to existing core code** under
+`prefect_orchestration/`. The pack consumes existing entry-point groups
+(`po.commands`, `po.doctor_checks`) wired in
+`prefect_orchestration/commands.py` and `prefect_orchestration/doctor.py`;
+overlay/skills delivery uses the existing 4ja.4 mechanism in
+`prefect_orchestration/agent_session.py`.
 
 ## Approach
 
-### `pyproject.toml`
+### `po-stripe/pyproject.toml`
 
-Mirror the shape of `software-dev/po-formulas/pyproject.toml`. Hatchling
-backend, `[tool.hatch.build.targets.wheel] packages = ["po_stripe"]`, plus
-`include = ["skills/", "overlay/"]` so the pack-convention "wheel layout"
-overlay probe (`<dist-root>/overlay/`) finds them when installed
-non-editably. Editable installs find them next to `pyproject.toml` either way.
+Mirror the shape of `…/nanocorps/software-dev/po-formulas/pyproject.toml`.
+Hatchling backend; ship `skills/` and `overlay/` inside the wheel via
+`include = [...]` so the pack-convention wheel-layout probe finds them
+on non-editable installs.
 
 ```toml
+[project]
+name = "po-stripe"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["prefect-orchestration", "stripe>=9.0"]
+
 [project.entry-points."po.commands"]
 stripe-balance = "po_stripe.commands:balance"
 stripe-recent  = "po_stripe.commands:recent_charges"
@@ -55,130 +69,144 @@ stripe-mode    = "po_stripe.commands:mode"
 stripe-cli-installed = "po_stripe.checks:cli_installed"
 stripe-env           = "po_stripe.checks:env_set"
 stripe-api           = "po_stripe.checks:api_reachable"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["po_stripe"]
+include  = ["skills", "overlay"]
+
+[tool.uv.sources]
+prefect-orchestration = { path = "..", editable = true }
 ```
 
-The three command names don't collide with any core Typer verb (`run`,
-`list`, `show`, `deploy`, `logs`, `artifacts`, `sessions`, `watch`, `retry`,
-`status`, `doctor`, `install`, `update`, `uninstall`, `packs`) — verified
-against `cli.py` registration. Document the absence-of-collision in the README.
+`[tool.uv.sources]` points one directory up at the in-tree core
+(`po-stripe/..` = the rig root, where the core's `pyproject.toml` lives).
+
+The three command names don't collide with any core Typer verb (verified
+against `prefect_orchestration/cli.py`: `run`, `list`, `show`, `deploy`,
+`logs`, `artifacts`, `sessions`, `watch`, `retry`, `status`, `doctor`,
+`install`, `update`, `uninstall`, `packs`, `from-file`, `attach`,
+`serve`).
 
 ### `po_stripe/commands.py`
 
 Three thin shells over the `stripe` CLI. Each:
 
-1. Resolves `shutil.which("stripe")` first; if missing, prints a one-line
-   error pointing at `po doctor` and `raise SystemExit(2)` (consistent with
-   `summarize_verdicts` precedent).
-2. Runs `subprocess.run([...], capture_output=True, text=True, timeout=10,
-   check=False)`. No shell=True, args list only (avoids injection).
-3. Parses JSON output (Stripe CLI emits JSON by default) and prints a
-   tabulated row set.
-4. Never logs `STRIPE_API_KEY`. The CLI reads it from env; we don't pass it
-   on argv.
+1. Resolves `shutil.which("stripe")`; on absence, prints a one-line error
+   to stderr pointing at `po doctor` and `raise SystemExit(2)` (precedent
+   in `…/po-formulas/po_formulas/commands.py::summarize_verdicts`).
+2. Runs `subprocess.run([stripe, ...args], shell=False,
+   capture_output=True, text=True, timeout=10, check=False)`. No
+   `shell=True`. `STRIPE_API_KEY` stays in env (read by the CLI itself);
+   never on argv, never logged.
+3. Parses JSON stdout (Stripe CLI emits JSON by default).
+4. Tabulates with fixed-width `f"{val:Ns}"` — no `tabulate`/`rich` dep,
+   keeps the dep set minimal.
 
-- `balance() -> None`: `stripe balance retrieve`. Print available + pending
-  per-currency: `available <amt> <ccy>` / `pending  <amt> <ccy>`. Amounts in
-  Stripe are minor units (cents); divide by 100 for display.
-- `recent_charges(limit: int = 10) -> None`: `stripe charges list --limit
-  <n>`. Tabulate `id | amount | currency | status | created (ISO) |
-  customer`. Use a fixed-width `f"{...:24s}"` print (no `tabulate` dep —
-  keep deps tight to `stripe>=9.0`).
-- `mode() -> None`: read `STRIPE_API_KEY` env var. Inspect prefix only.
-  Print `mode: test (sk_test_…)` / `mode: live (sk_live_…)` / `unknown`.
-  **Never echo the full key.** Slice `key[:8] + "…"`.
-
-`recent_charges` accepts `--limit N` via the existing `po.commands` arg
-parser (`prefect_orchestration/commands.py` already coerces ints).
+- `balance()`: `stripe balance retrieve`. Print `available <amt> <ccy>` /
+  `pending <amt> <ccy>` per row. Stripe amounts are minor units; divide
+  by 100 for display.
+- `recent_charges(limit: int = 10)`: `stripe charges list --limit <n>`.
+  Validate `1 <= limit <= 100` (matches Stripe API limits). Tabulate
+  `id | amount | currency | status | created (ISO UTC) | customer`.
+  `--limit` arg parsing comes for free from the existing `po.commands`
+  arg parser (int coercion in `prefect_orchestration/commands.py`).
+- `mode()`: read `STRIPE_API_KEY` env. Inspect prefix only. Print
+  `mode: test (sk_test_…)` / `mode: live (sk_live_…)` / `unknown` /
+  `unset`. **Never echo full key** — slice `key[:8] + "…"`.
 
 ### `po_stripe/checks.py`
 
-Three `DoctorCheck` returners:
+Three `DoctorCheck` returners (status: `green` | `yellow` | `red`):
 
 - `cli_installed()`: `shutil.which("stripe")`. Missing → `red` with hint
-  `brew install stripe/stripe-cli/stripe  (macOS)  |  see
-  https://docs.stripe.com/stripe-cli for Linux`. Present → run
-  `stripe --version` with `timeout=4`; report version on green; treat
-  non-zero / `OSError` as red. Pattern lifted from `claude_cli_present()`
-  in po-formulas.
-- `env_set()`: lifts the example from `engdocs/pack-convention.md` §
-  "Credentials" verbatim. Missing → red. Malformed prefix → red. `sk_test_`
-  → green. `sk_live_` → **yellow** with hint `live key in dev — set
-  PO_ENV=prod to silence` (resolves triage open question on dev/prod
-  distinguishing); if `os.environ.get("PO_ENV") == "prod"`, `sk_live_` is
-  green and `sk_test_` is yellow ("test key in prod env"). Either way only
-  `key[:8] + "…"` ever appears in `message`.
-- `api_reachable()`: short-circuits to yellow ("STRIPE_API_KEY unset") when
-  env is missing — never prompts, never asks for input. When set, runs
-  `stripe balance retrieve` with `timeout=5`. Exit 0 → green; non-zero or
-  timeout → yellow (transient-network-or-auth, hint to re-check key);
-  `OSError` → red ("stripe CLI missing — see stripe-cli-installed").
+  `"macOS: brew install stripe/stripe-cli/stripe · Linux: see
+  https://docs.stripe.com/stripe-cli (apt repo or tarball)"`. Present →
+  `stripe --version` with `timeout=4`; report version on green;
+  non-zero / `OSError` → red; `TimeoutExpired` → yellow. Pattern lifted
+  from `…/po-formulas/po_formulas/checks.py::claude_cli_present`.
+- `env_set()`: lifts the example from `engdocs/pack-convention.md`
+  §"Credentials". Missing → red. Malformed prefix → red. Otherwise
+  inspect `PO_ENV` (case-insensitive `prod`):
+  - dev (default): `sk_test_…` → green; `sk_live_…` → yellow.
+  - prod (`PO_ENV=prod`): `sk_live_…` → green; `sk_test_…` → yellow.
+  Only `key[:8] + "…"` ever appears in `message`/`hint`. Decision
+  rationale (resolves triage's open question on dev/prod
+  distinguishing): `PO_ENV` is a small per-host env var; cleaner than
+  hostname sniffing or a separate `STRIPE_PO_MODE` knob.
+- `api_reachable()`: short-circuit to **yellow** when `STRIPE_API_KEY`
+  unset *or* `stripe` not on PATH (avoids double-red with the dedicated
+  checks above; both already fail loudly). When both present, `stripe
+  balance retrieve` with `timeout=5`; exit 0 → green; non-zero → yellow
+  (snippet of stderr); `TimeoutExpired` → yellow; `OSError` → red.
 
 ### `skills/stripe/SKILL.md`
 
-YAML frontmatter:
+YAML frontmatter `name: stripe`, one-line description. Body sections in
+this order (CLI-first per pack-convention §"Tool-access preference order"):
 
-```
----
-name: stripe
-description: Charge customers, issue refunds, inspect balances via Stripe — CLI-first.
----
-```
-
-Body sections (markdown), in this order:
-
-1. **Canonical vendor docs** — links to
-   `https://docs.stripe.com/stripe-cli`, `https://docs.stripe.com/api`,
-   `https://docs.stripe.com/llms.txt`, `https://docs.stripe.com/projects`.
+1. **Canonical vendor docs** — links to `docs.stripe.com/stripe-cli`,
+   `docs.stripe.com/api`, `docs.stripe.com/llms.txt`,
+   `docs.stripe.com/projects`.
 2. **This nanocorp's rules**:
-   - Test keys in dev (`sk_test_`); doctor warns on `sk_live_` unless
-     `PO_ENV=prod`.
-   - Charges > **$500** require `bd human <issue> --question="approve $<amt>
-     charge to <customer>"` and a recorded human response *before* the
-     `stripe charges create` call.
-   - Idempotency convention: every write call passes
-     `--idempotency-key "{issue_id}:{step_name}"` (or
-     `idempotency_key=...` on the SDK fallback).
-   - Refund flow: prefer `stripe refunds create --charge <id>` over
-     re-using a PaymentIntent.
-3. **Quick CLI recipes** (CLI is tier 1 per pack-convention §"Tool-access
-   preference order"): `stripe balance retrieve`, `stripe charges create
-   --amount 2000 --currency usd --source tok_visa --idempotency-key
-   "<id>:<step>"`, `stripe charges list --limit 10`, `stripe refunds
-   create --charge ch_…`.
-4. **SDK fallback** — for webhooks/streaming/typed responses; one minimal
-   `stripe.PaymentIntent.create(...)` example with the same idempotency
-   convention. Marked clearly as fallback.
-5. **HTTP API** — one sentence: don't, the CLI and SDK cover everything.
-6. **Doctor** — pointer to `po doctor` for prerequisite checks.
+   - Test keys in dev (`sk_test_`); doctor warns on `sk_live_` unless `PO_ENV=prod`.
+   - Charges > **$500** require `bd human <issue>
+     --question="approve $<amt> charge to <customer>"` *before*
+     `stripe charges create`.
+   - Idempotency: `--idempotency-key "{issue_id}:{step_name}"` on every write.
+   - Refunds: prefer `stripe refunds create --charge <id>` over
+     PaymentIntent reuse.
+3. **Quick CLI recipes** — `stripe balance retrieve`,
+   `stripe charges create --amount … --idempotency-key "<id>:<step>"`,
+   `stripe charges list --limit 10`, `stripe refunds create`,
+   `stripe listen` (webhook dev).
+4. **Pack-shipped helpers** — `po stripe-balance / -recent / -mode`.
+5. **SDK fallback** — minimal `stripe.PaymentIntent.create(...)` for
+   webhooks/streaming; same idempotency convention.
+6. **HTTP API** — one sentence: don't.
+7. **Doctor** — table of the three checks.
 
-Skill kept short — vendor owns mechanics (per pack-convention §
-"Official vendor skills / llms.txt — link, don't duplicate").
+Skill stays short (vendor owns mechanics; pack owns policy).
 
 ### `overlay/CLAUDE.md`
 
-Short reinforcement (≤ 30 lines): "If you're touching Stripe, read
-`.claude/skills/po-stripe/stripe/SKILL.md` first. The three rules that
-matter: test keys, $500 human gate, idempotency keys derived from
-`{issue_id}:{step_name}`. Run `po doctor` before any first call."
-
-Pack-convention §"Per-role precedence" handles overlay merging via
-`AgentSession.prompt()`; we just author the file.
+≤ 30 lines: pointer to the skill, the three rules (test keys, $500 gate,
+idempotency convention), `po doctor` reminder. Pack-convention
+§"Per-role precedence" handles the merge via `AgentSession.prompt()`.
 
 ### `README.md`
 
-Human-facing, four short sections:
+Four short sections:
 
-1. What it is (one paragraph).
-2. **Install**: `po install --editable /path/to/po-stripe` then `po
-   update` if entry points were edited.
-3. **Prerequisites**:
-   - Stripe CLI: `brew install stripe/stripe-cli/stripe` (macOS); for
-     Linux, link to `https://docs.stripe.com/stripe-cli` with the
-     specific tarball-or-apt instruction.
-   - `STRIPE_API_KEY` env var; pointer to
-     `https://docs.stripe.com/projects` for project-scoped keys.
-4. **Quick check**: `po packs` → see `po-stripe`; `po doctor` → 3 rows;
-   `po stripe-balance` → balance.
+1. **What it is** (one paragraph; note in-tree location).
+2. **Install**: `po install --editable
+   /path/to/prefect-orchestration/po-stripe`; document the
+   empirically-observed `uv tool` quirk (per-pack `po install` drops
+   prior editable packs from the tool env). Reliable multi-pack
+   one-liner: `uv tool install --reinstall --with-editable <pack-a>
+   --with-editable <pack-b> --editable /path/to/prefect-orchestration`.
+3. **Prerequisites**: stripe CLI install (macOS `brew install
+   stripe/stripe-cli/stripe`; Linux pointer to
+   `docs.stripe.com/stripe-cli`); `STRIPE_API_KEY` env var;
+   `docs.stripe.com/projects` link for project-scoped keys.
+4. **Quick check**: `po packs` / `po doctor` / `po stripe-balance` /
+   `po stripe-mode`.
+
+### `pyproject.toml` (rig)
+
+Add:
+
+```toml
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+```
+
+Without it, the rig's `pytest` recursively collects from cwd and would
+pick up `po-stripe/tests/`, double-running pack tests and failing on
+`import po_stripe` when the pack isn't installed in the rig's `.venv`.
 
 ## Acceptance criteria (verbatim)
 
@@ -204,70 +232,88 @@ Human-facing, four short sections:
 
 | AC | Concrete check |
 |---|---|
-| 1 | `ls /home/ryan-24/Desktop/Code/personal/nanocorps/po-stripe/pyproject.toml` exits 0; sibling of `…/nanocorps/software-dev/po-formulas/`. |
-| 2 | `grep -E 'stripe>=9\.0' po-stripe/pyproject.toml`; `python -c "import tomllib,pathlib; d=tomllib.loads(pathlib.Path('po-stripe/pyproject.toml').read_text()); eps=d['project']['entry-points']; assert len(eps['po.commands'])==3 and len(eps['po.doctor_checks'])==3"`. |
-| 3 | grep `SKILL.md` for `docs.stripe.com/llms.txt`, `docs.stripe.com/stripe-cli`, `docs.stripe.com/projects`, `idempotency`, `bd human`, `sk_test_`. CLI-first ordering verified by section order grep. |
-| 4 | `grep -n "import stripe\|stripe\." po_stripe/commands.py` returns no SDK calls; `grep -n "subprocess\|shutil.which" po_stripe/commands.py` returns the shell-out paths. |
-| 5 | Unit tests below; `po doctor` integration smoke after `po install --editable`. |
-| 6 | `cat po-stripe/overlay/CLAUDE.md` shows reinforcement text mentioning skill, $500 gate, idempotency, test keys. |
-| 7 | Run end-to-end: `po install --editable …/po-stripe && po update && po packs | grep po-stripe && po doctor | grep -E 'stripe-(cli-installed|env|api)' && STRIPE_API_KEY=sk_test_… po stripe-balance` (last requires fixture key, gated). |
-| 8 | After installing into a rig, run a stub `AgentSession.prompt()` (or check `<rig>/.claude/skills/po-stripe/stripe/SKILL.md` exists post-`prompt()` call) — covered by overlay-merging tests already in core (4ja.4). Add a smoke step in the README. |
-| 9 | `grep -E 'brew install stripe|stripe-cli|STRIPE_API_KEY|docs.stripe.com/projects' po-stripe/README.md`. |
+| 1 | `ls /home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration/po-stripe/pyproject.toml` exits 0. Decision-log entry notes the in-tree location supersedes the literal "sibling-of-po-formulas" reading per triage's documented fallback (build-constraint reason). |
+| 2 | `python -c "import tomllib,pathlib; d=tomllib.loads(pathlib.Path('po-stripe/pyproject.toml').read_text()); deps=d['project']['dependencies']; eps=d['project']['entry-points']; assert any(s.startswith('stripe>=9') for s in deps); assert len(eps['po.commands'])==3 and len(eps['po.doctor_checks'])==3"`. |
+| 3 | grep `SKILL.md` for `docs.stripe.com/llms.txt`, `docs.stripe.com/stripe-cli`, `docs.stripe.com/projects`, `idempotency`, `bd human`, `sk_test_`. CLI-first ordering verified by section-order grep (CLI section before SDK fallback). |
+| 4 | `grep -nE "import +stripe\|^from +stripe" po_stripe/commands.py` returns nothing; `grep -nE "subprocess\|shutil\.which" po_stripe/commands.py` returns the shell-out paths. |
+| 5 | Unit tests parametrize the matrix (see Test plan). Manual smoke after `po install --editable`: `po doctor` shows 3 stripe-* rows with status reflecting current host state (red on missing CLI, red on missing env, yellow on api short-circuit; or all green). |
+| 6 | `cat po-stripe/overlay/CLAUDE.md` contains "skill", "$500", "idempotency", "test key". |
+| 7 | Sequence: `po install --editable po-stripe && po update && po packs | grep -q po-stripe && po doctor | grep -E 'stripe-(cli-installed\|env\|api)' && po stripe-mode` (last is env-only, runs without the CLI). With CLI + key: `STRIPE_API_KEY=sk_test_… po stripe-balance` (gated, manual). |
+| 8 | After install, an `AgentSession.prompt()` invocation copies `<pack>/skills/stripe/**` → `<rig>/.claude/skills/po-stripe/stripe/**` (overwrite) and `<pack>/overlay/**` → `<rig>/**` (skip-existing). Verified manually post-install by `ls <rig>/.claude/skills/po-stripe/stripe/SKILL.md` after one stub turn; merge mechanics already covered by core's existing 4ja.4 tests. |
+| 9 | `grep -E 'brew install stripe\|stripe-cli\|STRIPE_API_KEY\|docs.stripe.com/projects' po-stripe/README.md`. |
 
 ## Test plan
 
 - **Unit tests** (`po-stripe/tests/`):
-  - `tests/test_commands.py`: monkeypatch `shutil.which` to return `/usr/bin/stripe`,
-    monkeypatch `subprocess.run` to return canned JSON for each of the three
-    commands. Assert printed output (capsys). Also assert behavior when
-    `which` returns None (SystemExit(2), error message references `po doctor`).
-  - `tests/test_checks.py`: parametrize across:
-    - cli missing (`which → None`) → red with brew hint
-    - cli present, version OK → green
-    - env unset → red
-    - env malformed → red
-    - env `sk_test_…`, `PO_ENV` unset → green
-    - env `sk_live_…`, `PO_ENV` unset → yellow
-    - env `sk_live_…`, `PO_ENV=prod` → green
-    - api: env unset → yellow short-circuit (no subprocess call)
-    - api: subprocess returns 0 → green
-    - api: subprocess returns non-zero → yellow
-    - api: `OSError` from subprocess → red
-- **e2e**: not required by the issue. The CLI roundtrip path
-  (`po install --editable` → `po packs` → `po doctor` → `po
-  stripe-balance`) is best smoke-tested manually as documented in the
-  README; an automated e2e test would require `stripe` on PATH and a live
-  test key, which CI doesn't have.
-- **Playwright**: N/A (no UI).
+  - `test_commands.py`: monkeypatch `commands.shutil.which` and
+    `commands.subprocess.run`; assert printed output via `capsys` for
+    each of `balance` / `recent_charges` / `mode`. Cover:
+    - balance happy path (available + pending rows tabulated with
+      currency lowercased, amounts /100)
+    - balance with `which → None` → SystemExit(2), stderr mentions
+      `po doctor`
+    - recent_charges happy path (≥ 2 rows, ISO timestamps, customer null)
+    - recent_charges rejects `limit < 1` and `limit > 100`
+    - recent_charges propagates non-zero CLI exit (stderr → SystemExit)
+    - recent_charges clean-handles `TimeoutExpired`
+    - mode: `sk_test_` → "test", `sk_live_` → "live", other →
+      "unknown", unset → "unset"; full key never appears in capsys
+      output (regression guard for secret leakage flagged in plan
+      risks).
+  - `test_checks.py`: parametrize across the matrix:
+    - cli missing / present-OK / present-nonzero / present-timeout
+    - env unset / malformed / `sk_test_` (dev|prod) / `sk_live_`
+      (dev|prod) / case-insensitive `PROD`
+    - api: env unset → yellow short-circuit (no subprocess call —
+      assert subprocess.run replaced with a raiser is never invoked)
+    - api: cli missing → yellow short-circuit
+    - api: subprocess returns 0 / non-zero / TimeoutExpired / OSError
+    - all paths: full key never appears in `message`/`hint`.
+- **e2e** (`tests/e2e/`): not required by the issue. The CLI roundtrip
+  path (`po install --editable` → `po packs` → `po doctor` → `po
+  stripe-balance`) is best smoke-tested manually, since CI doesn't
+  have the Stripe CLI on PATH or a test key. The rig's `.po-env` sets
+  `PO_SKIP_E2E=1` so the software-dev-full flow won't try to run e2e
+  for this issue — confirmed; nothing for this plan to change.
+- **Playwright**: N/A (no UI; `has_ui=false` in triage).
 
-Tests run via `cd po-stripe && uv run python -m pytest`. The pack ships
-its own `pyproject.toml` `[tool.uv.sources]` pointing at the editable
-core (mirroring `po-formulas`).
+Run with `cd po-stripe && uv run python -m pytest`. Rig's pytest scope
+is unchanged for core tests; pack tests are deliberately not collected
+from the rig's invocation.
 
 ## Risks
 
-- **Sibling-dir creation outside the rig.** The build sandbox may refuse
-  writes to `…/nanocorps/po-stripe/`. Fallback: place the pack at
-  `prefect-orchestration/po-stripe/` inside the rig and note the
-  deviation. Either location satisfies "sibling of
-  `software-dev/po-formulas/`" only loosely — the engdocs treat layout as
-  convention. (Triage flagged this.)
-- **Stripe CLI absence on dev machines.** `po install` succeeds without it;
-  `po doctor` is the loudspeaker. Not a regression risk for core tests, since
-  no core test imports `po_stripe`.
-- **Live API call from `stripe-api` doctor.** With `timeout=5` and short-
-  circuit on missing env, this can't hang `po doctor`. Still: if a user
-  has a malformed key, doctor will spend up to 5s on this row. Acceptable.
-- **Secret leakage.** Tested explicitly: `mode()` and `env_set()` only ever
-  print `key[:8] + "…"`. Adding `key` to a log line is the regression to
-  guard against — covered by an assertion in `test_commands.py` and
-  `test_checks.py` (capsys output never contains the test key in full).
-- **Entry-point shadowing.** None today; if a future core verb collides
-  with `stripe-balance` / `stripe-recent` / `stripe-mode`, `po install`'s
-  post-install scan will refuse, per CLAUDE.md "Collision handling" para.
-- **No core changes** — so no API contract breakage, no migrations, no
-  Prefect-server-side schema impact.
-- **Baseline failures** (recorded in `baseline.txt`) are pre-existing and
-  unrelated (mail prompt path, watch test, tmux session derivation,
-  deploy CLI). The build for this issue must not regress them, but is
-  not expected to fix them either.
+- **AC #1 wording vs build constraint.** Builder constraint pins
+  commits to inside the rig; AC #1 says "sibling of
+  `software-dev/po-formulas`". Triage explicitly authorized the
+  in-tree fallback. Mitigation: log the deviation in
+  `decision-log.md`; reference it in the commit message; let the
+  critic weigh in.
+- **`po install` (uv-tool) clobbers prior packs.** Empirical
+  observation: `po install --editable <new>` removes
+  previously-installed editable packs from the same uv tool env unless
+  installed together via `uv tool install --reinstall --with-editable
+  …`. README documents the multi-pack one-liner. Not a regression
+  introduced by this issue.
+- **Stripe CLI absence.** v1 commands `raise SystemExit(2)` cleanly
+  with a `po doctor` pointer. Doctor row is the canonical signal.
+- **Live API call from `stripe-api` doctor.** Capped at 5s;
+  short-circuits on env/CLI missing. Worst-case adds 5s to `po
+  doctor` on a malformed key — acceptable.
+- **Secret leakage.** `mode()` / `env_set()` only ever print
+  `key[:8] + "…"`. Test suite asserts the full key never appears in
+  captured output (regression guard).
+- **Entry-point shadowing.** None today against current core verbs;
+  `po install`'s post-install scan refuses future shadows
+  automatically.
+- **Pack `tests/` collection collision.** Rig adds `testpaths =
+  ["tests"]` to scope its pytest collection, preventing recursive
+  pickup of `po-stripe/tests/` from the rig venv.
+- **No core code changes.** Rig pyproject's `testpaths` addition is
+  not an API contract change; it tightens (not widens) what pytest
+  collects. No migration, no Prefect-server schema impact.
+- **Baseline failures** (recorded in `baseline.txt`) are pre-existing
+  and unrelated (`tests/e2e/test_po_deploy_cli.py`,
+  `tests/test_agent_session_tmux.py`, `tests/test_mail.py`,
+  `tests/test_watch.py`). The build for this issue must not regress
+  them; it is not expected to fix them.
