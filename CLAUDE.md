@@ -79,19 +79,36 @@ uv run python -m pytest -k "deploy"         # by keyword
 
 # Refresh entry-point metadata after editing any pack's pyproject.toml
 # (EP metadata is baked at install time, not on code reload):
-po update
+po packs update
 ```
 
-`tests/` is split into unit tests (one file per module under `prefect_orchestration/`)
-and `tests/e2e/` (subprocess-driven `po` CLI roundtrips). E2E tests
-shell out to `po` and `bd`, so both must be on PATH; many also need
-a Prefect server reachable at `PREFECT_API_URL`.
+### Test layers
+
+`tests/` is split by **layer**, and the layers MUST NOT OVERLAP — the PO
+`software_dev_full` flow runs `unit` and `e2e` (and optionally `playwright`)
+in parallel, so a misclassified test runs twice and doubles wall-clock.
+
+| Layer | Lives at | Definition |
+|---|---|---|
+| **unit** | top of `tests/` (one file per module under `prefect_orchestration/`) | Individual functions / classes in isolation. **Mocking external services (HTTP, DB, subprocess) is fine.** No real network, no real subprocesses, no Prefect server. |
+| **e2e** | `tests/e2e/` | Integration across **real** dependencies — subprocess-driven `po` CLI roundtrips, real `bd` shellouts, real Prefect server, real DB. No mocking of the things under integration. Slower (seconds to minutes per test). Both `po` and `bd` must be on `PATH`; many tests also need `PREFECT_API_URL` reachable. |
+| **playwright** | `tests/playwright/` (when present) | Browser-driven UI tests. Skip when there is no UI to drive. |
+
+If you write a test that mocks subprocess calls, it goes in `tests/`
+(unit). If it spawns the real `po` binary or hits a real Prefect server,
+it goes in `tests/e2e/`. Don't put both kinds in the same file.
+
+The flow's `run_tests` task auto-detects which layer dirs exist in the
+rig and emits the right `pytest` invocation per layer (with `--ignore`
+for sibling layer dirs when no `tests/<layer>/` dir is present), so the
+agent can't accidentally widen scope. See
+`software-dev/po-formulas/po_formulas/software_dev.py::_build_test_cmd`.
 
 ### Core module map
 
 | Module | Role |
 |---|---|
-| `cli.py` | Typer entry point; discovers `po.formulas` + `po.deployments` + `po.commands` entry points; subcommands `list`/`show`/`run`/`logs`/`artifacts`/`sessions`/`watch`/`retry`/`status`/`deploy`/`doctor`/`install`/`update`/`uninstall`/`packs`. `cli.main()` is the console-script entry: dispatches `po <command>` to `po.commands` callables, falls through to Typer for everything else. |
+| `cli.py` | Typer entry point; discovers `po.formulas` + `po.deployments` + `po.commands` entry points; subcommands `list`/`show`/`run`/`logs`/`artifacts`/`sessions`/`watch`/`retry`/`status`/`deploy`/`doctor`/`packs` (sub-app: `install`/`update`/`uninstall`/`list`). `cli.main()` is the console-script entry: dispatches `po <command>` to `po.commands` callables, falls through to Typer for everything else. |
 | `commands.py` | `po.commands` registry — `load_commands()`, `core_verbs()` (read off `app.registered_commands`), `find_command_collisions()`. |
 | `packs.py` | Pack lifecycle — `install`/`update`/`uninstall`/`packs` shell out to `uv tool` and introspect `importlib.metadata` for `po.*` EP groups. |
 | `agent_session.py` | `AgentSession` + `SessionBackend` Protocol (`ClaudeCliBackend`, `TmuxClaudeBackend`, `StubBackend`). Per-role `--resume <uuid>` + `--fork-session`. |
@@ -139,28 +156,56 @@ Postgres container + Prefect server, and points the `prefect` profile
 at PG so it becomes the default backend:
 
 ```bash
-po serve install        # writes ~/.config/systemd/user/{prefect-postgres,prefect-server}.service,
+po serve install        # generates a random PG password on first install,
+                        # writes ~/.config/po/serve.env (mode 0600),
+                        # writes ~/.config/systemd/user/{prefect-postgres,prefect-server}.service,
                         # sets PREFECT_API_DATABASE_CONNECTION_URL on the active profile,
                         # runs `prefect server database upgrade`, enables + starts both units
-po serve status         # is-active + /api/health + pg_isready
-po serve uninstall      # stop/disable/remove (add --purge-data to wipe the volume)
+po serve status         # creds source + is-active + /api/health + pg_isready
+po serve uninstall      # stop/disable/remove (add --purge-data to wipe the volume + serve.env)
 ```
 
 Prereqs: docker, prefect on PATH, systemd user session. Run
 `loginctl enable-linger $USER` once so the units survive logout.
 Postgres data lives in `~/.local/share/prefect-postgres/` (bind mount
-on the host so it survives container recreate). The PG creds are
-hardcoded `prefect:prefect` on `127.0.0.1:5432` — fine for a local
-dev box, never expose this port.
+on the host so it survives container recreate).
 
-If you'd rather not use systemd, the equivalent one-liner is:
+Credentials (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`,
+`PG_HOST`, `PG_PORT`, `PREFECT_API_DATABASE_CONNECTION_URL`) live in
+`~/.config/po/serve.env` (mode 0600, parent dir 0700) and are sourced
+by both systemd units via `EnvironmentFile=`. Re-running `po serve
+install` reuses the file — no rotation unless `--rotate-password` is
+passed. Override individual fields with `--pg-user`, `--pg-password`,
+`--pg-db`, `--pg-host`, `--pg-port`. User-supplied values must match
+`[A-Za-z0-9_.\-]+` (systemd EnvironmentFile values are written bare,
+no quoting).
+
+`--rotate-password` rotates the random password; note that the
+postgres image only honors `POSTGRES_PASSWORD` on **first init** of a
+data volume, so against an existing data dir you'll see a WARN —
+`po serve uninstall --purge-data && po serve install` to actually
+re-init, or `ALTER USER ... PASSWORD` against the running container.
+
+`--external-pg postgresql://user:pw@host:5432/db` skips the docker
+container entirely: PO writes only the prefect-server unit (without
+`Requires=prefect-postgres.service`), points Prefect's profile at the
+supplied URL, and runs `prefect server database upgrade` against it.
+Mutually exclusive with the per-field flags.
+
+`po serve uninstall --purge-data` removes both the PG data dir and
+`~/.config/po/serve.env`. Without `--purge-data` the creds file is
+left in place so a subsequent `install` resumes seamlessly.
+
+If you'd rather not use systemd, the equivalent one-liner (with a
+random password) is:
 
 ```bash
+PGPASS=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')
 docker run -d --name prefect-postgres --restart unless-stopped \
-  -e POSTGRES_USER=prefect -e POSTGRES_PASSWORD=prefect -e POSTGRES_DB=prefect \
+  -e POSTGRES_USER=prefect -e POSTGRES_PASSWORD="$PGPASS" -e POSTGRES_DB=prefect \
   -p 127.0.0.1:5432:5432 \
   -v $HOME/.local/share/prefect-postgres:/var/lib/postgresql/data postgres:16-alpine
-prefect config set PREFECT_API_DATABASE_CONNECTION_URL='postgresql+asyncpg://prefect:prefect@127.0.0.1:5432/prefect'
+prefect config set PREFECT_API_DATABASE_CONNECTION_URL="postgresql+asyncpg://prefect:${PGPASS}@127.0.0.1:5432/prefect"
 prefect server database upgrade -y
 prefect server start --host 127.0.0.1 --port 4200
 ```
@@ -203,6 +248,23 @@ po run epic \
 # Optional: --max-issues N  to process only the first N topo-sorted children
 # Optional: --dry-run       to exercise the DAG without spawning Claude
 ```
+
+### Running an ad-hoc scratch flow
+
+For one-offs without a registered formula / installed pack:
+
+```bash
+po run --from-file ./scratch.py [--name <flow>] [--key value ...]
+```
+
+PO imports the file, finds the `@flow` callable (auto-detect for a
+single flow; pass `--name` to disambiguate), and dispatches it through
+the same kwargs-parsing / `_autoconfigure_prefect_api()` path as a
+registered formula. Same Prefect semantics, same UI artifacts. Scratch
+flows aren't entry-point-registered so they don't show up in `po list`,
+and `po logs/artifacts/watch` only apply if the scratch flow itself
+takes `issue_id` and writes a run_dir. Runs arbitrary Python in-process
+— local dev tool only.
 
 ### Scheduling (cron, interval, manual)
 
@@ -261,6 +323,17 @@ fallback when you've explicitly asked for it).
 
 Issue IDs with dots (`4ja.1`) are sanitized to `4ja_1` in session
 names because tmux treats `.` as a pane separator.
+
+### Telemetry (Logfire / OTel)
+
+`AgentSession.prompt()` can wrap each Claude subprocess turn in an
+OTel span (`agent.prompt` with `role`/`issue_id`/`session_id`/
+`turn_index`/`fork_session`). Off by default; opt in via
+`PO_TELEMETRY=logfire` (needs `LOGFIRE_TOKEN`) or `PO_TELEMETRY=otel`
+(needs `OTEL_EXPORTER_OTLP_ENDPOINT`). Optional extras:
+`pip install prefect-orchestration[logfire]` or `[otel]`. Spans nest
+under any active Prefect task span automatically. Full env-var matrix
++ OTLP example in the README "Telemetry / Observability" section.
 
 ### Containerized runs (compose / k8s)
 
@@ -349,6 +422,7 @@ picks a non-default entry-point.
 | List installed formulas | `po list` |
 | Show a formula's signature / docstring | `po show <formula>` |
 | Run a formula synchronously, now | `po run <formula> --args` |
+| Run an ad-hoc `@flow` from a `.py` file (no install required) | `po run --from-file <path> [--name <flow>] --args` |
 | Tail / follow logs for an issue's run | `po logs <issue-id> [-f] [-n N] [--file NAME]` |
 | Dump full forensic trail for a run | `po artifacts <issue-id> [--verdicts] [--open]` |
 | Show per-role Claude session UUIDs for a run | `po sessions <issue-id> [--resume <role>]` |
@@ -434,20 +508,20 @@ See `engdocs/principles.md` § "Prompt authoring convention".
 - `po-formulas-software-dev` — ships `software-dev-full`, `epic`,
   `deployments.register()`, `mail` helper, 16 role prompts.
 
-Install both editable for development — use `po install --editable`
+Install both editable for development — use `po packs install --editable`
 (which shells out to uv under the hood):
 
 ```bash
 # First time: bootstrap core from PyPI or an editable path, then add
 # the pack(s) you're working on:
-po install --editable /path/to/prefect-orchestration
-po install --editable /path/to/software-dev/po-formulas
+po packs install --editable /path/to/prefect-orchestration
+po packs install --editable /path/to/software-dev/po-formulas
 ```
 
-Run `po update` any time a pack's `pyproject.toml` entry points
+Run `po packs update` any time a pack's `pyproject.toml` entry points
 change — entry-point metadata is written at install time, not on
-code reload, and `po update` refreshes it for every installed pack.
-`po packs` lists what's installed and what each contributes.
+code reload, and `po packs update` refreshes it for every installed pack.
+`po packs list` lists what's installed and what each contributes.
 
 ### Pack-contributed `po doctor` checks (`po.doctor_checks`)
 
@@ -481,7 +555,7 @@ column showing pack provenance. Each pack check is wrapped in a 5-second
 soft timeout; on timeout the row is yellow (warn), not red. Any red row
 exits 1.
 
-Run `po update` after registering a new check so `importlib.metadata`
+Run `po packs update` after registering a new check so `importlib.metadata`
 sees the new entry-point.
 
 ### Pack-shipped utility commands (`po.commands`)
@@ -517,13 +591,13 @@ po summarize-verdicts --issue-id prefect-orchestration-4ja.5
 `--key=value`, bare `--flag` (→ `True`), `--no-flag` (→ `False`).
 Values are coerced to bool/int/float when unambiguous.
 
-**Collision handling**: at `po install` / `po update` time, the
+**Collision handling**: at `po packs install` / `po packs update` time, the
 post-install scan refuses any pack whose `po.commands` entry shadows
 a core Typer verb (`run`, `list`, `show`, `deploy`, …). The pack stays
 installed but the install command exits non-zero — fix the pack's
-`pyproject.toml` and reinstall, or `po uninstall <pack>`.
+`pyproject.toml` and reinstall, or `po packs uninstall <pack>`.
 
-Run `po update` after registering a new command so `importlib.metadata`
+Run `po packs update` after registering a new command so `importlib.metadata`
 sees the new entry-point.
 
 ## Related beads (read before touching core or prompts)

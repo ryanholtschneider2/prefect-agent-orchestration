@@ -178,9 +178,9 @@ uv sync
 ```
 
 That gets you the `po` CLI and the library. On its own `po list` will show
-no formulas — run `po install <pack>` to get useful output. For pack
-authors: `po install --editable <path>`. See `po packs` for what's
-currently installed and `po update` if you change a pack's
+no formulas — run `po packs install <pack>` to get useful output. For pack
+authors: `po packs install --editable <path>`. See `po packs list` for what's
+currently installed and `po packs update` if you change a pack's
 `pyproject.toml` entry points and need the metadata refreshed.
 
 ## Containerized runs (k8s / docker)
@@ -361,6 +361,61 @@ Conventions:
   so every turn starts with an inbox check.
 - Escalation: if you need threads, read receipts, or file reservations,
   switch to `mcp-agent-mail`.
+
+## Telemetry / Observability
+
+`AgentSession.prompt()` can emit one OpenTelemetry span per Claude
+subprocess turn — `agent.prompt`, with attributes `role`, `issue_id`,
+`session_id`, `turn_index`, `fork_session`, `model`, plus
+`new_session_id` once the call returns. Spans nest under any active
+parent (e.g. the enclosing Prefect task), so a Logfire / Tempo /
+Honeycomb trace renders agent turns inside `build-iter-1`,
+`critique-iter-1`, etc.
+
+**Off by default.** With `PO_TELEMETRY` unset no telemetry SDK is
+imported at runtime — backward-compatible for anyone not opting in.
+
+| `PO_TELEMETRY` | Backend | Required env | Install |
+|---|---|---|---|
+| unset / `none` | `NoopBackend` (no-op) | — | — |
+| `logfire` | `LogfireBackend` | `LOGFIRE_TOKEN` | `pip install prefect-orchestration[logfire]` |
+| `otel` | `OtelBackend` (OTLP/HTTP) | `OTEL_EXPORTER_OTLP_ENDPOINT` (and optionally `OTEL_EXPORTER_OTLP_HEADERS`) | `pip install prefect-orchestration[otel]` |
+
+### Logfire
+
+```bash
+pip install prefect-orchestration[logfire]
+export LOGFIRE_TOKEN=pylf_v1_us_…
+export PO_TELEMETRY=logfire
+po run software-dev-full --issue-id <id> --rig <name> --rig-path <path>
+```
+
+Open the Logfire UI; every role turn shows up as an `agent.prompt`
+span with `role=builder|planner|critic|…` and timing within ~50ms of
+the underlying Claude subprocess wall time.
+
+![Logfire trace](docs/img/telemetry-logfire.png)
+
+### Generic OTLP (Tempo / Honeycomb / Datadog / Jaeger)
+
+```bash
+pip install prefect-orchestration[otel]
+export PO_TELEMETRY=otel
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp.example.com/v1/traces
+export OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=<key>"
+po run software-dev-full --issue-id <id> --rig <name> --rig-path <path>
+```
+
+### Notes
+
+- `issue_id` is opt-in: callers (the software-dev pack) pass it when
+  constructing `AgentSession(..., issue_id=…)`. When omitted the span
+  attribute is simply absent.
+- The span boundary wraps **only** the Claude subprocess call so span
+  duration ≈ subprocess wall time. Mail-inject and pack-overlay
+  happen outside the span.
+- Failed turns record the exception as a span event and set
+  `status=ERROR`. The exception still propagates to the caller.
 
 ## Design principles
 

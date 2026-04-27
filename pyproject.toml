@@ -10,12 +10,30 @@ dependencies = [
     "rich>=13",
 ]
 
+[project.optional-dependencies]
+logfire = ["logfire>=3.0"]
+otel = [
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+    "opentelemetry-exporter-otlp-proto-http>=1.25",
+]
+# Pulled in for unit tests so an in-memory exporter can be used without network.
+dev = [
+    "opentelemetry-api>=1.25",
+    "opentelemetry-sdk>=1.25",
+]
+
 [project.scripts]
 po = "prefect_orchestration.cli:main"
+
+# Built-in formulas shipped with core. Pack-installed formulas can register
+# additional entry points and will be merged into `po list`.
+[project.entry-points."po.formulas"]
+prompt = "prefect_orchestration.prompt_formula:prompt_run"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["prefect_orchestration", "po_formulas"]
+packages = ["prefect_orchestration"]

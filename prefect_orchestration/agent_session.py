@@ -27,7 +27,13 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Mapping, Protocol
+
+from prefect_orchestration.secrets import (
+    DEFAULT_PREFIXES,
+    SecretProvider,
+    resolve_role_env,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +43,14 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 
 class SessionBackend(Protocol):
-    """A backend that can run a prompt in a session and return output + new session_id."""
+    """A backend that can run a prompt in a session and return output + new session_id.
+
+    `extra_env`, when provided, is the role-scoped subset of secrets the
+    backend should inject into the child process's environment (already
+    re-keyed — e.g. `{"SLACK_TOKEN": "xoxb-…"}`). Backends are
+    responsible for scrubbing any peer-role scoped vars from the base
+    env before overlaying.
+    """
 
     def run(
         self,
@@ -47,6 +60,7 @@ class SessionBackend(Protocol):
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]: ...
 
 
@@ -136,6 +150,7 @@ class ClaudeCliBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         cmd = _build_claude_argv(self.start_command, session_id, fork, model)
 
@@ -146,6 +161,7 @@ class ClaudeCliBackend:
             capture_output=True,
             text=True,
             check=False,
+            env=_clean_env(extra_env),
         )
         if proc.returncode != 0:
             raise RuntimeError(
@@ -182,6 +198,9 @@ class StubBackend:
     `{{run_dir}}/verdicts/<name>.json` path in the prompt).
     """
 
+    captured_extra_env: dict[str, dict[str, str]] = field(default_factory=dict)
+    """Last `extra_env` seen, keyed by session_id. Test hook only."""
+
     def run(
         self,
         prompt: str,
@@ -190,10 +209,12 @@ class StubBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         import re as _re
 
         sid = session_id or f"stub-{uuid.uuid4().hex[:8]}"
+        self.captured_extra_env[sid] = dict(extra_env or {})
         # Find the first `<path>/verdicts/<name>.json` in the prompt
         # Prefer the `cat > <path> <<EOF` form (unambiguous). Fall back
         # to any absolute-path occurrence if not found.
@@ -213,14 +234,22 @@ class StubBackend:
         return "[dry-run] ack", sid
 
 
-def _clean_env() -> dict[str, str]:
+def _clean_env(extra_env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Env for Claude CLI subprocesses.
 
-    Strip ANTHROPIC_API_KEY so the CLI uses OAuth (the user's subscription)
-    rather than the key — matches the user-global convention.
+    Strip `ANTHROPIC_API_KEY` so the CLI uses OAuth (matches the
+    user-global convention), then strip every `<PREFIX>_*` role-scoped
+    secret so peer-role tokens don't leak through `os.environ`. If
+    `extra_env` is supplied, overlay it last — this is the current
+    role's re-keyed secrets (e.g. `{"SLACK_TOKEN": "xoxb-…"}`).
     """
+    from prefect_orchestration.secrets import strip_role_scoped
+
     env = os.environ.copy()
     env.pop("ANTHROPIC_API_KEY", None)
+    strip_role_scoped(env, DEFAULT_PREFIXES)
+    if extra_env:
+        env.update(extra_env)
     return env
 
 
@@ -296,6 +325,7 @@ class TmuxClaudeBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         if shutil.which("tmux") is None:
             raise RuntimeError("TmuxClaudeBackend requires the `tmux` binary on PATH")
@@ -363,7 +393,7 @@ class TmuxClaudeBackend:
                     wrapper,
                 ],
                 check=True,
-                env=_clean_env(),
+                env=_clean_env(extra_env),
                 cwd=cwd,
             )
             if self.attach_hint:
@@ -608,6 +638,7 @@ class TmuxInteractiveClaudeBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         if shutil.which("tmux") is None:
             raise RuntimeError(
@@ -680,7 +711,7 @@ class TmuxInteractiveClaudeBackend:
                 "bash", "-lc", wrapper,
             ],
             check=True,
-            env=_clean_env(),
+            env=_clean_env(extra_env),
             cwd=cwd,
         )
         if self.attach_hint:
@@ -738,6 +769,14 @@ class TmuxInteractiveClaudeBackend:
         # Inject prompt via bracketed paste so internal newlines stay
         # newlines (Shift+Enter equivalent), not "submit". Then send a
         # final Enter to submit.
+        #
+        # On large multiline prompts the Claude TUI shows the paste as a
+        # `[Pasted text #N +K lines]` chip and needs a moment to commit
+        # the bracketed-paste end-marker before Enter will trigger send.
+        # If we send Enter too early (or the system is loaded) the chip
+        # stays in the buffer and the agent sits idle indefinitely.
+        # Verify-and-retry up to 3 times: send Enter, wait, check the
+        # pane for an active-processing indicator, retry if not present.
         subprocess.run(
             ["tmux", "load-buffer", "-b", name, str(prompt_path)],
             check=True,
@@ -746,11 +785,32 @@ class TmuxInteractiveClaudeBackend:
             ["tmux", "paste-buffer", "-t", name, "-b", name, "-p", "-d"],
             check=True,
         )
-        time.sleep(0.3)
-        subprocess.run(
-            ["tmux", "send-keys", "-t", name, "Enter"],
-            check=True,
+
+        # Indicators that submission landed and the agent is now working.
+        # Any of these in the recent pane output means we're done nudging.
+        active_markers = (
+            "esc to interrupt",
+            "tokens · esc",
+            "Cogitated", "Composing", "Worked", "Crunched",
+            "Whisking", "Julienning", "Thinking",
+            "Skill(", "Bash(", "Searched",
+            "hit your limit",  # rate-limit dialog — also a "submitted" state
         )
+        for attempt in range(3):
+            time.sleep(1.0 if attempt == 0 else 2.0)
+            subprocess.run(
+                ["tmux", "send-keys", "-t", name, "Enter"],
+                check=True,
+            )
+            time.sleep(1.5)
+            pane = subprocess.run(
+                ["tmux", "capture-pane", "-pt", name, "-S", "-50"],
+                capture_output=True, check=False,
+            ).stdout.decode(errors="replace")
+            if any(m in pane for m in active_markers):
+                break
+            # Still sitting at the input prompt — likely the paste chip
+            # never committed. Loop and try Enter again.
 
         try:
             _wait_for_stop(sentinel, name, timeout=self.timeout_s)
@@ -817,7 +877,18 @@ class AgentSession:
     skip_mail_inject: bool = False
     overlay: bool = True
     skills: bool = True
+    # Per-agent secret injection. When set, role-scoped env vars
+    # (e.g. `SLACK_TOKEN_<ROLE>`) are re-keyed (`SLACK_TOKEN`) and
+    # passed to the backend as `extra_env`. Backends scrub peer-role
+    # scoped vars from base env before overlay, so role A can't see
+    # role B's secrets.
+    secret_provider: SecretProvider | None = None
+    # Optional issue id for telemetry attribution. Callers (the software-dev
+    # pack flows) typically know the bead id and pass it through; left None
+    # for in-tree tests / standalone use.
+    issue_id: str | None = None
     _materialized: bool = field(default=False, init=False, repr=False)
+    _turn_index: int = field(default=0, init=False, repr=False)
 
     def _materialize_packs_once(self) -> None:
         """Lazily copy pack overlay + skills into the rig cwd before the first turn."""
@@ -856,16 +927,62 @@ class AgentSession:
         mails = self._fetch_inbox()
         full_text = _render_with_inbox(mails, text)
 
-        result, new_sid = self.backend.run(
-            full_text,
-            session_id=self.session_id,
-            cwd=self.repo_path,
-            fork=fork,
-            model=self.model,
+        extra_env = (
+            self.secret_provider.get_role_env(self.role)
+            if self.secret_provider is not None
+            else None
         )
+
+        from prefect_orchestration import telemetry
+
+        tel = telemetry.select_backend()
+        self._turn_index += 1
+        attrs: dict[str, Any] = {
+            "role": self.role,
+            "issue_id": self.issue_id,
+            "session_id": self.session_id,
+            "turn_index": self._turn_index,
+            "fork_session": fork,
+            "model": self.model,
+        }
+        tmux_name = self._tmux_session_name(fork=fork)
+        if tmux_name:
+            attrs["tmux_session"] = tmux_name
+
+        with tel.span("agent.prompt", **attrs) as span:
+            try:
+                result, new_sid = self.backend.run(
+                    full_text,
+                    session_id=self.session_id,
+                    cwd=self.repo_path,
+                    fork=fork,
+                    model=self.model,
+                    extra_env=extra_env,
+                )
+            except BaseException as e:
+                span.record_exception(e)
+                span.set_status("ERROR", f"{type(e).__name__}: {e}")
+                raise
+            span.set_attribute("new_session_id", new_sid)
         self.session_id = new_sid
         self._mark_read(mails)
         return result
+
+    def _tmux_session_name(self, *, fork: bool) -> str | None:
+        """Best-effort lookup of the tmux session name for telemetry.
+
+        Forked turns randomise a 6-char suffix at backend.run time, so
+        we can't predict the name; only emit for non-fork tmux runs.
+        """
+        if fork:
+            return None
+        get_name = getattr(self.backend, "_session_name", None)
+        if not callable(get_name):
+            return None
+        try:
+            return get_name()
+        except Exception:
+            return None
 
     def _fetch_inbox(self) -> list[Any]:
         if self.skip_mail_inject or self.mail_fetcher is None:
@@ -912,6 +1029,8 @@ class AgentSession:
             backend=self.backend,
             session_id=self.session_id,
             model=self.model,
+            secret_provider=self.secret_provider,
+            issue_id=self.issue_id,
         )
         # Mark the next .prompt() call as a fork via a sentinel prompt
         # — callers should use `child.prompt(text, fork=True)` explicitly
