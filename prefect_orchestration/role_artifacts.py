@@ -163,6 +163,7 @@ def _publish_handles_artifact(
     session_id: str | None,
     issue_id: str | None,
     artifact_key: str,
+    tmux_scope: str | None = None,
 ) -> None:
     """One-card-per-task handles: tmux attach hint, Claude sid, JSONL path,
     Logfire URL slot. Lets a reviewer click straight into the role's
@@ -170,9 +171,16 @@ def _publish_handles_artifact(
     import os
 
     safe_issue = (issue_id or "?").replace(".", "_")
-    tmux_session = f"po-{safe_issue}-{role.replace('.', '_')}"
     rows: list[str] = []
-    rows.append(f"**tmux**: `tmux attach -t {tmux_session}`")
+    if tmux_scope:
+        # Shared-scope layout: one tmux session, one window per (issue,role).
+        rows.append(
+            f"**tmux**: `tmux attach -t {tmux_scope} \\; "
+            f"select-window -t {issue_id or '?'}-{role}`"
+        )
+    else:
+        tmux_session = f"po-{safe_issue}-{role.replace('.', '_')}"
+        rows.append(f"**tmux**: `tmux attach -t {tmux_session}`")
     if session_id:
         rows.append(f"**Claude session_id**: `{session_id}`")
         jsonl = claude_session_jsonl(rig_path, session_id)
@@ -204,6 +212,7 @@ def publish_role_artifacts(
     output_files: list[str],
     *,
     issue_id: str | None = None,
+    tmux_scope: str | None = None,
 ) -> None:
     """Publish file bodies + transcript link for a role's just-finished turn.
 
@@ -267,4 +276,5 @@ def publish_role_artifacts(
         session_id=session_id,
         issue_id=issue_id,
         artifact_key=handles_key,
+        tmux_scope=tmux_scope,
     )
