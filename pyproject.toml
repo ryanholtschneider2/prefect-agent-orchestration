@@ -37,3 +37,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["prefect_orchestration"]
+
+# Scope pytest collection to the core's tests/. Without this, pytest's
+# default recursive collection would pick up po-stripe/tests/ (and any
+# future in-tree pack tests/), causing double-runs and cross-pack
+# import errors when the pack isn't installed in the rig's venv.
+[tool.pytest.ini_options]
+testpaths = ["tests"]

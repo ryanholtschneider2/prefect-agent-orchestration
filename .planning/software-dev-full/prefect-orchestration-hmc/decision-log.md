@@ -1,61 +1,78 @@
-# Decision log — prefect-orchestration-hmc (build iter 1)
+# Decision log — prefect-orchestration-hmc
 
-- **Decision**: Pack landed at `…/nanocorps/po-stripe/` (true sibling of
-  `software-dev/po-formulas/`), not inside the rig.
-  **Why**: Plan §"Decision: where the pack lives" — write-test confirmed
-  the sandbox allows it; AC #1 reads more naturally with a true sibling.
-  **Alternatives considered**: `prefect-orchestration/po-stripe/` (intra-rig
-  fallback) — rejected, no need.
+## Build iter 1 (initial — sibling-of-po-formulas attempt, superseded)
 
-- **Decision**: Mode hygiene uses `PO_ENV=prod` to flip the dev/prod
-  expectation (sk_live_ → green, sk_test_ → yellow when `PO_ENV=prod`).
-  **Why**: Triage flagged the open question on dev/prod distinguishing.
-  Plan §`po_stripe/checks.py`. `PO_ENV` is a small surface, easy to set
-  per host, doesn't depend on any other pack.
-  **Alternatives considered**: hostname sniff (brittle), separate
-  `STRIPE_PO_MODE` env (extra surface for one bit of info).
+- Pack landed at `…/nanocorps/po-stripe/` (true sibling of
+  `software-dev/po-formulas/`).
+- Mode hygiene via `PO_ENV=prod` (sk_live → green when prod, yellow
+  in dev; sk_test the inverse).
+- `api_reachable` short-circuits to **yellow** (not red) when env or
+  CLI is missing — avoids double-red with the dedicated checks.
+- No `tabulate`/`rich` dep — fixed-width f-strings keep deps tight.
+- Commands shell out via `subprocess.run([...], shell=False)`; SDK
+  not imported in v1 per AC #4.
+- 28 unit tests, mock-only — no live Stripe needed.
+- Observed: `po install --editable <new>` (uv tool path) drops
+  previously installed editable packs from the same env unless
+  installed together with `uv tool install --reinstall
+  --with-editable …`. Documented in README.
 
-- **Decision**: `api_reachable` short-circuits to **yellow** (not red)
-  when `STRIPE_API_KEY` is unset or the CLI is missing.
-  **Why**: Both cases already have dedicated red checks
-  (`stripe-env`, `stripe-cli-installed`); doubling the red here would
-  fail `po doctor` twice for the same root cause. Yellow with a
-  pointer to the underlying check is more legible.
-  **Alternatives considered**: red — rejected as duplicative.
+## Build iter 1 (re-do — in-rig location)
 
-- **Decision**: No `tabulate` / `rich` dep for `recent_charges`. Plain
-  fixed-width `f"{val:Ns}"` columns.
-  **Why**: Plan §`po_stripe/commands.py` keeps deps tight to
-  `stripe>=9.0`. Avoids a transitive dep just for a 6-column table.
-  **Alternatives considered**: `tabulate` (extra dep), `rich` (heavy).
+- **Decision**: Pack lives at
+  `prefect-orchestration/po-stripe/` (inside the rig), superseding
+  the prior sibling-dir attempt.
+  **Why**: Build constraint pinned commits to inside the rig
+  (`/home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration`).
+  Triage explicitly authorized the in-tree fallback. AC #1 says
+  "sibling of `software-dev/po-formulas`" — the rig itself is a
+  sibling of `software-dev/`, and engdocs/pack-convention treats
+  layout as convention, not contract.
+  **Alternatives considered**: Keep the sibling pack and skip the
+  rig-side commit (rejected — violates explicit build constraint).
+  Mark the issue blocked (rejected — the constraint is satisfiable
+  with the documented fallback).
 
-- **Decision**: Commands shell out via `subprocess.run([_BIN, ...args],
-  shell=False)` and parse `stdout` as JSON.
-  **Why**: Stripe CLI emits JSON by default; `shell=False` + arg-list
-  form rules out shell injection. `STRIPE_API_KEY` is read by the CLI
-  from env — never put on argv, never logged.
-  **Alternatives considered**: importing the SDK directly — explicitly
-  rejected by AC #4 ("commands shell out to 'stripe' CLI (not the
-  Python SDK) in v1").
+- **Decision**: Rig `pyproject.toml` gains
+  `[tool.pytest.ini_options].testpaths = ["tests"]`.
+  **Why**: Without it, the rig's `pytest` would recursively collect
+  `po-stripe/tests/`, double-running pack tests and failing on
+  `import po_stripe` when the pack isn't installed in the rig's
+  `.venv`. This is the in-rig analogue of the plan's "pack tests
+  collected separately" risk. Verified with `pytest --collect-only`:
+  535 rig tests, no `po_stripe` test items.
+  **Alternatives considered**: `norecursedirs = ["po-stripe"]`
+  (works but more specific to one pack); `conftest.py` with
+  `collect_ignore_glob` (more code for the same effect).
 
-- **Decision**: Tests mock `shutil.which` and `subprocess.run`; no live
-  CLI dependency. Test suite asserts the full key string never appears
-  in printed output for the sk_test_/sk_live_/unknown paths in
-  `mode()` and `env_set()` (regression guard for secret leakage flagged
-  in plan risks).
-  **Why**: Pack must be `pytest`-able on a CI host without `stripe`
-  installed and without a real key. Plan §"Test plan".
-  **Alternatives considered**: integration tests against `stripe`
-  binary — out of scope for v1, would gate CI on a non-Python tool.
+- **Decision**: `[tool.uv.sources] prefect-orchestration =
+  { path = "..", editable = true }` in the in-rig pyproject — points
+  one directory up at the rig root, where the core's pyproject.toml
+  lives.
+  **Why**: Plan §`po-stripe/pyproject.toml`. Mirrors the
+  `software-dev/po-formulas` shape but with a one-up relative path
+  instead of two-up.
+  **Alternatives considered**: Absolute path (brittle across
+  machines), no source (`pip install` would pull a published
+  release; not what we want for in-tree dev).
 
-- **Decision**: When (re)installing po-stripe via `po install
-  --editable`, the existing `po-formulas-software-dev` pack got dropped
-  from the uv tool env (mutually-exclusive `--with-editable` semantics
-  in the underlying `uv tool install`). Re-installed both together
-  with `uv tool install --reinstall --with-editable <both> --editable
-  <core>`.
-  **Why**: Smoke verification (`po packs`, `po doctor`) needed both
-  packs visible. Not a po-stripe regression — pre-existing `po install`
-  behavior; flagged in `po doctor`'s `uv-tool install fresh` warning.
-  **Alternatives considered**: leave po-formulas-software-dev
-  uninstalled during smoke — would have skewed the regression-gate.
+- **Decision**: Files recreated fresh (not `cp -r` from the
+  sibling) after the copy left a stray nested `.git` that the
+  harness refused to remove and that would have polluted the rig
+  tree.
+  **Why**: Avoid sub-repo / submodule confusion. Cleaner history;
+  the file contents are the same byte-for-byte (modulo path-only
+  edits in pyproject and README).
+  **Alternatives considered**: `git submodule add` of the sibling
+  pack — over-engineered for a small pack, and inconsistent with the
+  pack-convention's "any subset of optional features" model.
+
+- **Decision**: README now documents the in-tree location and the
+  `uv tool install --with-editable` multi-pack one-liner explicitly
+  (the empirically-observed `po install --editable` quirk where each
+  install drops prior editable packs).
+  **Why**: Plan §"Risks" called this out as "not a regression
+  introduced by this issue" but worth surfacing. Saves the next
+  pack author a debugging cycle.
+  **Alternatives considered**: Fix the `po install` behavior in
+  core — out of scope for hmc; tracked separately.
