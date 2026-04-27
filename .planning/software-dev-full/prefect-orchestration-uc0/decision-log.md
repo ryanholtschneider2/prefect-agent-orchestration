@@ -1,5 +1,61 @@
 # Decision log — prefect-orchestration-uc0
 
+## Build iter 2 — responses to critic
+
+- **Decision**: Switch CLI surface from positional `po run graph
+  <root-id>` to flag form `po run graph --root-id <id>`.
+  **Why**: critic blocker. `cli.py::run` consumes the first non-option
+  token after `run` as the **formula name** and feeds the rest to
+  `_parse_kwargs`, which rejects bare positional tokens with
+  `BadParameter("expected --key, got 'my-issue-1'")`. The e2e test
+  would have fired exactly that error on its first `po_runner` call.
+  Flag form mirrors the existing `--epic-id` / `--issue-id` pattern
+  used everywhere else in PO. Updated CLAUDE.md (running-a-sub-graph
+  examples + the verb table) and the e2e test to match.
+  **Alternatives considered**: teaching `cli.py::run` to pass through
+  a *second* non-option token as the first positional kwarg of the
+  formula — rejected, principle §1 (don't add CLI plumbing for one
+  formula's sake) plus it would surprise every other formula that
+  doesn't expect a positional.
+
+- **Decision**: Documented BFS-through-closed semantics in
+  `list_subgraph`'s docstring.
+  **Why**: critic nit #3. The implementation already does the right
+  thing (BFS visits closed intermediates, status filter prunes only
+  the final collected set), but the contract was implicit. One
+  sentence makes "re-run the open tail of a half-finished chain"
+  legible to future readers.
+
+- **Decision**: Hoisted the closed-root short-circuit above the
+  `_bd_show` shellout in `list_subgraph`.
+  **Why**: critic nit #4. When `include_root=True` and the root is
+  closed and `include_closed=False`, the row was fetched and then
+  thrown away. Now the closed root path is detected and skipped (or
+  the row is fetched only when it might be kept). Trivial saving but
+  the cost was zero.
+  **Alternatives considered**: deferring per the critic's "if you
+  care" — fixed because the change is one if-statement.
+
+- **Decision**: Did NOT relax `_check_formula_signature` to accept
+  `**kwargs`-only formulas (critic nit #5).
+  **Why**: today's two registered formulas (`software-dev-full`,
+  `graph`) both declare named params; relaxing the check would weaken
+  the pre-flight error for the contract violation we actually expect
+  (a formula that genuinely doesn't accept `(issue_id, rig, rig_path)`).
+  Updated the `graph_run` docstring to call out the stricter contract
+  ("must declare these as named parameters; `**kwargs` is not
+  sufficient") so the surprise is documented rather than implicit.
+  **Alternatives considered**: `if any(p.kind == VAR_KEYWORD for p in
+  sig.parameters.values()): return` — rejected, weakens the error for
+  the real failure mode.
+
+- **Decision**: Captured e2e AC-10 verification by running the live
+  test with `PO_SKIP_E2E` unset and pasting output into
+  `final-tests.txt`.
+  **Why**: critic nit #6 — the prior `final-tests.txt` was empty, so
+  the regression gate had no record of what state the suite was in.
+  This run is the canonical AC-10 evidence.
+
 ## Build iter 1
 
 - **Decision**: Cross-repo edits — core helper goes in this rig

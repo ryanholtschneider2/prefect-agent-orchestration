@@ -16,6 +16,7 @@ manually with `uv run python -m pytest tests/e2e/test_po_run_graph_cli.py`.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -58,44 +59,19 @@ def test_po_run_graph_discovers_via_bd_dep_edges(
         pytest.skip(f"bd init failed: {init.stderr}")
 
     # Create one root + three children with NO dot-suffix naming.
-    root = _bd_in(
-        rig,
-        "create",
-        "--type=feature",
-        "--title=root grouping bead",
-        "--priority=2",
-        "--quiet",
-    )
-    a = _bd_in(
-        rig,
-        "create",
-        "--type=task",
-        "--title=A",
-        "--priority=2",
-        "--quiet",
-    )
-    b = _bd_in(
-        rig,
-        "create",
-        "--type=task",
-        "--title=B",
-        "--priority=2",
-        "--quiet",
-    )
-    c = _bd_in(
-        rig,
-        "create",
-        "--type=task",
-        "--title=C",
-        "--priority=2",
-        "--quiet",
-    )
+    # `bd create --json` is the only way to get the id back in a parseable
+    # form — `--quiet` still prints the human-readable creation banner.
+    def _create(title: str, kind: str = "task") -> str:
+        proc = _bd_in(
+            rig, "create", f"--type={kind}", f"--title={title}",
+            "--priority=2", "--json",
+        )
+        return json.loads(proc.stdout)["id"]
 
-    # bd create --quiet prints just the new id on stdout.
-    root_id = root.stdout.strip().splitlines()[-1]
-    a_id = a.stdout.strip().splitlines()[-1]
-    b_id = b.stdout.strip().splitlines()[-1]
-    c_id = c.stdout.strip().splitlines()[-1]
+    root_id = _create("root grouping bead", kind="feature")
+    a_id = _create("A")
+    b_id = _create("B")
+    c_id = _create("C")
 
     # Edges (`bd dep add <issue> <depends-on>`):
     #   A blocked-by root  → A appears in BFS-up from root
@@ -112,10 +88,24 @@ def test_po_run_graph_discovers_via_bd_dep_edges(
 
     # Run graph_run via the installed `po`. `--dry-run` flips the
     # per-node software_dev_full sub-flow to StubBackend, skipping
-    # real Claude calls.
+    # real Claude calls. We override the conftest's bogus
+    # `PREFECT_API_URL=http://127.0.0.1:1` because graph_run actually
+    # needs a Prefect API to record flow state — point at the live
+    # local server (started via `prefect server start`); skip if
+    # unreachable.
+    import urllib.request
+
+    api_url = "http://127.0.0.1:4200/api"
+    try:
+        with urllib.request.urlopen(f"{api_url}/health", timeout=2):
+            pass
+    except Exception:
+        pytest.skip(f"Prefect server not reachable at {api_url}")
+
     result = po_runner(
         "run",
         "graph",
+        "--root-id",
         root_id,
         "--rig",
         "uc0-e2e",
@@ -124,6 +114,7 @@ def test_po_run_graph_discovers_via_bd_dep_edges(
         "--dry-run",
         "--traverse=blocks",
         cwd=rig,
+        env_overrides={"PREFECT_API_URL": api_url},
         timeout=180,
     )
 

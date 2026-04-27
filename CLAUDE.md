@@ -274,18 +274,18 @@ working.
 
 ### Running an arbitrary sub-graph
 
-`po run graph <root>` generalises the epic case: any bead can be a root,
-and the DAG is built from `bd dep` edges directly — no naming convention
-or `epic` status required.
+`po run graph --root-id <id>` generalises the epic case: any bead can
+be a root, and the DAG is built from `bd dep` edges directly — no
+naming convention or `epic` status required.
 
 ```bash
 # Fan out a feature bead's sub-tasks (linked via `bd dep add`)
-po run graph my-feature-1 \
+po run graph --root-id my-feature-1 \
   --rig <name> \
   --rig-path <path>
 
 # Convoy / ad-hoc grouping bead, including the root itself
-po run graph release-blockers-q2 \
+po run graph --root-id release-blockers-q2 \
   --rig <name> \
   --rig-path <path> \
   --root-as-node
@@ -479,7 +479,7 @@ picks a non-default entry-point.
 | List installed formulas | `po list` |
 | Show a formula's signature / docstring | `po show <formula>` |
 | Run a formula synchronously, now | `po run <formula> --args` |
-| Fan out an arbitrary bd sub-graph rooted at any bead | `po run graph <root-id> --rig <name> --rig-path <path> [--traverse=parent-child,blocks] [--formula=software-dev-full]` |
+| Fan out an arbitrary bd sub-graph rooted at any bead | `po run graph --root-id <id> --rig <name> --rig-path <path> [--traverse=parent-child,blocks] [--formula=software-dev-full]` |
 | Run an ad-hoc `@flow` from a `.py` file (no install required) | `po run --from-file <path> [--name <flow>] --args` |
 | Tail / follow logs for an issue's run | `po logs <issue-id> [-f] [-n N] [--file NAME]` |
 | Dump full forensic trail for a run | `po artifacts <issue-id> [--verdicts] [--open]` |

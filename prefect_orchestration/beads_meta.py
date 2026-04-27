@@ -229,6 +229,11 @@ def list_subgraph(
     the returned set (it's a container, not a runnable node) — useful
     when the root is the epic / convoy / grouping bead.
 
+    BFS traverses *through* closed intermediate nodes; closed nodes are
+    dropped from the final set (unless `include_closed=True`) but their
+    open descendants are still discovered. This lets you re-run the
+    open tail of a half-finished chain without manually re-rooting.
+
     The returned `block_deps` list contains only ids that are *also* in
     the collected set — out-of-set deps don't need to be waited on
     (closed deps are already done; unrelated deps are bd's problem,
@@ -244,11 +249,15 @@ def list_subgraph(
     if include_root:
         root_row = _bd_show(root_id)
         if root_row is not None:
-            collected[root_id] = {
-                "id": root_row["id"],
-                "status": root_row.get("status", "open"),
-                "title": root_row.get("title", ""),
-            }
+            root_status = root_row.get("status", "open")
+            # Skip the row when it would be filtered out below — saves
+            # the dict copy for the closed-root + !include_closed path.
+            if include_closed or root_status != "closed":
+                collected[root_id] = {
+                    "id": root_row["id"],
+                    "status": root_status,
+                    "title": root_row.get("title", ""),
+                }
 
     while queue:
         cur = queue.popleft()
