@@ -51,17 +51,22 @@ def test_build_claude_argv_matches_legacy_no_resume():
         "claude",
         "--dangerously-skip-permissions",
         "--print",
+        "--verbose",
         "--output-format",
-        "json",
+        "stream-json",
         "--model",
         "opus",
+        "--setting-sources",
+        "project,local",
     ]
 
 
 def test_build_claude_argv_with_resume():
     sid = "12345678-1234-1234-1234-1234567890ab"
     argv = _build_claude_argv("claude", sid, False, "sonnet")
-    assert argv[-4:] == ["--model", "sonnet", "--resume", sid]
+    assert argv[-2:] == ["--resume", sid]
+    assert "--setting-sources" in argv
+    assert argv[argv.index("--setting-sources") + 1] == "project,local"
 
 
 def test_build_claude_argv_with_fork():
@@ -69,6 +74,15 @@ def test_build_claude_argv_with_fork():
     argv = _build_claude_argv("claude", sid, True, "opus")
     assert argv[-1] == "--fork-session"
     assert "--resume" in argv
+
+
+def test_build_claude_argv_skips_user_settings():
+    """Pin: PO must skip user-level ~/.claude/settings.json so the
+    bd-prime SessionStart hook can't fan-out-contend on the dolt-server
+    backend (was failing 16/21 of a parallel po-resume wave)."""
+    argv = _build_claude_argv("claude", None, False, "opus")
+    assert "--setting-sources" in argv
+    assert argv[argv.index("--setting-sources") + 1] == "project,local"
 
 
 def test_build_claude_argv_ignores_non_uuid_sid():
@@ -130,10 +144,13 @@ def test_claude_cli_backend_argv_unchanged(monkeypatch):
         "claude",
         "--dangerously-skip-permissions",
         "--print",
+        "--verbose",
         "--output-format",
-        "json",
+        "stream-json",
         "--model",
         "opus",
+        "--setting-sources",
+        "project,local",
     ]
 
 
