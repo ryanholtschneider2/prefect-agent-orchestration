@@ -244,6 +244,14 @@ Workers support two auth paths; the entrypoint picks one at startup
    ```
    Template at [`k8s/anthropic-api-key.example.yaml`](k8s/anthropic-api-key.example.yaml).
 
+For 100-way fanouts that bottleneck on per-account rate limits, both
+modes support a **multi-account pool** (`CLAUDE_CREDENTIALS_POOL` /
+`ANTHROPIC_API_KEY_POOL`, JSON arrays). Replicas pick a slot
+deterministically (StatefulSet ordinal when hostname matches `*-<int>$`,
+else sha256(hostname) % len); single-env always wins over its `_POOL`
+counterpart. Chart wiring via `auth.{oauth,apikey}.pool.enabled`. See
+[`engdocs/auth.md`](engdocs/auth.md) § "Multi-account pool".
+
 See [`engdocs/work-pools.md`](engdocs/work-pools.md) for the full
 playbook. Quick local smoke (no API key required):
 
