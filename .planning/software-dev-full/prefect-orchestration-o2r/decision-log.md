@@ -40,6 +40,23 @@
   **Alternatives considered**: Default `mail_agent_name = name` in
   loader — rejected as it muddles file fidelity.
 
+- **Decision** (iter 3, regression-gate fix): Added `prompt_for_verdict`
+  helper to `prefect_orchestration.parsing` and a unit-test file
+  `tests/test_parsing.py`.
+  **Why**: Iter 1 + iter 2 regression-gate kept flagging the same
+  collection-time `ImportError` — `po_formulas.software_dev` imports
+  `prompt_for_verdict` from `prefect_orchestration.parsing`, but that
+  name was never moved into core. Pytest aborts collection at first
+  error, blocking the entire suite vs the 322-passing baseline. The
+  helper is a 5-line wrapper (`sess.prompt(...)` + `read_verdict(...)`)
+  that the pack already calls 5+ places — ships it in core where the
+  pack expects it. Strictly speaking this is a separate bead, but the
+  regression-gate refuses to clear without it and the fix is mechanical.
+  **Alternatives considered**: Patch the pack to inline the helper —
+  rejected, the pack lives in a sibling repo and the import boundary
+  is what the pack contract advertises. Stub the import with a `try:
+  except ImportError` shim — rejected, masks a real missing seam.
+
 - **Decision** (iter 2, regression-gate fix): Extended `commands.core_verbs()`
   to also walk Typer sub-groups (`app.registered_groups`) so the nested
   `packs install/update/uninstall/list` verbs and the `packs` group name

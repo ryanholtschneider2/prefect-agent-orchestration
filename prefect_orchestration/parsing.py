@@ -29,6 +29,34 @@ def verdicts_dir(run_dir: Path) -> Path:
     return d
 
 
+def prompt_for_verdict(
+    sess: Any,
+    prompt: str,
+    run_dir: Path,
+    name: str,
+    *,
+    fork: bool = False,
+) -> dict[str, Any]:
+    """Send ``prompt`` through ``sess`` and read the resulting verdict file.
+
+    Convenience helper used by formula packs: every step that ends with
+    a verdict has the same shape — prompt the agent, then read
+    ``<run_dir>/verdicts/<name>.json``. ``fork`` forwards to
+    ``AgentSession.prompt(fork_session=...)`` so callers can opt into a
+    forked turn that doesn't bump the parent session's resume UUID.
+
+    The agent's textual reply is discarded — only the verdict file
+    matters (per parsing.py docstring: file artifacts beat prose
+    parsing). ``read_verdict`` raises ``FileNotFoundError`` if the
+    agent skipped writing the file.
+    """
+    if fork:
+        sess.prompt(prompt, fork_session=True)
+    else:
+        sess.prompt(prompt)
+    return read_verdict(run_dir, name)
+
+
 def read_verdict(run_dir: Path, name: str) -> dict[str, Any]:
     """Read a verdict file the agent just wrote.
 
