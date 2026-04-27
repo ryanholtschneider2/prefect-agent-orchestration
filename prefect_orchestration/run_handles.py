@@ -81,6 +81,8 @@ def write_run_handles(
     roles: tuple[str, ...] = (),
     sessions: Mapping[str, str] | None = None,
     tmux_session_prefix: str | None = None,
+    tmux_scope: str | None = None,
+    tmux_window_issue: str | None = None,
     extra_links: Mapping[str, str] | None = None,
     rig_path: Path | None = None,
 ) -> Path:
@@ -119,7 +121,20 @@ def write_run_handles(
         out.append(f"**{label}**: {link}\n")
     out.append("\n")
 
-    if tmux_session_prefix and roles:
+    if tmux_scope and roles:
+        # Shared-scope layout (epic children share one tmux session, one
+        # window per (issue, role)). Print attach hints that include the
+        # window-name select so users land on the right pane.
+        out.append("## Lurk (during run)\n\nAttach to a role's tmux window:\n\n")
+        out.append("```bash\n")
+        win_prefix = tmux_window_issue or issue_id
+        for role in roles:
+            out.append(
+                f"tmux attach -t {tmux_scope} \\; "
+                f"select-window -t {win_prefix}-{role}\n"
+            )
+        out.append("```\n\n")
+    elif tmux_session_prefix and roles:
         out.append("## Lurk (during run)\n\nAttach to a role's tmux session:\n\n")
         out.append("```bash\n")
         for role in roles:
