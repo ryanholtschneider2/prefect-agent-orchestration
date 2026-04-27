@@ -36,3 +36,24 @@
   **Alternatives considered**: `Generator[None, None, None]` —
   rejected as more verbose with no benefit for a fixture that yields
   once.
+
+- **Decision**: Soft-reset the first commit and recommitted with an
+  explicit pathspec.
+  **Why**: First `git commit` ran with no path filter and the index
+  contained two sibling-worker plan.md files
+  (`prefect-orchestration-7jr/plan.md`,
+  `prefect-orchestration-uc0/plan.md`) that had been staged by other
+  PO planner steps before mine started. They got swept into my
+  commit, which would have falsely attributed their work to issue
+  `1gd` and could have broken those workers' subsequent commit flow.
+  `git reset --soft HEAD^` (non-destructive — keeps changes in
+  index/working tree, repo is local-only with no remote per
+  CLAUDE.md) followed by `git restore --staged` of the two sibling
+  files unwound the mistake; recommitted only my files. Re-staging
+  via `git restore --staged` is the documented "leave the other
+  worker's work alone" path from the parallel-run-hygiene rules.
+  **Alternatives considered**: `git reset --hard` — explicitly
+  forbidden by role rules and would have lost local working-tree
+  state. Leaving the bad commit and amending — `git commit --amend`
+  is also disallowed by the harness's git-safety protocol; soft
+  reset + new commit is the right replacement.
