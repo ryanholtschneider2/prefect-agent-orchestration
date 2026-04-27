@@ -33,7 +33,9 @@ deployments + agent prompts.
 │   ├── commands.py                    functions → po.commands
 │   ├── checks.py                      DoctorCheck functions → po.doctor_checks
 │   ├── cli.py                         if the pack ships a sub-CLI
-│   └── agents/<role>/prompt.md        per-role prompts for flow steps (4ja.3)
+│   └── agents/<role>/
+│       ├── prompt.md                  per-role prompts for flow steps (4ja.3)
+│       └── identity.toml              optional per-role identity (o2r)
 ├── skills/                            Claude Code skills
 │   └── <skill-name>/
 │       └── SKILL.md                   YAML frontmatter + markdown body
@@ -173,6 +175,81 @@ arrive in a later issue.
 attempt the copy; skip-existing makes the second a near-no-op
 (stat per file). The TOCTOU window is tiny and identical bytes
 on both sides, so collisions don't corrupt content.
+
+## Per-role identity (o2r)
+
+Each role gets a stable identity (display name, email, slack handle,
+mail-server agent name, model preference). Convention:
+
+```
+<pack>/po_<module>/agents/<role>/identity.toml
+```
+
+Schema (all fields optional):
+
+```toml
+[identity]
+name             = "acquisitions-bot"
+email            = "acquisitions@nanocorp.example"
+slack            = "@acquisitions-bot"
+mail_agent_name  = "acquisitions-bot"   # falls back to name when absent
+model            = "opus"
+```
+
+When present, `prefect_orchestration.templates.render_template` auto-
+prepends a `<self>...</self>` block to every rendered prompt and
+exposes the fields as `{{agent_name}}`, `{{agent_email}}`,
+`{{agent_slack}}`, `{{agent_mail_name}}`, `{{agent_model}}`
+substitution variables. Roles **without** an `identity.toml` render
+unchanged (no `<self>` block, no auto-vars) — fully backward-compatible.
+
+### Per-rig overlay precedence
+
+A rig can override the pack default by shipping:
+
+```
+<rig>/.claude/agents/<role>/identity.toml
+```
+
+**Per-field merge** (rig wins per key, pack fills the rest). To
+override only the display name, the rig file needs only:
+
+```toml
+[identity]
+name = "acquisitions-bot-staging"
+```
+
+…and `email`, `slack`, etc. still come from the pack. This lets the
+same pack ship as a different "person" per rig without copying every
+field.
+
+### `register_agent` integration
+
+`mcp-agent-mail` requires every agent to register before reservations
+or messaging. Prompts that run the registration handshake should use
+`{{agent_name}}` so the orchestrator and the agent agree on identity:
+
+```
+mcp-agent-mail register_agent \
+    project_key="…" \
+    name="{{agent_name}}" \
+    program="claude-code" \
+    model="{{agent_model}}"
+```
+
+When no `identity.toml` is present, prompts may continue to fall back
+to the legacy `{{issue_id}}-{{role}}` naming. Once a role has an
+identity, prefer `{{agent_name}}` — it's stable across runs of the
+same role in the same rig.
+
+### Notes
+
+- TOML parse errors raise `IdentityLoadError` (subclass of
+  `ValueError`) with the offending path — failures are loud, not
+  silently anonymous.
+- Unknown keys in `[identity]` are ignored (forward-compat).
+- Don't hand-roll a `<self>` block in your `prompt.md` once
+  `identity.toml` is present — you'd get two.
 
 ## Tool-access preference order
 
@@ -332,17 +409,17 @@ calls from prompts.
 
 ```bash
 # install — agent/human never learns uv
-po install po-stripe                    # from PyPI
-po install git+https://github.com/…/po-stripe@main
-po install --editable /path/to/po-stripe
+po packs install po-stripe                    # from PyPI
+po packs install git+https://github.com/…/po-stripe@main
+po packs install --editable /path/to/po-stripe
 
 # inspect
-po packs                                # list installed + what each contributes
+po packs list                           # list installed + what each contributes
 po list                                 # all registered formulas + commands
 po show <name>                          # signature + docstring for a formula or command
 
 # uninstall
-po uninstall po-stripe
+po packs uninstall po-stripe
 ```
 
 After install, the pack's entry points are live, its skills are
@@ -367,6 +444,89 @@ Extend an existing pack when:
 
 Err on the side of more, smaller packs. Installing five small packs
 is cheaper than auditing and uninstalling parts of one big one.
+
+## Per-agent secrets
+
+Roles often need real account credentials — `acquisitions-bot` posts
+to Slack as itself, `triager` reads its own Gmail, etc. Core ships a
+small `SecretProvider` Protocol so the orchestrator can inject ONLY
+the current role's tokens into its tmux/CLI session, scrubbing every
+peer-role scoped variable from the child env first.
+
+### Naming convention
+
+Secrets are keyed `<PREFIX>_<ROLE_KEY>` in the orchestrator's env (or
+in a per-rig `.env` overlay). `<PREFIX>` is the unscoped name the
+agent's tooling expects (e.g. `SLACK_TOKEN`); `<ROLE_KEY>` is the
+role name normalized via `prefect_orchestration.secrets.role_env_key`:
+
+| Role                              | `<ROLE_KEY>`                       |
+|-----------------------------------|------------------------------------|
+| `planner`                         | `PLANNER`                          |
+| `plan-critic`                     | `PLAN_CRITIC`                      |
+| `acquisitions.bot`                | `ACQUISITIONS_BOT`                 |
+| `prefect-orchestration-4ja.1`     | `PREFECT_ORCHESTRATION_4JA_1`      |
+
+Rule: hyphens, dots, spaces and any non-alphanumeric run collapse to a
+single `_`; result is uppercased. Symmetric — docs and lookup share
+the same normalizer so `.env` keys never silently miss.
+
+### Default prefixes
+
+```
+SLACK_TOKEN, GMAIL_CREDS, ATTIO_TOKEN, CALENDAR_CREDS
+```
+
+Pass `prefixes=(...)` to any provider to extend (e.g. `STRIPE_KEY`).
+Whatever the prefix, the child sees the bare prefix as the key:
+`SLACK_TOKEN_PLANNER=xoxb-…` becomes `SLACK_TOKEN=xoxb-…` for the
+planner's session.
+
+### Per-rig `.env` overlay
+
+A rig can ship a `.env` file with role-scoped tokens. Core does NOT
+auto-load it — the caller (registry factory or `build_registry`) opts
+in:
+
+```python
+from prefect_orchestration import (
+    ChainSecretProvider, DotenvSecretProvider, EnvSecretProvider,
+)
+provider = ChainSecretProvider([
+    DotenvSecretProvider(rig_path / ".env"),
+    EnvSecretProvider(),
+])
+session = AgentSession(role="planner", repo_path=rig_path,
+                      secret_provider=provider, ...)
+```
+
+### Precedence
+
+`ChainSecretProvider` is **first-hit-wins per key** across providers.
+Recommended order: rig `.env` overlay first, process env second.
+Anything more bespoke (CLI flag, vault) goes in front of both as its
+own provider. Vault, OAuth refresh, and rotation are explicitly out
+of scope for the initial seam — the Protocol is forward-compatible.
+
+### Example `.env`
+
+```
+# Per-role Slack tokens (one bot user per role)
+SLACK_TOKEN_ACQUISITIONS_BOT=xoxb-acq-...
+SLACK_TOKEN_TRIAGER=xoxb-tri-...
+
+# Gmail creds (JSON-encoded, single line)
+GMAIL_CREDS_ACQUISITIONS_BOT={"client_id":"...","refresh_token":"..."}
+```
+
+### Leakage scrub
+
+Every `SessionBackend` calls `_clean_env(extra_env)` which (a) strips
+`ANTHROPIC_API_KEY`, (b) removes every `<PREFIX>_*` key from the
+orchestrator's env, then (c) overlays the role's re-keyed subset. Net
+effect: role A's child process sees `SLACK_TOKEN=<A's token>` and
+zero `SLACK_TOKEN_*` vars. Role B's token is not present at any step
+of role A's launch.
 
 ## Two non-Python escape hatches (future)
 
