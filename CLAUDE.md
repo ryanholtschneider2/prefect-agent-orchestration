@@ -266,6 +266,46 @@ po run epic \
 # Optional: --dry-run       to exercise the DAG without spawning Claude
 ```
 
+`epic_run` is now a thin wrapper over `graph_run` (see next section). It
+prefers `bd dep` edges (parent-child + blocks) for child discovery and
+falls back to the legacy dot-suffix probe (`<epic>.1`, `<epic>.2`, …)
+when no edges are populated, so historical dot-suffix epics keep
+working.
+
+### Running an arbitrary sub-graph
+
+`po run graph <root>` generalises the epic case: any bead can be a root,
+and the DAG is built from `bd dep` edges directly — no naming convention
+or `epic` status required.
+
+```bash
+# Fan out a feature bead's sub-tasks (linked via `bd dep add`)
+po run graph my-feature-1 \
+  --rig <name> \
+  --rig-path <path>
+
+# Convoy / ad-hoc grouping bead, including the root itself
+po run graph release-blockers-q2 \
+  --rig <name> \
+  --rig-path <path> \
+  --root-as-node
+
+# Knobs:
+#   --traverse=parent-child,blocks,tracks   # which edge types to follow
+#                                           # default: parent-child,blocks
+#   --formula=software-dev-full             # formula to run per node
+#                                           # default: software-dev-full
+#   --max-issues=N                          # cap topo-prefix
+#   --include-closed                        # bring closed beads back in
+#                                           # (re-run / verification)
+#   --root-as-node                          # include root in submitted set
+```
+
+Discovery is BFS-up via `bd dep list <id> --direction=up --type=<edge>`,
+ordering is topo over the `blocks`-only sub-graph; cycles raise
+`dependency cycle: [ids...]`. The chosen formula must accept
+`(issue_id, rig, rig_path)` plus optional `parent_bead` / `dry_run`.
+
 ### Running an ad-hoc scratch flow
 
 For one-offs without a registered formula / installed pack:
@@ -439,6 +479,7 @@ picks a non-default entry-point.
 | List installed formulas | `po list` |
 | Show a formula's signature / docstring | `po show <formula>` |
 | Run a formula synchronously, now | `po run <formula> --args` |
+| Fan out an arbitrary bd sub-graph rooted at any bead | `po run graph <root-id> --rig <name> --rig-path <path> [--traverse=parent-child,blocks] [--formula=software-dev-full]` |
 | Run an ad-hoc `@flow` from a `.py` file (no install required) | `po run --from-file <path> [--name <flow>] --args` |
 | Tail / follow logs for an issue's run | `po logs <issue-id> [-f] [-n N] [--file NAME]` |
 | Dump full forensic trail for a run | `po artifacts <issue-id> [--verdicts] [--open]` |
