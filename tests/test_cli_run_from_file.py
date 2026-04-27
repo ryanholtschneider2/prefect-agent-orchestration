@@ -7,12 +7,26 @@ from __future__ import annotations
 
 import sys
 import textwrap
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from prefect.testing.utilities import prefect_test_harness
 from typer.testing import CliRunner
 
 from prefect_orchestration import cli, scratch_loader
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _isolated_prefect_server() -> Iterator[None]:
+    # Route every flow execution in this file through an ephemeral
+    # in-memory Prefect server. Without it, `flow_obj()` and the
+    # `CliRunner` invocations against `po run --from-file` register
+    # against whatever PREFECT_API_URL points at — typically the live
+    # PO Prefect UI, which gets cluttered with toy hello/add/beta runs
+    # every PO actor-critic loop. See bead prefect-orchestration-1gd.
+    with prefect_test_harness():
+        yield
 
 
 def _write(tmp_path: Path, body: str, name: str = "scratch.py") -> Path:
