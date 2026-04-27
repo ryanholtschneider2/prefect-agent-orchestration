@@ -130,6 +130,41 @@ primary surface**; defer to `prefect` for anything pure-Prefect.
 
 ## Common workflows
 
+### One-time host setup (`po serve install`)
+
+The Prefect server's default SQLite backend deadlocks under concurrent
+flows ("database is locked" once you push past ~3 parallel `po run`s).
+PO ships a `serve` subcommand that installs systemd-user units for a
+Postgres container + Prefect server, and points the `prefect` profile
+at PG so it becomes the default backend:
+
+```bash
+po serve install        # writes ~/.config/systemd/user/{prefect-postgres,prefect-server}.service,
+                        # sets PREFECT_API_DATABASE_CONNECTION_URL on the active profile,
+                        # runs `prefect server database upgrade`, enables + starts both units
+po serve status         # is-active + /api/health + pg_isready
+po serve uninstall      # stop/disable/remove (add --purge-data to wipe the volume)
+```
+
+Prereqs: docker, prefect on PATH, systemd user session. Run
+`loginctl enable-linger $USER` once so the units survive logout.
+Postgres data lives in `~/.local/share/prefect-postgres/` (bind mount
+on the host so it survives container recreate). The PG creds are
+hardcoded `prefect:prefect` on `127.0.0.1:5432` — fine for a local
+dev box, never expose this port.
+
+If you'd rather not use systemd, the equivalent one-liner is:
+
+```bash
+docker run -d --name prefect-postgres --restart unless-stopped \
+  -e POSTGRES_USER=prefect -e POSTGRES_PASSWORD=prefect -e POSTGRES_DB=prefect \
+  -p 127.0.0.1:5432:5432 \
+  -v $HOME/.local/share/prefect-postgres:/var/lib/postgresql/data postgres:16-alpine
+prefect config set PREFECT_API_DATABASE_CONNECTION_URL='postgresql+asyncpg://prefect:prefect@127.0.0.1:5432/prefect'
+prefect server database upgrade -y
+prefect server start --host 127.0.0.1 --port 4200
+```
+
 ### Inspecting what's available
 
 ```bash
@@ -497,5 +532,5 @@ sees the new entry-point.
 - `5kj` beads-as-mail helper (shipped; module lives in the pack)
 - `shj` `po deploy` + `register()` convention (shipped)
 - `9cn` OpenTelemetry / Logfire spans (open)
-- `pw4` rig-path vs pack-path split (open)
+- `pw4` rig-path vs pack-path split (shipped — see README §"Rig path vs pack path")
 - `7jr` `po run --time` for future-scheduled runs (open)

@@ -102,6 +102,52 @@ prefect worker start -p po
 Event-triggered deployments: leave the schedule off and wire triggers in
 Prefect's UI (Automations).
 
+## Rig path vs pack path (cross-repo work)
+
+`software-dev-full` accepts an optional `--pack-path` alongside
+`--rig-path`. The split:
+
+- **`--rig-path`** — the repo where the bead lives. `bd` claim/close,
+  the run_dir under `.planning/`, and the test/deploy harness all
+  resolve against it.
+- **`--pack-path`** — the repo where code edits + `git commit` should
+  land. Defaults to `--rig-path` (the common case: bead and code in the
+  same repo). Set it when the bead in repo A describes work that must
+  land in repo B — e.g. `prefect-orchestration` self-dev where the
+  bead lives in core but the formula code belongs in the sibling
+  `po-formulas` pack.
+
+Precedence (highest wins):
+
+1. Explicit `--pack-path` flag on the `po run` invocation
+2. Per-bead metadata `po.target_pack` (set with
+   `bd update <id> --set-metadata po.target_pack=/abs/path`) — useful
+   for bulk-tagging an epic's children once
+3. `--rig-path` (back-compat default)
+
+Example — PO touching its own pack:
+
+```bash
+po run software-dev-full \
+  --issue-id prefect-orchestration-pw4 \
+  --rig prefect-orchestration \
+  --rig-path /home/me/prefect-orchestration \
+  --pack-path /home/me/software-dev/po-formulas
+```
+
+The flow:
+
+- Claims/closes the bead in `prefect-orchestration` (rig_path)
+- Writes triage / plan / verdict artifacts to
+  `prefect-orchestration/.planning/software-dev-full/prefect-orchestration-pw4/`
+- Runs builder/linter/cleaner agents with cwd = `po-formulas/`, so
+  `git add` / `git commit` land in the pack repo
+- Runs baseline / regression-gate / verifier from the rig venv (the
+  consumer-side suite) — "installed pack imports correctly" is the
+  check that matters
+
+Worktree-per-run isolation is a separate concern (deferred).
+
 ## Reference pack
 
 [`../software-dev/po-formulas/`](../software-dev/po-formulas/) — actor-critic
