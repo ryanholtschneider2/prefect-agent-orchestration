@@ -21,7 +21,7 @@ import re
 import secrets
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlparse
 
@@ -358,7 +358,9 @@ def install(
             [prefect_bin, "config", "set", "PREFECT_API_URL=http://127.0.0.1:4200/api"],
             check=False,
         )
-        typer.echo("set PREFECT_API_DATABASE_CONNECTION_URL + PREFECT_API_URL on profile")
+        typer.echo(
+            "set PREFECT_API_DATABASE_CONNECTION_URL + PREFECT_API_URL on profile"
+        )
 
     _systemctl("daemon-reload")
 
@@ -369,13 +371,15 @@ def install(
                 [
                     "sh",
                     "-c",
-                    'until docker exec prefect-postgres pg_isready '
+                    "until docker exec prefect-postgres pg_isready "
                     f'-U "{creds.pg_user}" -d "{creds.pg_db}" '
                     ">/dev/null 2>&1; do sleep 1; done",
                 ],
                 check=False,
             )
-        subprocess.run([prefect_bin, "server", "database", "upgrade", "-y"], check=False)
+        subprocess.run(
+            [prefect_bin, "server", "database", "upgrade", "-y"], check=False
+        )
         _systemctl("enable", "--now", "prefect-server.service")
         typer.echo("enabled + started units")
         typer.echo(
@@ -494,7 +498,15 @@ def status() -> None:
         state = (rc.stdout or "").strip() or "unknown"
         typer.echo(f"  {unit}: {state}")
     api = subprocess.run(
-        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://127.0.0.1:4200/api/health"],
+        [
+            "curl",
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "http://127.0.0.1:4200/api/health",
+        ],
         capture_output=True,
         text=True,
     ).stdout.strip()
@@ -505,7 +517,16 @@ def status() -> None:
     pg_user = creds.pg_user if creds else "prefect"
     pg_db = creds.pg_db if creds else "prefect"
     pg = subprocess.run(
-        ["docker", "exec", "prefect-postgres", "pg_isready", "-U", pg_user, "-d", pg_db],
+        [
+            "docker",
+            "exec",
+            "prefect-postgres",
+            "pg_isready",
+            "-U",
+            pg_user,
+            "-d",
+            pg_db,
+        ],
         capture_output=True,
         text=True,
     )

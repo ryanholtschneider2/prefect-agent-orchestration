@@ -89,24 +89,43 @@ def test_install_accepts_pg_flags(serve_env: dict) -> None:
     result = _run(
         "install",
         "--no-enable",
-        "--pg-user", "alice",
-        "--pg-password", "topsecret_123",
-        "--pg-db", "mydb",
-        "--pg-host", "10.0.0.5",
-        "--pg-port", "6543",
+        "--pg-user",
+        "alice",
+        "--pg-password",
+        "topsecret_123",
+        "--pg-db",
+        "mydb",
+        "--pg-host",
+        "10.0.0.5",
+        "--pg-port",
+        "6543",
     )
     assert result.exit_code == 0, result.output
 
     creds = serve_mod.load_creds()
     assert creds is not None
-    assert (creds.pg_user, creds.pg_password, creds.pg_db, creds.pg_host, creds.pg_port) == (
-        "alice", "topsecret_123", "mydb", "10.0.0.5", "6543",
+    assert (
+        creds.pg_user,
+        creds.pg_password,
+        creds.pg_db,
+        creds.pg_host,
+        creds.pg_port,
+    ) == (
+        "alice",
+        "topsecret_123",
+        "mydb",
+        "10.0.0.5",
+        "6543",
     )
 
     # AC4: Prefect profile URL matches the creds.
     config_set_calls = [
-        c for c in serve_env["run"]
-        if isinstance(c, list) and len(c) >= 4 and c[1] == "config" and c[2] == "set"
+        c
+        for c in serve_env["run"]
+        if isinstance(c, list)
+        and len(c) >= 4
+        and c[1] == "config"
+        and c[2] == "set"
         and c[3].startswith("PREFECT_API_DATABASE_CONNECTION_URL=")
     ]
     assert config_set_calls, f"no config set call found in {serve_env['run']!r}"
@@ -157,12 +176,17 @@ def test_profile_url_url_encodes_password(serve_env: dict) -> None:
     result = _run(
         "install",
         "--no-enable",
-        "--pg-password", "abc.DEF-ghi_123",
+        "--pg-password",
+        "abc.DEF-ghi_123",
     )
     assert result.exit_code == 0
     config_set_calls = [
-        c for c in serve_env["run"]
-        if isinstance(c, list) and len(c) >= 4 and c[1] == "config" and c[2] == "set"
+        c
+        for c in serve_env["run"]
+        if isinstance(c, list)
+        and len(c) >= 4
+        and c[1] == "config"
+        and c[2] == "set"
         and c[3].startswith("PREFECT_API_DATABASE_CONNECTION_URL=")
     ]
     url = config_set_calls[0][3].split("=", 1)[1]
@@ -214,8 +238,12 @@ def test_install_external_pg_skips_local_container(serve_env: dict) -> None:
 
     # Profile URL = supplied URL exactly.
     config_set_calls = [
-        c for c in serve_env["run"]
-        if isinstance(c, list) and len(c) >= 4 and c[1] == "config" and c[2] == "set"
+        c
+        for c in serve_env["run"]
+        if isinstance(c, list)
+        and len(c) >= 4
+        and c[1] == "config"
+        and c[2] == "set"
         and c[3].startswith("PREFECT_API_DATABASE_CONNECTION_URL=")
     ]
     assert config_set_calls
@@ -226,9 +254,12 @@ def test_install_external_pg_rejects_combined_flags(serve_env: dict) -> None:
     result = CliRunner().invoke(
         serve_mod.app,
         [
-            "install", "--no-enable",
-            "--external-pg", "postgresql://h/db",
-            "--pg-user", "x",
+            "install",
+            "--no-enable",
+            "--external-pg",
+            "postgresql://h/db",
+            "--pg-user",
+            "x",
         ],
     )
     assert result.exit_code != 0
@@ -265,13 +296,26 @@ def test_load_creds_missing_returns_none(serve_env: dict) -> None:
 
 def test_save_then_load_roundtrip(serve_env: dict) -> None:
     creds = serve_mod.ServeCreds(
-        pg_user="alice", pg_password="rot13", pg_db="db1",
-        pg_host="1.2.3.4", pg_port="9000",
+        pg_user="alice",
+        pg_password="rot13",
+        pg_db="db1",
+        pg_host="1.2.3.4",
+        pg_port="9000",
     )
     serve_mod.save_creds(creds)
     loaded = serve_mod.load_creds()
     assert loaded is not None
-    assert (loaded.pg_user, loaded.pg_password, loaded.pg_db, loaded.pg_host, loaded.pg_port) == (
-        "alice", "rot13", "db1", "1.2.3.4", "9000",
+    assert (
+        loaded.pg_user,
+        loaded.pg_password,
+        loaded.pg_db,
+        loaded.pg_host,
+        loaded.pg_port,
+    ) == (
+        "alice",
+        "rot13",
+        "db1",
+        "1.2.3.4",
+        "9000",
     )
     assert not loaded.is_external()

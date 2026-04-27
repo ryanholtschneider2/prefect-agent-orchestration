@@ -31,6 +31,8 @@ from prefect_orchestration import doctor as _doctor
 from prefect_orchestration import packs as _packs
 from prefect_orchestration import retry as _retry
 from prefect_orchestration import run_lookup as _run_lookup
+from prefect_orchestration import scratch_loader as _scratch_loader
+from prefect_orchestration import serve as _serve
 from prefect_orchestration import sessions as _sessions
 from prefect_orchestration import status as _status
 from prefect_orchestration import watch as _watch
@@ -118,7 +120,7 @@ def list_formulas() -> None:
     cmds = _commands.load_commands()
     if not formulas and not cmds:
         typer.echo("no formulas or commands installed.")
-        typer.echo("install a pack with `po install <pack>`")
+        typer.echo("install a pack with `po packs install <pack>`")
         typer.echo(
             'packs declare entries via `[project.entry-points."po.formulas"]` '
             'and `[project.entry-points."po.commands"]`.'
@@ -220,24 +222,68 @@ def _autoconfigure_prefect_api() -> None:
 )
 def run(
     ctx: typer.Context,
-    name: str = typer.Argument(..., help="Formula name from `po list`"),
+    from_file: Path | None = typer.Option(
+        None,
+        "--from-file",
+        help="Path to a .py file containing a @flow function. Skips the "
+        "po.formulas entry-point lookup — useful for ad-hoc scratch flows.",
+    ),
+    flow_name: str | None = typer.Option(
+        None,
+        "--name",
+        help="When --from-file defines multiple @flow callables, pick this one.",
+    ),
 ) -> None:
-    """Run a registered formula. Pass flow kwargs after the name:
+    """Run a registered formula or an ad-hoc scratch flow.
 
-    po run software-dev-full --issue-id sr-8yu.3 --rig site --rig-path ./site
+    Registered:  po run software-dev-full --issue-id sr-8yu.3 --rig site --rig-path ./site
+    Scratch:     po run --from-file ./my_flow.py [--name foo] --arg value
     """
     _autoconfigure_prefect_api()
-    formulas = _load_formulas()
-    if name not in formulas:
-        typer.echo(f"no formula named {name!r}. Run `po list`.", err=True)
-        raise typer.Exit(1)
-    flow_obj = formulas[name]
-    kwargs = _parse_kwargs(list(ctx.args))
+
+    # Formula name is the first non-option token in extras (when --from-file
+    # is absent). Extracting manually rather than via typer.Argument lets us
+    # coexist with `ignore_unknown_options` — otherwise Click would consume
+    # the next unknown `--key` token as the positional name.
+    extras = list(ctx.args)
+    name: str | None = None
+    if extras and not extras[0].startswith("-"):
+        name = extras.pop(0)
+
+    if from_file is not None and name is not None:
+        typer.echo(
+            "specify either a formula name or --from-file, not both.", err=True
+        )
+        raise typer.Exit(2)
+
+    if from_file is not None:
+        try:
+            flow_obj = _scratch_loader.load_flow_from_file(from_file, flow_name)
+        except _scratch_loader.ScratchLoadError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        label = f"--from-file {from_file}"
+    else:
+        if name is None:
+            typer.echo(
+                "missing formula name. Run `po list`, or use --from-file <path>.",
+                err=True,
+            )
+            raise typer.Exit(2)
+        formulas = _load_formulas()
+        if name not in formulas:
+            typer.echo(f"no formula named {name!r}. Run `po list`.", err=True)
+            raise typer.Exit(1)
+        flow_obj = formulas[name]
+        label = name
+
+    kwargs = _parse_kwargs(extras)
     try:
         result = flow_obj(**kwargs)
     except TypeError as exc:
-        typer.echo(f"bad arguments for {name}: {exc}", err=True)
-        typer.echo(f"run `po show {name}` to see the signature", err=True)
+        typer.echo(f"bad arguments for {label}: {exc}", err=True)
+        if from_file is None:
+            typer.echo(f"run `po show {label}` to see the signature", err=True)
         raise typer.Exit(2) from exc
     typer.echo(result)
 
@@ -702,8 +748,14 @@ def watch(
         raise typer.Exit(0)
 
 
-@app.command()
-def install(
+packs_app = typer.Typer(
+    no_args_is_help=True,
+    help="Manage formula packs (install / uninstall / update / list).",
+)
+
+
+@packs_app.command("install")
+def packs_install(
     spec: str = typer.Argument(
         ...,
         help="Pack to install: PyPI name (e.g. po-formulas-software-dev), "
@@ -730,8 +782,8 @@ def install(
     typer.echo(f"installed {spec}")
 
 
-@app.command()
-def update(
+@packs_app.command("update")
+def packs_update(
     name: str | None = typer.Argument(
         None,
         help="Pack name to refresh. Omit to refresh every installed pack.",
@@ -740,8 +792,8 @@ def update(
     """Re-install packs so entry-point metadata is rewritten.
 
     Entry-point groups are written at install time, not on code reload.
-    This verb replaces the manual `uv tool install --force …` re-run
-    ritual.
+    This subcommand replaces the manual `uv tool install --force …`
+    re-run ritual.
     """
     try:
         refreshed = _packs.update(name)
@@ -754,8 +806,8 @@ def update(
         typer.echo(f"refreshed: {', '.join(refreshed)}")
 
 
-@app.command()
-def uninstall(
+@packs_app.command("uninstall")
+def packs_uninstall(
     name: str = typer.Argument(..., help="Pack distribution name to remove."),
 ) -> None:
     """Remove a pack from po's tool env."""
@@ -767,11 +819,59 @@ def uninstall(
     typer.echo(f"uninstalled {name}")
 
 
-@app.command()
-def packs() -> None:
+@packs_app.command("list")
+def packs_list() -> None:
     """List installed packs and what each contributes (formulas, deployments, ...)."""
     found = _packs.discover_packs()
     typer.echo(_packs.render_packs_table(found))
+
+
+app.add_typer(packs_app, name="packs")
+
+
+app.add_typer(
+    _serve.app,
+    name="serve",
+    help="Install/manage the Postgres + Prefect server background stack.",
+)
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def tui(ctx: typer.Context) -> None:
+    """Open the Ink-based TUI dashboard (read-only swarm overview).
+
+    Discovers the `po-tui` binary in this order:
+      1. `<repo>/bin/po-tui` (preferred — built via `bun build --compile`)
+      2. `<repo>/tui/dist/po-tui` (fresh build, not yet copied to bin/)
+      3. anywhere on $PATH
+    """
+    here = Path(__file__).resolve().parent.parent
+    candidates = [
+        here / "bin" / "po-tui",
+        here / "tui" / "dist" / "po-tui",
+    ]
+    binary: str | None = None
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK):
+            binary = str(c)
+            break
+    if binary is None:
+        on_path = shutil.which("po-tui")
+        if on_path:
+            binary = on_path
+    if binary is None:
+        typer.echo("po-tui binary not found.\n", err=True)
+        typer.echo("Build it first:", err=True)
+        typer.echo(f"  cd {here / 'tui'} && bun install && bun run build", err=True)
+        typer.echo(
+            f"  mkdir -p {here / 'bin'} && cp dist/po-tui {here / 'bin' / 'po-tui'}",
+            err=True,
+        )
+        raise SystemExit(1)
+    extra = ctx.args or []
+    os.execvp(binary, [binary, *extra])
 
 
 def main() -> None:
