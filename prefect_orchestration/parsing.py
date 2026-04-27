@@ -56,14 +56,21 @@ def prompt_for_verdict(
     existing verdict is read and returned. This is what `po resume`
     relies on to skip already-completed steps when relaunching a flow.
     """
-    if os.environ.get("PO_RESUME") == "1":
-        existing = verdicts_dir(run_dir) / f"{name}.json"
-        if existing.exists():
-            return read_verdict(run_dir, name)
-    if fork:
-        sess.prompt(prompt, fork_session=True)
-    else:
-        sess.prompt(prompt)
+    expected = verdicts_dir(run_dir) / f"{name}.json"
+    if os.environ.get("PO_RESUME") == "1" and expected.exists():
+        return read_verdict(run_dir, name)
+    try:
+        if fork:
+            sess.prompt(prompt, fork_session=True, expect_verdict=expected)
+        else:
+            sess.prompt(prompt, expect_verdict=expected)
+    except TypeError:
+        # Stub sessions used in older tests don't accept expect_verdict;
+        # fall through and let read_verdict's FileNotFoundError surface.
+        if fork:
+            sess.prompt(prompt, fork_session=True)
+        else:
+            sess.prompt(prompt)
     return read_verdict(run_dir, name)
 
 

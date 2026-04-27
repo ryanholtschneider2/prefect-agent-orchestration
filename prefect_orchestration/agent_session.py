@@ -1197,13 +1197,26 @@ class AgentSession:
                 self.repo_path,
             )
 
-    def prompt(self, text: str, *, fork: bool = False) -> str:
+    def prompt(
+        self,
+        text: str,
+        *,
+        fork: bool = False,
+        expect_verdict: Path | None = None,
+    ) -> str:
         """Send a prompt; updates `session_id` in place.
 
         Prepends an `<mail-inbox>` block listing any unread mail addressed
         to this role (via `mail_fetcher`). On successful turn return,
         marks those messages read (via `mail_marker`). On exception,
         leaves them unread so the next turn re-renders them.
+
+        ``expect_verdict``: when set, after the turn returns the path is
+        checked. If missing, a single nudge turn is fired (reusing the
+        post-turn ``session_id``, no fork, no mail re-injection) telling
+        the agent to write the file. Capped at one retry — if the file
+        is still absent, fall through and let the caller's
+        ``read_verdict`` raise the loud ``FileNotFoundError``.
         """
         self._materialize_packs_once()
         mails = self._fetch_inbox()
@@ -1248,7 +1261,61 @@ class AgentSession:
             span.set_attribute("new_session_id", new_sid)
         self.session_id = new_sid
         self._mark_read(mails)
+
+        if expect_verdict is not None and not expect_verdict.exists():
+            result = self._nudge_for_verdict(
+                expect_verdict, extra_env=extra_env, tel=tel, prior_result=result
+            )
         return result
+
+    def _nudge_for_verdict(
+        self,
+        verdict_path: Path,
+        *,
+        extra_env: Mapping[str, str] | None,
+        tel: Any,
+        prior_result: str,
+    ) -> str:
+        """Fire one nudge turn re-prompting the agent to emit the verdict file.
+
+        Reuses the current ``session_id`` so the agent sees its prior
+        reasoning. Skips mail-injection (this is a forced internal retry,
+        not a fresh turn). One retry only — no recursion.
+        """
+        nudge = (
+            f"You ended your previous turn without writing the required verdict "
+            f"file at {verdict_path}. Write it now using the JSON shape your "
+            f"role prompt specified, then stop. Do not redo the analysis — "
+            f"only emit the file."
+        )
+        self._turn_index += 1
+        attrs: dict[str, Any] = {
+            "role": self.role,
+            "issue_id": self.issue_id,
+            "session_id": self.session_id,
+            "turn_index": self._turn_index,
+            "fork_session": False,
+            "model": self.model,
+            "nudge": True,
+            "verdict_path": str(verdict_path),
+        }
+        with tel.span("agent.prompt.nudge", **attrs) as span:
+            try:
+                result, new_sid = self.backend.run(
+                    nudge,
+                    session_id=self.session_id,
+                    cwd=self.repo_path,
+                    fork=False,
+                    model=self.model,
+                    extra_env=extra_env,
+                )
+            except BaseException as e:
+                span.record_exception(e)
+                span.set_status("ERROR", f"{type(e).__name__}: {e}")
+                raise
+            span.set_attribute("new_session_id", new_sid)
+        self.session_id = new_sid
+        return result or prior_result
 
     def _tmux_session_name(self, *, fork: bool) -> str | None:
         """Best-effort lookup of the tmux session name for telemetry.
