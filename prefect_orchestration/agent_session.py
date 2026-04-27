@@ -32,7 +32,6 @@ from typing import Any, Callable, Mapping, Protocol
 from prefect_orchestration.secrets import (
     DEFAULT_PREFIXES,
     SecretProvider,
-    resolve_role_env,
 )
 
 logger = logging.getLogger(__name__)
@@ -455,7 +454,9 @@ def _ensure_stop_hook(cwd: Path) -> None:
     settings_path = settings_dir / "settings.json"
     lock_path = settings_dir / ".settings.lock"
     hook_cmd = f"{shlex.quote(sys.executable)} -m prefect_orchestration.stop_hook"
-    desired_stop = [{"matcher": "", "hooks": [{"type": "command", "command": hook_cmd}]}]
+    desired_stop = [
+        {"matcher": "", "hooks": [{"type": "command", "command": hook_cmd}]}
+    ]
 
     with open(lock_path, "w") as lock_f:
         fcntl.flock(lock_f, fcntl.LOCK_EX)
@@ -477,7 +478,9 @@ def _ensure_stop_hook(cwd: Path) -> None:
         existing["hooks"] = hooks
 
         # Atomic write: tmpfile in same dir, then replace.
-        fd, tmp_path = tempfile.mkstemp(prefix=".settings-", suffix=".json", dir=settings_dir)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".settings-", suffix=".json", dir=settings_dir
+        )
         try:
             with _os.fdopen(fd, "w") as f:
                 f.write(json.dumps(existing, indent=2))
@@ -543,9 +546,7 @@ def _wait_for_stop(
                 f"tmux session {session_name!r} disappeared before Stop hook fired"
             )
         time.sleep(poll)
-    raise TimeoutError(
-        f"Stop hook for {session_name!r} did not fire within {timeout}s"
-    )
+    raise TimeoutError(f"Stop hook for {session_name!r} did not fire within {timeout}s")
 
 
 def _last_assistant_text_from_jsonl(jsonl_path: Path) -> str:
@@ -674,7 +675,13 @@ class TmuxInteractiveClaudeBackend:
             session_args = ["--resume", prior]
         elif fork and prior:
             new_sid = str(uuid.uuid4())
-            session_args = ["--session-id", new_sid, "--resume", prior, "--fork-session"]
+            session_args = [
+                "--session-id",
+                new_sid,
+                "--resume",
+                prior,
+                "--fork-session",
+            ]
         else:
             new_sid = str(uuid.uuid4())
             session_args = ["--session-id", new_sid]
@@ -701,14 +708,23 @@ class TmuxInteractiveClaudeBackend:
         wrapper = (
             f"cd {shlex.quote(str(cwd))} && "
             f"{shlex.join(argv)} ; "
-            f"echo \"[claude exited $? — session held open for diagnostics]\" ; "
+            f'echo "[claude exited $? — session held open for diagnostics]" ; '
             f"sleep infinity"
         )
         subprocess.run(
             [
-                "tmux", "new-session", "-d", "-s", name,
-                "-x", "240", "-y", "60",
-                "bash", "-lc", wrapper,
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                name,
+                "-x",
+                "240",
+                "-y",
+                "60",
+                "bash",
+                "-lc",
+                wrapper,
             ],
             check=True,
             env=_clean_env(extra_env),
@@ -791,9 +807,16 @@ class TmuxInteractiveClaudeBackend:
         active_markers = (
             "esc to interrupt",
             "tokens · esc",
-            "Cogitated", "Composing", "Worked", "Crunched",
-            "Whisking", "Julienning", "Thinking",
-            "Skill(", "Bash(", "Searched",
+            "Cogitated",
+            "Composing",
+            "Worked",
+            "Crunched",
+            "Whisking",
+            "Julienning",
+            "Thinking",
+            "Skill(",
+            "Bash(",
+            "Searched",
             "hit your limit",  # rate-limit dialog — also a "submitted" state
         )
         for attempt in range(3):
@@ -805,7 +828,8 @@ class TmuxInteractiveClaudeBackend:
             time.sleep(1.5)
             pane = subprocess.run(
                 ["tmux", "capture-pane", "-pt", name, "-S", "-50"],
-                capture_output=True, check=False,
+                capture_output=True,
+                check=False,
             ).stdout.decode(errors="replace")
             if any(m in pane for m in active_markers):
                 break
@@ -818,7 +842,9 @@ class TmuxInteractiveClaudeBackend:
             # (verdict files carry orchestrator-readable truth; this is for logs).
             slug = str(cwd.resolve()).replace("/", "-")
             jsonl = Path.home() / ".claude" / "projects" / slug / f"{new_sid}.jsonl"
-            result = _last_assistant_text_from_jsonl(jsonl) or "[interactive turn complete]"
+            result = (
+                _last_assistant_text_from_jsonl(jsonl) or "[interactive turn complete]"
+            )
         finally:
             subprocess.run(
                 ["tmux", "kill-session", "-t", name],
