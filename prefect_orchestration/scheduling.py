@@ -13,7 +13,6 @@ The CLI imports + composes these helpers in `cli.py::run`.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -27,35 +26,18 @@ _REL_UNIT = {
 }
 
 
-@dataclass(frozen=True)
-class WhenSpec:
-    """Parsed `--time` value: either a relative duration or an absolute time.
+def parse_when(spec: str) -> datetime:
+    """Parse `--time` to a tz-aware UTC datetime.
 
-    Exactly one of `start_in` / `start_at` is set. `start_at` is always
-    tz-aware UTC (callers can format it back with `.astimezone()`).
-    """
+    Accepts a relative duration (`2h`, `30m`, `+30m`, `1d`) or an
+    ISO-8601 string with timezone (`2026-04-25T09:00:00-04:00`, `…Z`).
+    Naive ISO datetimes are rejected: silently picking UTC for
+    "schedule at 09:00" would surprise users in non-UTC timezones.
+    Relative durations must be > 0 and resolve to `now + delta` at
+    parse time.
 
-    start_in: timedelta | None = None
-    start_at: datetime | None = None
-
-    def scheduled_time(self) -> datetime:
-        """Resolve to a concrete tz-aware UTC datetime."""
-        if self.start_at is not None:
-            return self.start_at
-        assert self.start_in is not None, "WhenSpec must set one of start_in / start_at"
-        return datetime.now(timezone.utc) + self.start_in
-
-
-def parse_when(spec: str) -> WhenSpec:
-    """Parse `--time` — relative duration (`2h`, `30m`, `+30m`, `1d`) or
-    ISO-8601 with timezone (`2026-04-25T09:00:00-04:00`, `…Z`).
-
-    Naive datetimes are rejected: silently picking UTC for "schedule at
-    09:00" would surprise users in non-UTC timezones. Relative durations
-    must be > 0.
-
-    Raises ValueError on bad input. The string in the error message
-    quotes the user's exact spec so the CLI can surface it verbatim.
+    Raises ValueError on bad input; the message quotes the user's
+    exact spec so the CLI can surface it verbatim.
     """
     if not spec or not spec.strip():
         raise ValueError("empty --time value")
@@ -66,7 +48,7 @@ def parse_when(spec: str) -> WhenSpec:
         if n == 0:
             raise ValueError(f"--time {spec!r}: relative duration must be > 0")
         unit = _REL_UNIT[m.group(2).lower()]
-        return WhenSpec(start_in=timedelta(**{unit: n}))
+        return datetime.now(timezone.utc) + timedelta(**{unit: n})
     iso = spec[:-1] + "+00:00" if spec.endswith("Z") else spec
     try:
         dt = datetime.fromisoformat(iso)
@@ -81,7 +63,7 @@ def parse_when(spec: str) -> WhenSpec:
             "(e.g. +00:00 or Z); naive datetimes are rejected to avoid "
             "ambiguous local-vs-UTC scheduling."
         )
-    return WhenSpec(start_at=dt.astimezone(timezone.utc))
+    return dt.astimezone(timezone.utc)
 
 
 class ManualDeploymentMissing(Exception):
@@ -131,7 +113,7 @@ async def submit_scheduled_run(
     client: Any,
     formula: str,
     parameters: dict[str, Any],
-    when: WhenSpec,
+    scheduled_time: datetime,
     issue_id: str | None = None,
 ) -> tuple[Any, str]:
     """Submit a one-shot scheduled flow-run for `<formula>-manual`.
@@ -156,7 +138,7 @@ async def submit_scheduled_run(
     flow_run = await arun_deployment(
         full_name,
         parameters=parameters,
-        scheduled_time=when.scheduled_time(),
+        scheduled_time=scheduled_time,
         timeout=0,
         as_subflow=False,
         tags=tags,

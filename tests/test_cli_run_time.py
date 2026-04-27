@@ -110,9 +110,11 @@ def test_relative_time_submits_scheduled_run(runner: CliRunner) -> None:
     assert captured["parameters"] == {"issue_id": "po-1", "rig": "site"}
     assert "time" not in captured["parameters"]
     assert captured["issue_id"] == "po-1"
-    when_spec = captured["when"]
-    assert isinstance(when_spec, scheduling.WhenSpec)
-    assert when_spec.start_in == timedelta(hours=2)
+    sched = captured["scheduled_time"]
+    assert isinstance(sched, datetime)
+    assert sched.tzinfo == timezone.utc
+    delta = sched - datetime.now(timezone.utc)
+    assert timedelta(hours=2) - timedelta(seconds=5) <= delta <= timedelta(hours=2)
     # Output advertises the scheduled run + worker reminder
     assert "fr-relative" in result.output
     assert "foo/foo-manual" in result.output
@@ -137,14 +139,18 @@ def test_relative_time_plus_prefix(runner: CliRunner) -> None:
     ):
         result = runner.invoke(cli.app, ["run", "foo", "--time", "+30m"])
     assert result.exit_code == 0, result.output
-    assert captured["when"].start_in == timedelta(minutes=30)
+    sched: datetime = captured["scheduled_time"]
+    delta = sched - datetime.now(timezone.utc)
+    assert (
+        timedelta(minutes=30) - timedelta(seconds=5) <= delta <= timedelta(minutes=30)
+    )
 
 
 # ─── AC §2: ISO-8601 with timezone ───────────────────────────────────
 
 
 def test_iso_time_submits_with_parsed_datetime(runner: CliRunner) -> None:
-    """`--time <ISO>` lands as `WhenSpec(start_at=...)` in submit."""
+    """`--time <ISO>` lands as a UTC datetime in submit."""
     fake = _RecordedFormula()
     captured: dict[str, Any] = {}
 
@@ -163,9 +169,9 @@ def test_iso_time_submits_with_parsed_datetime(runner: CliRunner) -> None:
     ):
         result = runner.invoke(cli.app, ["run", "foo", "--time", iso])
     assert result.exit_code == 0, result.output
-    when_spec = captured["when"]
-    assert when_spec.start_at == datetime(2026, 4, 25, 13, 0, tzinfo=timezone.utc)
-    assert when_spec.start_in is None
+    assert captured["scheduled_time"] == datetime(
+        2026, 4, 25, 13, 0, tzinfo=timezone.utc
+    )
 
 
 def test_iso_naive_rejected(runner: CliRunner) -> None:

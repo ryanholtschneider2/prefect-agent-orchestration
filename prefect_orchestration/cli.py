@@ -339,7 +339,7 @@ def _run_scheduled(
         raise typer.Exit(1)
 
     try:
-        when_spec = _scheduling.parse_when(when)
+        scheduled_time = _scheduling.parse_when(when)
     except ValueError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(2) from exc
@@ -357,7 +357,7 @@ def _run_scheduled(
                 client=client,
                 formula=name,
                 parameters=kwargs,
-                when=when_spec,
+                scheduled_time=scheduled_time,
                 issue_id=issue_id if isinstance(issue_id, str) else None,
             )
 
@@ -376,8 +376,9 @@ def _run_scheduled(
         )
         raise typer.Exit(4) from exc
 
-    sched = when_spec.scheduled_time().isoformat()
-    typer.echo(f"scheduled flow-run {flow_run.id} ({full_name}) at {sched}")
+    typer.echo(
+        f"scheduled flow-run {flow_run.id} ({full_name}) at {scheduled_time.isoformat()}"
+    )
     typer.echo(
         f"queued for {when}; ensure `prefect worker start --pool po` "
         f"is running before then."
