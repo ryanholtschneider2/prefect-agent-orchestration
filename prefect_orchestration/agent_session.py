@@ -164,7 +164,10 @@ class ClaudeCliBackend:
         )
         if proc.returncode != 0:
             raise RuntimeError(
-                f"claude CLI exited {proc.returncode}\nstderr: {proc.stderr[:2000]}"
+                f"claude CLI exited {proc.returncode}\n"
+                f"argv: {cmd}\n"
+                f"stderr: {proc.stderr[:2000]}\n"
+                f"stdout: {proc.stdout[:2000]}"
             )
 
         return _parse_envelope(proc.stdout, session_id)
