@@ -536,7 +536,15 @@ def _stop_dir() -> Path:
 
 
 def _ensure_stop_hook(cwd: Path) -> None:
-    """Lay down `<cwd>/.claude/settings.json` with our Stop hook.
+    """Lay down `<cwd>/.claude/settings.local.json` with our Stop hook.
+
+    Writes to ``settings.local.json`` (NOT the committed ``settings.json``)
+    because Claude Code merges both. The committed file is vulnerable to
+    `git restore` / `git checkout HEAD --` invoked anywhere in the rig
+    (agent cleanup, build steps, CI), which silently strips our Stop hook
+    and wedges the whole run — the orchestrator polls `~/.cache/po-stops/`
+    forever for a sentinel that never arrives. The local file is globally
+    gitignored, so nothing in a normal git workflow can touch it.
 
     Idempotent and concurrency-safe — three roles spawning in parallel
     (e.g. lint + run_tests-unit + run_tests-e2e) used to race on
@@ -555,7 +563,7 @@ def _ensure_stop_hook(cwd: Path) -> None:
 
     settings_dir = cwd / ".claude"
     settings_dir.mkdir(parents=True, exist_ok=True)
-    settings_path = settings_dir / "settings.json"
+    settings_path = settings_dir / "settings.local.json"
     lock_path = settings_dir / ".settings.lock"
     hook_cmd = f"{shlex.quote(sys.executable)} -m prefect_orchestration.stop_hook"
     desired_stop = [
