@@ -251,9 +251,7 @@ def run(
         name = extras.pop(0)
 
     if from_file is not None and name is not None:
-        typer.echo(
-            "specify either a formula name or --from-file, not both.", err=True
-        )
+        typer.echo("specify either a formula name or --from-file, not both.", err=True)
         raise typer.Exit(2)
 
     if from_file is not None:

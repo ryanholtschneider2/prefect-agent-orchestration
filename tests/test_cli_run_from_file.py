@@ -220,9 +220,7 @@ def test_cli_run_from_file_with_name_selects_flow(tmp_path: Path) -> None:
         name="cli_picked.py",
     )
     runner = CliRunner()
-    result = runner.invoke(
-        cli.app, ["run", "--from-file", str(path), "--name", "beta"]
-    )
+    result = runner.invoke(cli.app, ["run", "--from-file", str(path), "--name", "beta"])
     assert result.exit_code == 0, result.output
     assert "B" in result.output
 
@@ -240,9 +238,7 @@ def test_cli_run_rejects_both_name_and_from_file(tmp_path: Path) -> None:
         name="conflict.py",
     )
     runner = CliRunner()
-    result = runner.invoke(
-        cli.app, ["run", "some-formula", "--from-file", str(path)]
-    )
+    result = runner.invoke(cli.app, ["run", "some-formula", "--from-file", str(path)])
     assert result.exit_code == 2
     assert "not both" in result.output
 
@@ -256,8 +252,6 @@ def test_cli_run_missing_name_and_from_file(tmp_path: Path) -> None:
 
 def test_cli_run_from_file_bad_path(tmp_path: Path) -> None:
     runner = CliRunner()
-    result = runner.invoke(
-        cli.app, ["run", "--from-file", str(tmp_path / "nope.py")]
-    )
+    result = runner.invoke(cli.app, ["run", "--from-file", str(tmp_path / "nope.py")])
     assert result.exit_code == 2
     assert "no such file" in result.output
