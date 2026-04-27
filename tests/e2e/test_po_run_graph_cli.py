@@ -31,7 +31,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _bd_in(rig: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _bd_in(
+    rig: Path, *args: str, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bd", *args],
         cwd=str(rig),
@@ -57,17 +59,36 @@ def test_po_run_graph_discovers_via_bd_dep_edges(
 
     # Create one root + three children with NO dot-suffix naming.
     root = _bd_in(
-        rig, "create", "--type=feature", "--title=root grouping bead",
-        "--priority=2", "--quiet",
+        rig,
+        "create",
+        "--type=feature",
+        "--title=root grouping bead",
+        "--priority=2",
+        "--quiet",
     )
     a = _bd_in(
-        rig, "create", "--type=task", "--title=A", "--priority=2", "--quiet",
+        rig,
+        "create",
+        "--type=task",
+        "--title=A",
+        "--priority=2",
+        "--quiet",
     )
     b = _bd_in(
-        rig, "create", "--type=task", "--title=B", "--priority=2", "--quiet",
+        rig,
+        "create",
+        "--type=task",
+        "--title=B",
+        "--priority=2",
+        "--quiet",
     )
     c = _bd_in(
-        rig, "create", "--type=task", "--title=C", "--priority=2", "--quiet",
+        rig,
+        "create",
+        "--type=task",
+        "--title=C",
+        "--priority=2",
+        "--quiet",
     )
 
     # bd create --quiet prints just the new id on stdout.
@@ -93,9 +114,13 @@ def test_po_run_graph_discovers_via_bd_dep_edges(
     # per-node software_dev_full sub-flow to StubBackend, skipping
     # real Claude calls.
     result = po_runner(
-        "run", "graph", root_id,
-        "--rig", "uc0-e2e",
-        "--rig-path", str(rig),
+        "run",
+        "graph",
+        root_id,
+        "--rig",
+        "uc0-e2e",
+        "--rig-path",
+        str(rig),
         "--dry-run",
         "--traverse=blocks",
         cwd=rig,
@@ -118,4 +143,6 @@ def test_po_run_graph_discovers_via_bd_dep_edges(
         None,
     )
     assert submit_line is not None, combined
-    assert submit_line.index(a_id) < submit_line.index(b_id) < submit_line.index(c_id), submit_line
+    assert (
+        submit_line.index(a_id) < submit_line.index(b_id) < submit_line.index(c_id)
+    ), submit_line

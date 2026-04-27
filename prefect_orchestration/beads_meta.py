@@ -267,9 +267,7 @@ def list_subgraph(
 
     # Status filter.
     if not include_closed:
-        collected = {
-            cid: c for cid, c in collected.items() if c["status"] != "closed"
-        }
+        collected = {cid: c for cid, c in collected.items() if c["status"] != "closed"}
     # If `include_root` is on but the root was closed and `include_closed`
     # is off, the root drops out of `collected` here — which matches the
     # conservative "treat root like any other node" reading.
@@ -283,9 +281,7 @@ def list_subgraph(
     in_set = set(collected)
     for cid, node in collected.items():
         deps_rows = _bd_dep_list(cid, direction="down", edge_type="blocks")
-        node["block_deps"] = [
-            r["id"] for r in deps_rows if r.get("id") in in_set
-        ]
+        node["block_deps"] = [r["id"] for r in deps_rows if r.get("id") in in_set]
 
     return list(collected.values())
 
