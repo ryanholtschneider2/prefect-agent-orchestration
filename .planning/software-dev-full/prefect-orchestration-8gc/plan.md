@@ -1,59 +1,101 @@
-# Plan: prefect-orchestration-8gc — `po attach` (kubectl-exec wrapping)
+# Plan: prefect-orchestration-8gc — `po attach` (kubectl-exec wrapping for remote tmux lurking)
 
-## Affected files
+## Goal
+Add `po attach <issue-id> [--role <role>]` that auto-discovers the worker pod that hosts an issue's tmux agent session(s), then `os.execvp`s into either:
 
-**New (core)**
-- `prefect_orchestration/attach.py` — pure-logic module:
-  - constants for the new bead-metadata keys (`po.k8s_pod`, `po.k8s_namespace`, `po.k8s_context`)
-  - `session_name(issue, role)` — single source of truth for the tmux session name (mirrors `TmuxClaudeBackend._session_name`: dots → underscores, `po-{issue}-{role}` prefix)
-  - `AttachTarget` dataclass `(mode: Literal["k8s","local"], pod, namespace, context, session)`
-  - `resolve_attach_target(metadata, role) -> AttachTarget` — picks k8s vs local from bead metadata
-  - `discover_roles(metadata) -> list[str]` — derive available roles from `session_<role>` keys (reuse `sessions.SESSION_PREFIX`)
-  - `build_kubectl_argv(target, *, tty=True) -> list[str]` — returns the `kubectl [--context X] -n NS exec -it POD -- tmux attach -t SESSION` argv
-  - `build_local_argv(target) -> list[str]` — `["tmux", "attach", "-t", session]`
-  - `probe_pod(target) -> PodStatus` — runs `kubectl get pod -o json`, returns `present | not_found | terminating | unreachable`, with stderr captured for the error message
-  - `stamp_runtime_location(store)` — reads `POD_NAME`/`POD_NAMESPACE`/`PO_KUBE_CONTEXT` env, calls `store.set("po.k8s_pod", …)` etc. when present (and clears any stale keys when not in k8s). Pack flows call this once at flow entry alongside the existing `po.rig_path`/`po.run_dir` stamping.
+- `kubectl --context <ctx> -n <ns> exec -it <pod> -- tmux attach -t <session>` when the bead carries `po.k8s_pod` metadata, or
+- `tmux attach -t <session>` directly when the run was on the host.
 
-- `tests/test_attach.py` — unit tests covering: argv construction (k8s + local), session-name parity with `TmuxClaudeBackend`, role discovery, `resolve_attach_target` precedence, `probe_pod` parsing of `kubectl` output (mocked subprocess), `stamp_runtime_location` env-var matrix, ambiguous-role handling.
+Plus: stamp the metadata at flow entry from the downward API; teach `po sessions` to show a `POD` column when k8s rows exist; surface stale-pod / RBAC errors clearly; document.
 
-**Edits**
-- `prefect_orchestration/cli.py`
-  - Import `attach as _attach`.
-  - New `@app.command()` `attach(issue_id, role: str|None, list_: bool, dry_run: bool, kube_context: str|None)`:
-    - resolves run_dir via `_run_lookup.resolve_run_dir`
-    - loads `metadata.json` via `_sessions.load_metadata`
-    - reads bead metadata (via `BeadsStore.all()` for the k8s_* keys, since those are stamped on the bead, not the file metadata.json — keeps parity with `po.rig_path`/`po.run_dir` lookup)
-    - if `--list`, prints role/pod/session table and exits 0
-    - resolves role: explicit `--role` > exactly-one-session shortcut > interactive prompt when stdin is TTY > error with hint when not (`--list` recommended)
-    - probes pod when `mode=="k8s"`; on stale pod prints `pod gone, run was on <pod-name>` and `try: po retry <issue-id>`, exits 4
-    - on `--dry-run` prints the resolved argv and exits 0
-    - otherwise `os.execvp(argv[0], argv)` so tmux gets a real TTY (matches the `os.execvp` pattern already used by `po logs -f`)
-- `prefect_orchestration/sessions.py`
-  - Extend `SessionRow` with optional `pod: str | None = None`.
-  - `build_rows` now takes optional `bead_metadata: dict[str, str] | None`; when provided and contains `po.k8s_pod`, populates `pod` on each row (pods are per-run, not per-role today, so all rows share the value — leaving the field per-row keeps the door open for per-role pods later).
-  - `render_table` adds a `POD` column when at least one row has a non-empty `pod`; otherwise unchanged (back-compat for tests).
-- `prefect_orchestration/cli.py::sessions` — pass `BeadsStore(issue_id).all()` (best-effort; swallow `bd` errors, fall back to None) so the new column shows up automatically.
-- `tests/test_sessions.py` — add a case asserting the `POD` column appears when k8s metadata is present and is omitted otherwise.
-- `tests/test_cli_artifacts.py` (or a new `tests/test_cli_attach.py`) — invoke `po attach --dry-run` against a fixture bead/run_dir, asserting argv and exit codes for: k8s happy path, local fallback, ambiguous role (non-TTY → error), `--list` table, stale pod.
-- `engdocs/attach.md` — new doc covering: bead metadata stamping (downward API env vars + `PO_KUBE_CONTEXT`), CLI usage, RBAC requirement (`pods/exec`), troubleshooting (stale pod, missing context).
-- `engdocs/work-pools.md` — add a one-liner cross-reference + the env-var snippet for the k8s deployment manifest.
-- `k8s/po-worker-deployment.yaml` — add `POD_NAME` / `POD_NAMESPACE` downward-API env vars and a placeholder `PO_KUBE_CONTEXT` env (commented; operator fills in) so the worker stamps these onto beads it processes.
-- `CLAUDE.md` — short blurb under the "Debugging a run" section pointing at `po attach`.
+## Affected files (under `/home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration`)
 
-**Out of scope (explicit)**
-- `software-dev-full` / `epic` flows in `../software-dev/po-formulas/` need to call `attach.stamp_runtime_location(store)` next to the existing `po.rig_path`/`po.run_dir` stamping. That edit lives in the pack repo, not here. The new core helper is API-stable so the pack-side change is a one-liner; we'll note it in `lessons-learned.md` and open a follow-up bead in the pack repo if one isn't already filed.
+New:
+- `prefect_orchestration/attach.py` — pure module: `session_name(issue, role)`, `AttachTarget` dataclass, `resolve_attach_target(...)`, `discover_roles(metadata) -> list[str]`, `build_kubectl_argv(...)`, `build_local_argv(...)`, `probe_pod(...) -> Literal["running","gone","forbidden","unknown"]`, `stamp_runtime_location(store)` (reads `POD_NAME`/`POD_NAMESPACE`/`PO_KUBE_CONTEXT` env, no-op when unset).
+- `tests/test_attach.py` — unit (argv builders, target resolution, role disambiguation, stamping no-op vs. set, session-name parity).
+- `tests/test_cli_attach.py` — unit (Typer CliRunner; mocks `os.execvp` and `attach.probe_pod`).
+- `tests/e2e/test_attach_kind.py` — opt-in via `PO_E2E_KIND=1` (skipped otherwise); spins/uses a kind cluster, runs the attach roundtrip non-interactively (no real TTY — assert on built argv via a `--print-argv` debug flag).
+- `engdocs/attach.md` — user-facing guide, RBAC requirements, `PO_KUBE_CONTEXT` operator note.
+
+Edited:
+- `prefect_orchestration/cli.py` — register `attach` Typer command; wire `--role`, `--list`, `--print-argv` flags; `os.execvp` for handoff.
+- `prefect_orchestration/sessions.py` — extend `SessionRow` with optional `pod: str | None`; `build_rows` reads `po.k8s_pod` from metadata; `render_table` only adds the POD column when ≥1 row populates it (back-compat narrow output).
+- `prefect_orchestration/agent_session.py` — refactor `TmuxClaudeBackend._session_name` to delegate to `attach.session_name(issue, role)` so name-parity is enforced by a single source of truth.
+- `engdocs/work-pools.md` — short xref to `attach.md` + downward-API env wiring requirement.
+- `k8s/po-worker-deployment.yaml` — add `POD_NAME` / `POD_NAMESPACE` downward-API env vars; document `PO_KUBE_CONTEXT` (operator-supplied) under env.
+- `CLAUDE.md` — one-line entry under "Common workflows" pointing at `po attach`.
+
+Out of scope (per issue):
+- Web-terminal (ttyd) lurking — separate bead.
+- Cross-cluster federation — single kubeconfig context per call.
+- Pack-side caller of `stamp_runtime_location` — landed in core; the `software-dev` pack flow-entry path will adopt it in a follow-up bead. Until then, runs without the stamp degrade gracefully to the local-tmux fallback (acceptance #2 still passes).
 
 ## Approach
 
-1. **Surface area first**: keep the CLI thin (typer command in `cli.py`), put all decision logic + subprocess wrappers in `attach.py` so it's pure-test-friendly. Mirror the structure of `run_lookup.py` / `sessions.py`.
-2. **Session-name parity**: `TmuxClaudeBackend._session_name` already sanitises dots → underscores. The new helper `attach.session_name(issue, role)` is the single shared definition; refactor `TmuxClaudeBackend` to call it (small, low-risk).
-3. **Bead-metadata stamping**: pack-side flows call a new core helper `stamp_runtime_location(store)` that reads `POD_NAME`/`POD_NAMESPACE`/`PO_KUBE_CONTEXT` env vars and writes the three `po.k8s_*` keys (or skips when unset → host run). Free-form metadata, no schema migration. Triage's option (a) — operator-supplied `PO_KUBE_CONTEXT` — is what we ship; (b)/(c) are noted as future work in `engdocs/attach.md`.
-4. **Process replacement**: `os.execvp` for the actual attach so signals/TTY flow naturally; `--dry-run` returns the argv as a string for tests/scripting.
-5. **Stale-pod detection**: `kubectl get pod -o json --context X -n NS POD` before the exec; parse `.status.phase` and the not-found stderr. Map to a clean error with a `po retry` hint.
-6. **Role disambiguation**: derive roles from `metadata.json` `session_<role>` keys. If `--role` omitted: exactly-one ⇒ pick; >1 + TTY ⇒ prompt with numbered list; >1 + non-TTY ⇒ error suggesting `--list` and `--role`.
-7. **`po sessions` POD column**: opt-in based on metadata presence. Existing tests stay green because the column is suppressed when no `po.k8s_pod` is set.
+1. **Metadata stamping (core helper, formula-agnostic).**
+   `attach.stamp_runtime_location(store: MetadataStore) -> None` reads
+   `POD_NAME`, `POD_NAMESPACE`, and `PO_KUBE_CONTEXT` from `os.environ`.
+   When `POD_NAME` is set it writes `po.k8s_pod`, `po.k8s_namespace`,
+   and (if present) `po.k8s_context` via `store.set(...)` alongside the
+   existing `po.rig_path` / `po.run_dir` stamps in
+   `prompt_formula.py` (lines ~200–205). When `POD_NAME` is unset the
+   helper is a no-op — host runs leave the metadata clean and
+   `po attach` falls through to local tmux.
 
-## Acceptance criteria (verbatim from issue)
+2. **Resolution logic (`resolve_attach_target`).**
+   - Look up the run via `run_lookup.resolve_run_dir(issue_id)` and the
+     bead via `BeadsStore.all(issue_id)`.
+   - If `po.k8s_pod` set → build a `K8sTarget(context, namespace, pod, session)`.
+   - If unset → build a `LocalTarget(session)`.
+   - Session name: `attach.session_name(issue, role)` =
+     `f"po-{issue.replace('.', '_')}-{role.replace('.', '_')}"` (the
+     same rule as `TmuxClaudeBackend._session_name`).
+
+3. **Role disambiguation.**
+   Roles come from the run_dir's `metadata.json` (per-role Claude
+   session UUIDs are already stored there by the existing
+   `AgentSession` flow). `discover_roles(run_dir)` returns sorted role
+   names. Behavior:
+   - `--role X` and X is a known role → use it (no listing).
+   - `--role` omitted, exactly one role → use it.
+   - `--role` omitted, multiple roles, **TTY**: print numbered list + prompt.
+   - `--role` omitted, multiple roles, **non-TTY**: list to stderr, exit 2 with "specify --role". (No surprise blocking in CI.)
+   - `--list` flag → print rows and exit 0 without attaching.
+
+4. **Stale-pod / RBAC handling (`probe_pod`).**
+   Before `execvp`, run `kubectl --context <ctx> -n <ns> get pod <pod>
+   -o json` (subprocess.run, capture). Map exit codes / JSON status:
+   - exit 0 + `.status.phase == "Running"` → proceed.
+   - stderr contains `NotFound` or pod not in Running phase → exit 1
+     with `pod gone, run was on <pod-name> — try 'po retry <issue-id>'`.
+   - stderr contains `forbidden` (HTTP 403) → exit 1 with `RBAC: caller
+     needs pods/exec in <ns>`.
+   - any other error → exit 1, surface stderr verbatim.
+
+5. **TTY handoff.**
+   Use `os.execvp("kubectl", argv)` (or `os.execvp("tmux", argv)` for
+   local) to replace the `po` process — both `kubectl exec -it` and
+   `tmux attach` need a real TTY, and pipe-mode `subprocess.run` would
+   garble tmux. This mirrors the existing `os.execvp("tail", …)` path
+   in `logs --follow`.
+
+6. **`po sessions` POD column.**
+   `sessions.build_rows` reads `po.k8s_pod` from bead metadata for the
+   issue (same `BeadsStore` it already uses) and stores `pod` on each
+   row. `render_table` only emits the POD column header when at least
+   one row has `pod is not None` (preserves current narrow output for
+   pure-host users).
+
+7. **Operator note.**
+   The pod doesn't know the user's local kubeconfig context label, so
+   the operator must set `PO_KUBE_CONTEXT` on the Deployment when k8s
+   workers are involved. Documented in `engdocs/attach.md` and
+   `engdocs/work-pools.md`. When `po.k8s_pod` is set but `po.k8s_context`
+   is missing, `po attach` warns and lets `kubectl` pick the user's
+   current-context (matches the issue's "single kubeconfig context per
+   attach call" scope).
+
+## Acceptance criteria (verbatim from the issue)
 
 - `po attach <issue>` attaches to a running k8s-pod tmux session given a kubeconfig context.
 - Falls back to local tmux when bead has no k8s metadata.
@@ -65,26 +107,32 @@
 
 | AC | Concrete check |
 |---|---|
-| k8s attach works | Unit: fixture bead with `po.k8s_*` set + `metadata.json` containing one `session_builder`; `po attach <id> --dry-run` emits exactly `kubectl --context <ctx> -n <ns> exec -it <pod> -- tmux attach -t po-<safe-issue>-builder`. Manual smoke documented in `engdocs/attach.md`: against the kind cluster spun up by `scripts/smoke-compose.sh`-equivalent, real attach reaches the tmux pane (Ctrl-b d detaches cleanly). |
-| Local fallback | Unit: bead has `po.rig_path`/`po.run_dir` but no `po.k8s_*`; `po attach <id> --dry-run` emits `tmux attach -t po-<safe-issue>-<role>`. |
-| `--role` selection | Unit: `metadata.json` has multiple `session_<role>` keys; `po attach <id> --role builder --dry-run` picks the builder session; ambiguous + non-TTY exits 5 with a message naming the available roles. |
-| Stale pod | Unit: mock `kubectl get pod` returning `NotFound`; `po attach <id>` exits 4 with `pod gone, run was on <pod-name>` and `try: po retry <id>` strings. |
-| Tests (unit + e2e) | `tests/test_attach.py` (subprocess mocked), `tests/test_cli_attach.py` (Typer runner + monkeypatched `bd`/`kubectl`). e2e against kind: extend `tests/test_cloud_smoke_scripts.py` (or a new `tests/e2e/test_attach_kind.py`) gated on `KIND_CLUSTER` env; CI keeps it skipped by default since kind boot is heavy — runs locally via `scripts/cloud-smoke-*.sh`. |
-| Docs | `engdocs/attach.md` exists and is linked from `engdocs/work-pools.md` and the project `CLAUDE.md`. Validate via `grep` in a doc-link sanity test. |
+| Attach to k8s pod | `tests/test_attach.py::test_resolve_target_k8s` builds a stamped bead fixture (k8s_pod/ns/context set) and asserts `build_kubectl_argv` produces `["kubectl", "--context", "ctx", "-n", "ns", "exec", "-it", "pod", "--", "tmux", "attach", "-t", "po-issue-builder"]`. `tests/test_cli_attach.py::test_attach_execs_kubectl` asserts `os.execvp` was called with that argv and probe_pod returns "running". |
+| Local fallback | `tests/test_attach.py::test_resolve_target_local_when_no_k8s_meta` and `tests/test_cli_attach.py::test_attach_execs_local_tmux` assert local-tmux argv `["tmux", "attach", "-t", "po-issue-builder"]`. |
+| `--role builder` selects a specific role | `tests/test_cli_attach.py::test_role_flag_selects` (multiple roles in metadata; `--role builder` picks builder without prompting). |
+| Unit (mock kubectl) | All `tests/test_attach.py` + `tests/test_cli_attach.py` mock `subprocess.run` for the `kubectl get pod` probe and `os.execvp` for the handoff — no real cluster. |
+| e2e against kind | `tests/e2e/test_attach_kind.py` (`PO_E2E_KIND=1`-gated; skipped in default `pytest`) creates a kind cluster, deploys a minimal pod with a long-running `tmux new -d -s po-demo-builder 'sleep 600'`, stamps the bead, and runs `po attach demo --print-argv` (non-interactive debug flag) to assert the right argv was built. |
+| Doc | `engdocs/attach.md` exists; `engdocs/work-pools.md` xrefs it. CI grep check: `tests/e2e/test_docs.py`-style assertion (existing pattern in repo) or a small unit asserting the file is non-empty + mentions `PO_KUBE_CONTEXT`. |
 
-## Test plan
+## Test plan (layers)
 
-- **Unit (`tests/test_attach.py`)** — argv builders, session-name parity with `TmuxClaudeBackend`, role discovery, `resolve_attach_target`, `probe_pod` parsing, `stamp_runtime_location` env matrix.
-- **CLI (`tests/test_cli_attach.py`)** — Typer `CliRunner` with monkeypatched `_run_lookup`, `BeadsStore`, and `subprocess.run` for `kubectl`. Covers happy paths, `--list`, `--dry-run`, ambiguous role, stale pod, missing metadata.
-- **Sessions table (`tests/test_sessions.py`)** — POD column appears/disappears based on metadata.
-- **e2e (`tests/e2e/test_attach_kind.py`, gated)** — opt-in test that creates a kind cluster, deploys the worker manifest, runs a stub formula, asserts `po attach --dry-run` resolves the pod and that the kubectl argv is consumable. Skipped unless `PO_E2E_KIND=1`.
-- No playwright (CLI-only feature).
+- **unit** (`tests/test_attach.py`, `tests/test_cli_attach.py`, `tests/test_sessions.py` extension):
+  - argv builders (k8s + local).
+  - role disambiguation (single/multi/TTY/non-TTY/`--list`/`--role` happy + unknown).
+  - `stamp_runtime_location` no-op when `POD_NAME` unset; writes 3 keys when set; omits `po.k8s_context` when `PO_KUBE_CONTEXT` unset.
+  - `probe_pod` branches: running / NotFound / forbidden / generic-error (mock `subprocess.run`).
+  - `sessions.render_table` POD column visibility (back-compat).
+  - session-name parity: `attach.session_name == TmuxClaudeBackend._session_name` for a sample matrix.
+- **playwright**: N/A (no UI).
+- **e2e** (`tests/e2e/test_attach_kind.py`): one happy-path argv assertion against a kind cluster, `PO_E2E_KIND=1`-gated. Default suite skips. Default suite covers the `po` CLI roundtrip in non-k8s mode (host fallback) under `tests/e2e/test_attach_local.py` — spawns a real `tmux new -d -s po-demo-builder` and asserts `po attach demo --print-argv` returns the matching argv (no real `execvp` so the test doesn't hijack the runner's TTY).
+
+Layer separation reminder (per CLAUDE.md "Test layers"): the local-fallback e2e only goes in `tests/e2e/` if it spawns the real `po` binary + real tmux; the in-process Typer-runner version goes in `tests/`. We pick **one** layer per assertion to keep `software_dev_full`'s parallel `unit`/`e2e` runs from double-counting.
 
 ## Risks
 
-- **Kubeconfig context discovery is operator-supplied** (`PO_KUBE_CONTEXT`). If the env var is missing, `po attach` falls back to the user's *current* kubectl context — silent footgun for multi-cluster users. Mitigation: when `po.k8s_pod` is set but `po.k8s_context` is not, print a one-line warning before exec.
-- **`kubectl exec -it` TTY**: confirmed `os.execvp` (process replacement) is required; subprocess pipes break tmux's PTY handling. Tests cover argv only; live attach is documented manual smoke.
-- **Pack-side dependency**: this lands the helper but doesn't actually start stamping `po.k8s_*` until the pack flows call `stamp_runtime_location`. We'll log a follow-up bead targeting `../software-dev/po-formulas/` and note the integration step in `lessons-learned.md`. The local-fallback path keeps `po attach` useful in the meantime.
-- **`po sessions` table change** is back-compat (POD column suppressed when absent), but downstream parsers that split on whitespace could miscount columns. No known consumers in core; flagged in changelog.
-- **RBAC**: callers without `pods/exec` see a raw 403 from kubectl. We catch the kubectl exit and surface a "your kubeconfig context lacks pods/exec on namespace <ns>" hint.
-- **No API contract changes**, no migrations, no breaking consumers.
+- **`PO_KUBE_CONTEXT` operator footgun.** A wrong context env on the Deployment makes every `po attach` from any user route through the wrong cluster. Mitigation: warn loudly when context is unset; document the mapping in `engdocs/attach.md`; `po doctor` could optionally validate the value resolves in the user's local kubeconfig (follow-up).
+- **`os.execvp` requires a real TTY.** Tests must mock it; the `--print-argv` debug flag exists specifically so e2e can assert without losing control of pytest's stdout. CI should not invoke `po attach` without `--print-argv`.
+- **Pack-side dependency for full AC #1.** The pack's flow-entry path needs to call `stamp_runtime_location`. Until that lands in `../software-dev/po-formulas`, AC #1 is exercisable only via test fixtures that pre-populate the metadata. The fallback path (AC #2) keeps `po attach` useful in the meantime; the pack-side change is a small follow-up bead.
+- **`SessionRow` schema bump.** Adding `pod: str | None` is back-compat for in-process callers but any pickled rows in flight would lack the field — none exist (rows are rebuilt per call), so risk is nil. Worth a one-line note in the changelog.
+- **RBAC errors.** Users without `pods/exec` in the namespace will see 403s. Plan surfaces the actionable message; can't fix RBAC from here.
+- **Session-name churn.** Refactoring `TmuxClaudeBackend._session_name` to call `attach.session_name` must preserve byte-exact output — covered by the parity test. If we ever change the rule, all live sessions across all rigs become unreachable; treat the helper as a stable contract.

@@ -24,6 +24,81 @@ set -euo pipefail
 
 mkdir -p "$HOME/.claude"
 
+# ----------------------------------------------- Multi-account pool resolution
+# CLAUDE_CREDENTIALS_POOL / ANTHROPIC_API_KEY_POOL — JSON arrays. When the
+# corresponding single-account env is unset, deterministically pick one slot
+# based on HOSTNAME so each replica routes to the same account across restarts.
+# Override with PO_CREDENTIALS_POOL_INDEX / PO_API_KEY_POOL_INDEX (test hook).
+# Single-account envs always win — the pool only fills in when they're absent.
+PO_AUTH_POOL_INDEX=""
+PO_AUTH_POOL_SIZE=""
+
+# Hash a string deterministically into [0, n). Uses sha256 (portable across
+# alpine/ubuntu) and the first 8 hex chars (32-bit). For StatefulSet-style
+# ordinal hostnames (`worker-7`), short-circuit to `7 % n` so spread is exact
+# when replicas % pool_size == 0. Generic Deployment pods get the sha256-mod
+# fallback (statistically even, not exact).
+_po_pick_index() {
+  local hostname="$1" size="$2" idx
+  if [[ "$hostname" =~ -([0-9]+)$ ]]; then
+    idx="${BASH_REMATCH[1]}"
+  else
+    local hex
+    hex=$(printf '%s' "$hostname" | sha256sum | cut -c1-8)
+    idx=$((16#$hex))
+  fi
+  echo $(( idx % size ))
+}
+
+if [[ -z "${CLAUDE_CREDENTIALS:-}" && -n "${CLAUDE_CREDENTIALS_POOL:-}" ]]; then
+  if ! pool_size=$(printf '%s' "$CLAUDE_CREDENTIALS_POOL" | jq 'length' 2>/dev/null) \
+       || [[ -z "$pool_size" || "$pool_size" -lt 1 ]]; then
+    echo "error: invalid CLAUDE_CREDENTIALS_POOL JSON (must be a non-empty array)" >&2
+    exit 64
+  fi
+  if [[ -n "${PO_CREDENTIALS_POOL_INDEX:-}" ]]; then
+    pool_idx="$PO_CREDENTIALS_POOL_INDEX"
+  else
+    pool_idx=$(_po_pick_index "${HOSTNAME:-localhost}" "$pool_size")
+  fi
+  if (( pool_idx < 0 || pool_idx >= pool_size )); then
+    echo "error: PO_CREDENTIALS_POOL_INDEX=$pool_idx out of range [0,$pool_size)" >&2
+    exit 64
+  fi
+  # Extract the chosen slot — raw JSON object, not a quoted string.
+  CLAUDE_CREDENTIALS=$(printf '%s' "$CLAUDE_CREDENTIALS_POOL" | jq -c ".[$pool_idx]")
+  export CLAUDE_CREDENTIALS
+  PO_AUTH_POOL_INDEX="$pool_idx"
+  PO_AUTH_POOL_SIZE="$pool_size"
+fi
+unset CLAUDE_CREDENTIALS_POOL || true
+
+if [[ -z "${ANTHROPIC_API_KEY:-}" && -n "${ANTHROPIC_API_KEY_POOL:-}" ]]; then
+  if ! pool_size=$(printf '%s' "$ANTHROPIC_API_KEY_POOL" | jq 'length' 2>/dev/null) \
+       || [[ -z "$pool_size" || "$pool_size" -lt 1 ]]; then
+    echo "error: invalid ANTHROPIC_API_KEY_POOL JSON (must be a non-empty array)" >&2
+    exit 64
+  fi
+  if [[ -n "${PO_API_KEY_POOL_INDEX:-}" ]]; then
+    pool_idx="$PO_API_KEY_POOL_INDEX"
+  else
+    pool_idx=$(_po_pick_index "${HOSTNAME:-localhost}" "$pool_size")
+  fi
+  if (( pool_idx < 0 || pool_idx >= pool_size )); then
+    echo "error: PO_API_KEY_POOL_INDEX=$pool_idx out of range [0,$pool_size)" >&2
+    exit 64
+  fi
+  ANTHROPIC_API_KEY=$(printf '%s' "$ANTHROPIC_API_KEY_POOL" | jq -r ".[$pool_idx]")
+  export ANTHROPIC_API_KEY
+  # Pool index/size only logged for the OAuth path if it was set there;
+  # API-key pool overrides only if OAuth pool didn't set it.
+  if [[ -z "$PO_AUTH_POOL_INDEX" ]]; then
+    PO_AUTH_POOL_INDEX="$pool_idx"
+    PO_AUTH_POOL_SIZE="$pool_size"
+  fi
+fi
+unset ANTHROPIC_API_KEY_POOL || true
+
 # ---------------------------------------------------------------- OAuth
 # Precedence (deliberately on-disk-first so PVC-persisted refreshes are
 # not clobbered by a stale Secret on every pod restart — see tyf.3):
@@ -52,7 +127,13 @@ elif [[ -n "${CLAUDE_CREDENTIALS:-}" ]]; then
   PO_AUTH_SOURCE="env"
 fi
 # One-line audit log: which path won. Never echoes secret contents.
-echo "po-entrypoint: auth=${PO_AUTH_MODE} source=${PO_AUTH_SOURCE:-apikey}" >&2
+# When a pool was used, append `pool index=<i> size=<n>` so operators can
+# correlate replica → account without dumping credential bodies.
+if [[ -n "$PO_AUTH_POOL_INDEX" ]]; then
+  echo "po-entrypoint: auth=${PO_AUTH_MODE} source=${PO_AUTH_SOURCE:-apikey} pool index=${PO_AUTH_POOL_INDEX} size=${PO_AUTH_POOL_SIZE}" >&2
+else
+  echo "po-entrypoint: auth=${PO_AUTH_MODE} source=${PO_AUTH_SOURCE:-apikey}" >&2
+fi
 
 # ----------------------------------------------------------- API-key path
 # Workers normally need ANTHROPIC_API_KEY to actually call Claude when
@@ -155,5 +236,9 @@ export PO_RIG_PATH="${PO_RIG_PATH:-/rig}"
 
 export PO_AUTH_MODE
 export PO_AUTH_SOURCE
+if [[ -n "$PO_AUTH_POOL_INDEX" ]]; then
+  export PO_AUTH_POOL_INDEX
+  export PO_AUTH_POOL_SIZE
+fi
 
 exec "$@"

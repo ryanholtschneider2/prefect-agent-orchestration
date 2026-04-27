@@ -55,17 +55,33 @@ spec:
             - name: PO_BACKEND
               value: {{ .Values.worker.backend | quote }}
             {{- if eq .Values.auth.mode "apikey" }}
+            {{- if .Values.auth.apikey.pool.enabled }}
+            - name: ANTHROPIC_API_KEY_POOL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.apikey.pool.secretName }}
+                  key: {{ .Values.auth.apikey.pool.secretKey }}
+            {{- else }}
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.auth.apikey.secretName }}
                   key: {{ .Values.auth.apikey.secretKey }}
+            {{- end }}
             {{- else if eq .Values.auth.mode "oauth" }}
+            {{- if .Values.auth.oauth.pool.enabled }}
+            - name: CLAUDE_CREDENTIALS_POOL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.oauth.pool.secretName }}
+                  key: {{ .Values.auth.oauth.pool.secretKey }}
+            {{- else }}
             - name: CLAUDE_CREDENTIALS
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.auth.oauth.secretName }}
                   key: {{ .Values.auth.oauth.secretKey }}
+            {{- end }}
             {{- end }}
             {{- with .Values.worker.extraEnv }}
             {{- toYaml . | nindent 12 }}

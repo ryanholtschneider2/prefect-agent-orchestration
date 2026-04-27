@@ -136,6 +136,18 @@ auth:
     secretKey: ANTHROPIC_API_KEY
     createSecret: false
     apiKey: ""
+    # Multi-account pool (5wk.3). When `enabled=true`, the worker reads
+    # ANTHROPIC_API_KEY_POOL from `secretName/secretKey` (a JSON array of
+    # api-key strings) instead of ANTHROPIC_API_KEY, and the entrypoint
+    # picks one slot per replica via hash(HOSTNAME) % size. Mutually
+    # exclusive with the single-key path on a given Deployment.
+    pool:
+      enabled: false
+      size: 0                    # asserted == len(apiKeys) when createSecret
+      secretName: anthropic-api-key-pool
+      secretKey: pool
+      createSecret: false
+      apiKeys: []                # list[string]; only honoured when createSecret
 
   oauth:
     secretName: claude-oauth
@@ -153,6 +165,19 @@ auth:
       accessMode: ReadWriteOnce
       size: 1Gi
       storageClass: ""
+    # Multi-account pool (5wk.3). When `enabled=true`, the worker reads
+    # CLAUDE_CREDENTIALS_POOL from `secretName/secretKey` (a JSON array of
+    # credentials.json blobs) instead of CLAUDE_CREDENTIALS, and picks one
+    # slot per replica deterministically. Out-of-band Secret recipe:
+    #   kubectl create secret generic claude-oauth-pool \
+    #     --from-file=pool=<(jq -s . cred1.json cred2.json … credN.json)
+    pool:
+      enabled: false
+      size: 0
+      secretName: claude-oauth-pool
+      secretKey: pool
+      createSecret: false
+      credentials: []            # list[object]; only honoured when createSecret
 
 # ---------------------------------------------------------------------------
 # claude-context-overrides ConfigMap (tyf.2). The real overlay flow is

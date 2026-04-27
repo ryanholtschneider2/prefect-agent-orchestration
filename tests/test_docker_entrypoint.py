@@ -23,6 +23,7 @@ import os
 import shutil
 import stat
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -188,6 +189,223 @@ def test_entrypoint_does_not_set_x() -> None:
             continue
         assert stripped != "set -x"
         assert "set -x" not in stripped or "set -euo" in stripped
+
+
+# --------------------------------------------------------------------------
+# Multi-account credential pool (5wk.3)
+# --------------------------------------------------------------------------
+
+
+def _run_with_hostname(env: dict[str, str], home: Path, hostname: str) -> subprocess.CompletedProcess:
+    base = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(home),
+        "HOSTNAME": hostname,
+    }
+    base.update(env)
+    return subprocess.run(
+        ["bash", str(ENTRYPOINT), "/usr/bin/env"],
+        env=base,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_oauth_pool_picks_slot_by_ordinal_hostname(home: Path) -> None:
+    """StatefulSet-style ordinal hostname (`worker-7`) → 7 % size."""
+    pool = json.dumps([{"access_token": f"t{i}"} for i in range(3)])
+    res = _run_with_hostname(
+        {"CLAUDE_CREDENTIALS_POOL": pool, "PO_BACKEND": "cli"},
+        home,
+        hostname="worker-7",
+    )
+    assert res.returncode == 0, res.stderr
+    # 7 % 3 == 1 → second element
+    cred = json.loads((home / ".claude" / ".credentials.json").read_text())
+    assert cred == {"access_token": "t1"}
+    assert "pool index=1 size=3" in res.stderr
+    assert "PO_AUTH_POOL_INDEX=1" in res.stdout
+    assert "PO_AUTH_POOL_SIZE=3" in res.stdout
+    # Pool env scrubbed before exec.
+    assert "CLAUDE_CREDENTIALS_POOL=" not in res.stdout
+    # Credential body must NOT appear in the audit log line.
+    assert "t1" not in res.stderr
+    assert "access_token" not in res.stderr
+
+
+def test_oauth_pool_index_override(home: Path) -> None:
+    pool = json.dumps([{"access_token": f"t{i}"} for i in range(4)])
+    res = _run_with_hostname(
+        {
+            "CLAUDE_CREDENTIALS_POOL": pool,
+            "PO_CREDENTIALS_POOL_INDEX": "3",
+            "PO_BACKEND": "cli",
+        },
+        home,
+        hostname="worker-99",  # would otherwise hash to something else
+    )
+    assert res.returncode == 0, res.stderr
+    cred = json.loads((home / ".claude" / ".credentials.json").read_text())
+    assert cred == {"access_token": "t3"}
+    assert "pool index=3 size=4" in res.stderr
+
+
+def test_single_credentials_beats_pool(home: Path) -> None:
+    """CLAUDE_CREDENTIALS env wins over CLAUDE_CREDENTIALS_POOL."""
+    single = '{"access_token": "single"}'
+    pool = json.dumps([{"access_token": f"t{i}"} for i in range(3)])
+    res = _run_with_hostname(
+        {
+            "CLAUDE_CREDENTIALS": single,
+            "CLAUDE_CREDENTIALS_POOL": pool,
+            "PO_BACKEND": "cli",
+        },
+        home,
+        hostname="worker-1",
+    )
+    assert res.returncode == 0, res.stderr
+    assert (home / ".claude" / ".credentials.json").read_text() == single
+    # Pool was ignored — no pool_index in audit log.
+    assert "pool index=" not in res.stderr
+    # Both pool envs scrubbed.
+    assert "CLAUDE_CREDENTIALS_POOL=" not in res.stdout
+    assert "CLAUDE_CREDENTIALS=" not in res.stdout
+
+
+def test_apikey_pool_picks_slot(home: Path) -> None:
+    pool = json.dumps([f"sk-{c * 20}" for c in "abcde"])
+    res = _run_with_hostname(
+        {"ANTHROPIC_API_KEY_POOL": pool, "PO_BACKEND": "cli"},
+        home,
+        hostname="worker-2",
+    )
+    assert res.returncode == 0, res.stderr
+    # 2 % 5 == 2 → "sk-cccccccccccccccccccc" (last 20 chars logged in approval)
+    cfg = json.loads((home / ".claude.json").read_text())
+    expected = "sk-" + ("c" * 20)
+    assert cfg["customApiKeyResponses"]["approved"] == [expected[-20:]]
+    assert "pool index=2 size=5" in res.stderr
+    assert "ANTHROPIC_API_KEY_POOL=" not in res.stdout
+    # The chosen api key value DOES appear in env (worker needs it). Make
+    # sure the pool blob (other keys) was scrubbed.
+    assert "aaaaaaaaaaaaaaaaaaaa" not in res.stdout
+    assert "bbbbbbbbbbbbbbbbbbbb" not in res.stdout
+
+
+def test_apikey_pool_index_override(home: Path) -> None:
+    pool = json.dumps([f"sk-{i * 20}-end" for i in range(3)])
+    res = _run_with_hostname(
+        {
+            "ANTHROPIC_API_KEY_POOL": pool,
+            "PO_API_KEY_POOL_INDEX": "0",
+            "PO_BACKEND": "cli",
+        },
+        home,
+        hostname="worker-99",
+    )
+    assert res.returncode == 0, res.stderr
+    assert "pool index=0 size=3" in res.stderr
+
+
+def test_single_apikey_beats_apikey_pool(home: Path) -> None:
+    pool = json.dumps([f"sk-pool-{i}" for i in range(3)])
+    res = _run_with_hostname(
+        {
+            "ANTHROPIC_API_KEY": "sk-single-1234567890abcdef",
+            "ANTHROPIC_API_KEY_POOL": pool,
+            "PO_BACKEND": "cli",
+        },
+        home,
+        hostname="worker-2",
+    )
+    assert res.returncode == 0, res.stderr
+    assert "pool index=" not in res.stderr
+    assert "ANTHROPIC_API_KEY_POOL=" not in res.stdout
+
+
+def test_pool_invalid_json_exits_64(home: Path) -> None:
+    res = _run_with_hostname(
+        {"CLAUDE_CREDENTIALS_POOL": "not-valid-json", "PO_BACKEND": "cli"},
+        home,
+        hostname="worker-0",
+    )
+    assert res.returncode == 64
+    assert "invalid CLAUDE_CREDENTIALS_POOL JSON" in res.stderr
+
+
+def test_pool_empty_array_exits_64(home: Path) -> None:
+    res = _run_with_hostname(
+        {"CLAUDE_CREDENTIALS_POOL": "[]", "PO_BACKEND": "cli"},
+        home,
+        hostname="worker-0",
+    )
+    assert res.returncode == 64
+
+
+def test_pool_index_out_of_range_exits_64(home: Path) -> None:
+    pool = json.dumps([{"access_token": "a"}, {"access_token": "b"}])
+    res = _run_with_hostname(
+        {
+            "CLAUDE_CREDENTIALS_POOL": pool,
+            "PO_CREDENTIALS_POOL_INDEX": "5",
+            "PO_BACKEND": "cli",
+        },
+        home,
+        hostname="worker-0",
+    )
+    assert res.returncode == 64
+    assert "out of range" in res.stderr
+
+
+def test_pool_ordinal_distribution_is_perfect(tmp_path: Path) -> None:
+    """100 ordinal hostnames `worker-0`..`worker-99` with poolSize=10
+    must give exactly 10 replicas per slot — the ordinal fast path."""
+    pool = json.dumps([{"access_token": f"t{i}"} for i in range(10)])
+    counts: Counter[int] = Counter()
+    for n in range(100):
+        home_n = tmp_path / f"home-{n}"
+        home_n.mkdir()
+        res = _run_with_hostname(
+            {"CLAUDE_CREDENTIALS_POOL": pool, "PO_BACKEND": "cli"},
+            home_n,
+            hostname=f"worker-{n}",
+        )
+        assert res.returncode == 0, res.stderr
+        # Extract the chosen index from stderr.
+        for line in res.stderr.splitlines():
+            if "pool index=" in line:
+                idx = int(line.split("pool index=")[1].split()[0])
+                counts[idx] += 1
+                break
+    # Perfect 10-each spread.
+    assert sum(counts.values()) == 100
+    assert all(counts[i] == 10 for i in range(10)), counts
+
+
+def test_pool_hash_distribution_is_reasonable(tmp_path: Path) -> None:
+    """Random (non-ordinal) hostnames hashed mod 10: every bucket hit,
+    no bucket more than 2× the expected mean (10)."""
+    pool = json.dumps([{"access_token": f"t{i}"} for i in range(10)])
+    counts: Counter[int] = Counter()
+    # 100 random-ish hostnames (sha-mod path, not ordinal).
+    for n in range(100):
+        home_n = tmp_path / f"home-{n}"
+        home_n.mkdir()
+        res = _run_with_hostname(
+            {"CLAUDE_CREDENTIALS_POOL": pool, "PO_BACKEND": "cli"},
+            home_n,
+            hostname=f"po-worker-{n:05d}-deadbeef",
+        )
+        assert res.returncode == 0, res.stderr
+        for line in res.stderr.splitlines():
+            if "pool index=" in line:
+                idx = int(line.split("pool index=")[1].split()[0])
+                counts[idx] += 1
+                break
+    assert sum(counts.values()) == 100
+    assert len(counts) == 10, f"some buckets missed: {counts}"
+    assert max(counts.values()) <= 20, f"distribution too skewed: {counts}"
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")

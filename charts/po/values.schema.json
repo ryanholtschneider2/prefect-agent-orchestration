@@ -110,7 +110,18 @@
             "secretName":   { "type": "string", "minLength": 1 },
             "secretKey":    { "type": "string", "minLength": 1 },
             "createSecret": { "type": "boolean" },
-            "apiKey":       { "type": "string" }
+            "apiKey":       { "type": "string" },
+            "pool": {
+              "type": "object",
+              "properties": {
+                "enabled":      { "type": "boolean" },
+                "size":         { "type": "integer", "minimum": 0 },
+                "secretName":   { "type": "string", "minLength": 1 },
+                "secretKey":    { "type": "string", "minLength": 1 },
+                "createSecret": { "type": "boolean" },
+                "apiKeys":      { "type": "array", "items": { "type": "string" } }
+              }
+            }
           }
         },
         "oauth": {
@@ -127,6 +138,17 @@
                 "accessMode":   { "type": "string" },
                 "size":         { "type": "string" },
                 "storageClass": { "type": "string" }
+              }
+            },
+            "pool": {
+              "type": "object",
+              "properties": {
+                "enabled":      { "type": "boolean" },
+                "size":         { "type": "integer", "minimum": 0 },
+                "secretName":   { "type": "string", "minLength": 1 },
+                "secretKey":    { "type": "string", "minLength": 1 },
+                "createSecret": { "type": "boolean" },
+                "credentials":  { "type": "array", "items": { "type": "object" } }
               }
             }
           }

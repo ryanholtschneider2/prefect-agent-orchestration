@@ -141,6 +141,118 @@ def test_helm_template_apikey_create_secret_requires_value() -> None:
     assert "auth.apikey.apiKey" in (res.stdout + res.stderr)
 
 
+# --------------------------------------------------------------------------
+# Multi-account credential pool (5wk.3)
+# --------------------------------------------------------------------------
+
+
+def _worker_env(docs: list[dict]) -> list[dict]:
+    workers = [
+        d for d in docs if d["kind"] == "Deployment"
+        and "worker" in d["metadata"]["name"]
+    ]
+    assert len(workers) == 1
+    return workers[0]["spec"]["template"]["spec"]["containers"][0]["env"]
+
+
+@pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
+def test_oauth_pool_wires_pool_env() -> None:
+    rendered = _helm_template(
+        "--set", "auth.mode=oauth",
+        "--set", "auth.oauth.pool.enabled=true",
+        "--set", "auth.oauth.pool.secretName=claude-oauth-pool",
+        "--set", "auth.oauth.pool.secretKey=pool",
+    )
+    docs = _docs(rendered)
+    env = _worker_env(docs)
+    names = {e["name"] for e in env}
+    assert "CLAUDE_CREDENTIALS_POOL" in names
+    assert "CLAUDE_CREDENTIALS" not in names
+    pool_env = next(e for e in env if e["name"] == "CLAUDE_CREDENTIALS_POOL")
+    ref = pool_env["valueFrom"]["secretKeyRef"]
+    assert ref["name"] == "claude-oauth-pool"
+    assert ref["key"] == "pool"
+
+
+@pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
+def test_apikey_pool_wires_pool_env() -> None:
+    rendered = _helm_template(
+        "--set", "auth.mode=apikey",
+        "--set", "auth.apikey.pool.enabled=true",
+    )
+    docs = _docs(rendered)
+    env = _worker_env(docs)
+    names = {e["name"] for e in env}
+    assert "ANTHROPIC_API_KEY_POOL" in names
+    assert "ANTHROPIC_API_KEY" not in names
+    pool_env = next(e for e in env if e["name"] == "ANTHROPIC_API_KEY_POOL")
+    ref = pool_env["valueFrom"]["secretKeyRef"]
+    assert ref["name"] == "anthropic-api-key-pool"
+    assert ref["key"] == "pool"
+
+
+@pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
+def test_oauth_pool_create_secret_renders_pool_secret() -> None:
+    rendered = _helm_template(
+        "--set", "auth.mode=oauth",
+        "--set", "auth.oauth.pool.enabled=true",
+        "--set", "auth.oauth.pool.createSecret=true",
+        "--set", "auth.oauth.pool.size=2",
+        "--set-json", 'auth.oauth.pool.credentials=[{"access_token":"a"},{"access_token":"b"}]',
+    )
+    docs = _docs(rendered)
+    secrets = [d for d in docs if d["kind"] == "Secret"]
+    pool_secrets = [s for s in secrets if s["metadata"]["name"] == "claude-oauth-pool"]
+    assert len(pool_secrets) == 1
+    payload = pool_secrets[0]["stringData"]["pool"]
+    arr = yaml.safe_load(payload)  # JSON is valid YAML
+    assert isinstance(arr, list) and len(arr) == 2
+    assert arr[0] == {"access_token": "a"}
+
+
+@pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
+def test_apikey_pool_size_mismatch_fails() -> None:
+    res = subprocess.run(
+        [
+            "helm", "template", "po", str(CHART_DIR),
+            "--set", "auth.mode=apikey",
+            "--set", "auth.apikey.pool.enabled=true",
+            "--set", "auth.apikey.pool.createSecret=true",
+            "--set", "auth.apikey.pool.size=5",
+            "--set", "auth.apikey.pool.apiKeys={sk-aa,sk-bb}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0
+    output = res.stdout + res.stderr
+    assert "must match" in output or "size=5" in output
+
+
+@pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
+def test_oauth_pool_create_secret_requires_credentials() -> None:
+    res = subprocess.run(
+        [
+            "helm", "template", "po", str(CHART_DIR),
+            "--set", "auth.mode=oauth",
+            "--set", "auth.oauth.pool.enabled=true",
+            "--set", "auth.oauth.pool.createSecret=true",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode != 0
+    assert "credentials" in (res.stdout + res.stderr)
+
+
+def test_auth_md_documents_pool() -> None:
+    doc = (REPO_ROOT / "engdocs" / "auth.md").read_text()
+    assert "CLAUDE_CREDENTIALS_POOL" in doc
+    assert "ANTHROPIC_API_KEY_POOL" in doc
+
+
 def test_workpools_doc_mentions_helm_path() -> None:
     doc = (REPO_ROOT / "engdocs" / "work-pools.md").read_text()
     assert "helm install po ./charts/po" in doc

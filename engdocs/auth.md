@@ -159,6 +159,125 @@ If a future requirement forces multi-pod OAuth scale-out where (a)'s
 RWO + per-pod constraint breaks down, revisit (b) with an audited
 narrow-scope ServiceAccount.
 
+## Multi-account pool (5wk.3)
+
+For high-fanout deployments (~100 worker replicas hitting Anthropic OAuth
+or API rate limits), a single account is the bottleneck. The entrypoint
+supports a **pool variant** of each auth mode that distributes replicas
+across multiple accounts deterministically.
+
+### Schema and precedence
+
+| Env var | Type | Effect |
+|---|---|---|
+| `CLAUDE_CREDENTIALS` | string (single JSON blob) | Existing single-account path. Wins over `_POOL`. |
+| `CLAUDE_CREDENTIALS_POOL` | JSON array of credential objects | Picks one slot per replica. Ignored if `CLAUDE_CREDENTIALS` is set. |
+| `PO_CREDENTIALS_POOL_INDEX` | integer | Test override; force-pin a specific slot. |
+| `ANTHROPIC_API_KEY` | string | Single-key path. Wins over `_POOL`. |
+| `ANTHROPIC_API_KEY_POOL` | JSON array of strings | Picks one key per replica. |
+| `PO_API_KEY_POOL_INDEX` | integer | Test override. |
+
+Single-env always wins over its `_POOL` counterpart. Pool envs are
+**scrubbed from the child environment** before `exec` so flow workers
+can never observe the full pool blob in `/proc/<pid>/environ`.
+
+The audit log gains a suffix when a pool was used:
+
+```
+po-entrypoint: auth=oauth source=env pool index=3 size=10
+```
+
+Index and size are the only pool details emitted; credential bodies
+never touch the log.
+
+### Hash semantics — ordinal fast path + sha256 fallback
+
+`_po_pick_index(hostname, size)`:
+
+- If `hostname` ends in `-<int>` (StatefulSet ordinal: `worker-0`,
+  `worker-7`, …), use that integer mod `size`. Spread is **exact** when
+  `replicas % size == 0`.
+- Otherwise, hash `hostname` with `sha256sum`, take the first 8 hex
+  chars (32-bit), and mod by `size`. Statistically even, not exact.
+
+Operators wanting perfectly even spread should deploy the worker as a
+StatefulSet (so kubelet assigns ordinal hostnames) and size replicas
+as a multiple of `poolSize`. Plain Deployments with random-suffix pod
+names (`po-worker-7d4f9-abcde`) get the sha-mod fallback — for 100
+replicas / 10 accounts, expected stdev ≈ 3, worst-case bucket ≈ 13–14.
+
+### Chart wiring
+
+`values.yaml`:
+
+```yaml
+auth:
+  mode: oauth                # or apikey
+  oauth:
+    pool:
+      enabled: true
+      size: 10               # asserted == len(credentials) when createSecret
+      secretName: claude-oauth-pool
+      secretKey: pool        # JSON array, one key
+      createSecret: false    # operator owns the Secret out-of-band
+      credentials: []        # list[object]; only honoured when createSecret
+  apikey:
+    pool:
+      enabled: false
+      size: 0
+      secretName: anthropic-api-key-pool
+      secretKey: pool
+      createSecret: false
+      apiKeys: []            # list[string]
+```
+
+When `pool.enabled=true`, the worker Deployment swaps the env name
+from `CLAUDE_CREDENTIALS` / `ANTHROPIC_API_KEY` to the `_POOL` variant,
+sourcing from the configured Secret. Single-key and pool paths are
+mutually exclusive on a given Deployment.
+
+### Out-of-band Secret recipes
+
+OAuth pool — preferred (avoids putting credentials in `values.yaml`):
+
+```bash
+kubectl create secret generic claude-oauth-pool \
+  --from-file=pool=<(jq -s . cred1.json cred2.json cred3.json … credN.json)
+```
+
+API-key pool:
+
+```bash
+kubectl create secret generic anthropic-api-key-pool \
+  --from-literal=pool='["sk-aaa","sk-bbb","sk-ccc"]'
+```
+
+`createSecret=true` is provided as a convenience for tests / smoke runs;
+production deployments should leave it `false` and ship the Secret
+through the cluster's existing secret-management path.
+
+### When to use which
+
+| Goal | Recommended mode |
+|---|---|
+| Higher RPS for production traffic | `apikey` pool — N billing-separate Anthropic API keys. |
+| Multi-account sub-billing for dev workers | `oauth` pool — N Claude.ai subscriptions. |
+| Per-replica determinism for replay debugging | Either pool + matching `replicaCount`. Same hostname → same slot across restarts. |
+| Single dev pod | Skip the pool entirely; use the single-env path. |
+
+### Caveats
+
+- **Secret payload size**: 100 OAuth blobs (~2 KB each) ≈ 200 KB. Well
+  under the 1 MiB Secret ceiling but worth monitoring.
+- **Hash uniformity** depends on hostname shape — see "ordinal fast
+  path" above.
+- **Pool rotation**: changing the Secret payload requires pod restart
+  for pickup (env vars are read once at boot). Use
+  `kubectl rollout restart deployment/po-worker` after editing.
+- **Logging**: replicas log `pool index=<i>`. Don't grep on the literal
+  `auth=oauth source=env` line if you've enabled the pool — it now
+  has a trailing `pool ...` suffix.
+
 ## See also
 
 - `docker/entrypoint.sh` — the actual auth bootstrap.
