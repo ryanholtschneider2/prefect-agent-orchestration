@@ -175,9 +175,7 @@ def test_iso_naive_rejected(runner: CliRunner) -> None:
         patch.object(cli, "_load_formulas", return_value={"foo": fake}),
         patch.object(cli._scheduling, "submit_scheduled_run") as submit,
     ):
-        result = runner.invoke(
-            cli.app, ["run", "foo", "--time", "2026-04-25T09:00:00"]
-        )
+        result = runner.invoke(cli.app, ["run", "foo", "--time", "2026-04-25T09:00:00"])
     assert result.exit_code == 2
     assert "timezone" in result.output
     submit.assert_not_called()

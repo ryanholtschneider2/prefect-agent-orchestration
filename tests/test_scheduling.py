@@ -210,7 +210,9 @@ async def test_find_manual_deployment_returns_none_when_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_scheduled_run_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_submit_scheduled_run_raises_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     pytest.importorskip("prefect")
     client = _FakeClient(deployments=[], flow=_FakeFlow("x"))
     with pytest.raises(scheduling.ManualDeploymentMissing) as info:
