@@ -104,6 +104,23 @@ for sibling layer dirs when no `tests/<layer>/` dir is present), so the
 agent can't accidentally widen scope. See
 `software-dev/po-formulas/po_formulas/software_dev.py::_build_test_cmd`.
 
+**Per-rig layer skip via `.po-env`** — the formula reads
+`<rig_path>/.po-env` (KEY=VALUE per line) at flow start and applies any
+keys not already in process env. Recognised:
+
+| Var | Effect |
+|---|---|
+| `PO_SKIP_E2E=1` | skip the `e2e` layer in `[lint ∥ unit ∥ e2e ∥ playwright]` fan-out |
+| `PO_SKIP_PLAYWRIGHT=1` | skip the `playwright` layer (already gated on `has_ui`) |
+| `PO_SKIP_UNIT=1` | skip the `unit` layer (rare — only for pure-docs rigs) |
+
+This rig (`prefect-orchestration`) ships a `.po-env` with `PO_SKIP_E2E=1`
+because `tests/e2e/` subprocesses the real `po` binary on every test
+(52 tests × ~3s subprocess startup = 2+ minutes per `run_tests` call,
+mostly Python import overhead). Unit tests catch the same regressions
+for the kind of changes the actor-critic loop lands. Run e2e manually
+before declaring a release ready: `uv run python -m pytest tests/e2e/`.
+
 ### Core module map
 
 | Module | Role |

@@ -1,0 +1,9 @@
+# Per-rig env defaults read by the software-dev-full formula at flow start.
+# Existing process env takes precedence (set the var explicitly to override).
+
+# tests/e2e/ here subprocesses the real `po` binary on every test, paying
+# ~2-3s startup × 52 tests = 2+ minutes of wall clock per `run_tests` call.
+# Unit tests (~18s for 447 tests) catch the same regressions for the kind
+# of changes we land here. Skip e2e in the normal actor-critic loop —
+# run them manually before declaring a release ready.
+PO_SKIP_E2E=1
