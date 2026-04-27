@@ -23,7 +23,9 @@ def test_no_beads_dir_is_ok(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert "no .beads/" in res.message
 
 
-def test_dolt_server_mode_is_ok(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dolt_server_mode_is_ok(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _write_meta(
         tmp_path,
         {"dolt_mode": "server", "dolt_database": "demo", "dolt_host": "127.0.0.1"},
