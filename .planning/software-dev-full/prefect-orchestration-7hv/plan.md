@@ -1,20 +1,16 @@
-# Plan — prefect-orchestration-7hv
+# Plan: prefect-orchestration-7hv
+
+## Summary
+`ClaudeCliBackend.run()` previously raised `RuntimeError` containing only `stderr` on non-zero exit. In the 2026-04-24 incident, three concurrent builders crashed with empty stderr — undebuggable. The fix surfaces `stdout[:2000]` and the rendered `argv` alongside `stderr[:2000]` in the error message.
+
+Commit `429a360` already landed this change. This plan documents the work for the build/critic/verify pipeline to confirm completeness against acceptance criteria.
 
 ## Affected files
-- `/home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration/prefect_orchestration/agent_session.py` — broaden `ClaudeCliBackend.run()` non-zero exit error to include stdout (and rendered argv).
-- `/home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration/tests/test_agent_session.py` — **new** unit-test file housing the regression.
+- `/home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration/prefect_orchestration/agent_session.py` — error message format in `ClaudeCliBackend.run()` (lines ~166–170).
+- `/home/ryan-24/Desktop/Code/personal/nanocorps/prefect-orchestration/tests/test_agent_session.py` — regression test covering non-zero exit error message (added in 429a360, ~59 lines).
 
 ## Approach
-
-`ClaudeCliBackend.run()` (lines ~165–168 of `agent_session.py`) currently raises:
-
-```python
-raise RuntimeError(
-    f"claude CLI exited {proc.returncode}\nstderr: {proc.stderr[:2000]}"
-)
-```
-
-The 2026-04-24 incident produced empty `stderr`, leaving zero diagnostic signal. Change the message to also include `stdout[:2000]` and the rendered argv, mirroring the format already used by `TmuxClaudeBackend` (line ~518 uses `stdout tail: {stdout[-2000:]}`):
+In `ClaudeCliBackend.run()`, on `proc.returncode != 0`:
 
 ```python
 raise RuntimeError(
@@ -25,33 +21,30 @@ raise RuntimeError(
 )
 ```
 
-The argv is built locally via `_build_claude_argv(...)` and contains no secrets (no env, no prompt — prompt is passed via stdin), so logging it is safe. `_clean_env` already strips sensitive bits from the env passed downstream, but env isn't included in the message.
+`cmd` is the rendered argv list from `_build_claude_argv`. No tokens / secrets are injected into argv (only `--print --output-format json --resume <uuid>` and similar flags), so logging it is safe per triage. Truncation at 2000 chars bounds error-message size in Prefect logs.
 
-Successful runs (`returncode == 0`) hit the `_parse_envelope(...)` return path unchanged → no behavior change on the happy path.
+Successful path is unchanged — the check is gated on `returncode != 0`.
 
 ## Acceptance criteria (verbatim)
-
 1. Non-zero exit RuntimeError includes stdout[:2000];
 2. Regression test in tests/test_agent_session.py locks this;
 3. No behavior change on successful runs.
 
 ## Verification strategy
-
-- **AC1**: New unit test patches `subprocess.run` to return a `CompletedProcess` with `returncode=2`, `stderr=""`, `stdout="boom-on-stdout"`, asserts `RuntimeError` raised and `"boom-on-stdout"` substring in `str(exc)`.
-- **AC2**: The test lives at `tests/test_agent_session.py` (per AC) and is exercised by `uv run python -m pytest tests/test_agent_session.py`.
-- **AC3**: Second unit test patches `subprocess.run` to return `returncode=0` with a valid JSON envelope on stdout, asserts `ClaudeCliBackend().run(...)` returns `(result, session_id)` without raising.
+- **AC1**: Inspect `prefect_orchestration/agent_session.py` `ClaudeCliBackend.run()` non-zero branch — confirm `stdout[:2000]` substring is in the raised message and includes `argv`.
+- **AC2**: `uv run python -m pytest tests/test_agent_session.py -k "nonzero or stdout or runtime_error" -v` — confirm regression test exists, exercises a non-zero exit (likely via monkeypatched `subprocess.run`) with non-empty stdout, and asserts the message contains stdout content + argv.
+- **AC3**: Run the full unit test layer (`uv run python -m pytest tests/ --ignore=tests/e2e --ignore=tests/playwright`) — successful-path tests in `test_agent_session*.py` should still pass.
 
 ## Test plan
-
-- **unit** — only layer applicable. New `tests/test_agent_session.py` with two tests (failure path + happy path). Mocks `subprocess.run` (no real `claude` CLI required), placing it firmly in the unit layer per repo conventions.
-- **e2e** — n/a (no CLI roundtrip change, no new flow surface).
-- **playwright** — n/a (no UI).
-
-Run: `uv run python -m pytest tests/test_agent_session.py -q`.
+- **unit**: primary — `tests/test_agent_session.py` regression test for non-zero exit; existing happy-path tests confirm no behavior change.
+- **e2e**: not required (pure error-formatting change in a backend; already gated by `.po-env PO_SKIP_E2E=1` for this rig).
+- **playwright**: N/A (no UI).
 
 ## Risks
+- **Argv leakage**: confirmed safe — `_build_claude_argv` constructs from `start_command` + `--print`, `--output-format json`, `--model`, `--resume <uuid>`, `--fork-session`. No env tokens, no prompt content, no API keys.
+- **Truncation cap**: 2000 chars per stream is sufficient for Claude CLI error envelopes; larger payloads are unusual and the cap protects log volume.
+- **API contract**: `RuntimeError` type is unchanged; only the message string is enriched. Callers that rely on the type continue to work; any caller string-matching the old message would break, but a grep shows none in-tree.
+- No migrations, no breaking consumers downstream.
 
-- **Sensitive content leakage via stdout**: stdout from Claude could contain transcript fragments. Truncating to 2000 chars matches the existing stderr cap and the TmuxClaudeBackend convention; this is acceptable per the issue's design note.
-- **argv exposure**: `_build_claude_argv` returns a plain argv list with model name, session id, and the `--dangerously-skip-permissions` flag — no API keys or env. Safe to include.
-- **No API-contract change**: `RuntimeError` type and call signature unchanged; only the message string is broader.
-- **Consumer breakage**: any caller string-matching the old error message (e.g. tests) would need to widen its assertion. A grep of `claude CLI exited` confirms only `agent_session.py` (lines 167, 519) emits this — no current consumer pattern-matches it.
+## Note on baseline failures
+The baseline shows 25 pre-existing failures (mail prompt path, overlay materialization, tmux argv, packs CLI, deployments). None are related to `ClaudeCliBackend.run()` non-zero error formatting. Verifier should compare post-change failures against the baseline set and not gate on those.
