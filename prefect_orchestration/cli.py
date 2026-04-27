@@ -33,6 +33,7 @@ from prefect_orchestration import packs as _packs
 from prefect_orchestration import resume as _resume
 from prefect_orchestration import retry as _retry
 from prefect_orchestration import run_lookup as _run_lookup
+from prefect_orchestration import scheduling as _scheduling
 from prefect_orchestration import scratch_loader as _scratch_loader
 from prefect_orchestration import serve as _serve
 from prefect_orchestration import sessions as _sessions
@@ -235,10 +236,21 @@ def run(
         "--name",
         help="When --from-file defines multiple @flow callables, pick this one.",
     ),
+    when: str | None = typer.Option(
+        None,
+        "--time",
+        help="Schedule the formula's <name>-manual deployment for a future "
+        "time instead of running synchronously. Relative duration "
+        "(2h, 30m, 1d, +30m) or ISO-8601 with timezone "
+        "(2026-04-25T09:00:00-04:00 / 2026-04-25T13:00:00Z). Requires "
+        "`po deploy --apply` for <formula>-manual first; CLI prints a "
+        "worker-startup reminder.",
+    ),
 ) -> None:
     """Run a registered formula or an ad-hoc scratch flow.
 
     Registered:  po run software-dev-full --issue-id sr-8yu.3 --rig site --rig-path ./site
+    Scheduled:   po run software-dev-full --time 2h --issue-id ...
     Scratch:     po run --from-file ./my_flow.py [--name foo] --arg value
     """
     _autoconfigure_prefect_api()
@@ -255,6 +267,10 @@ def run(
     if from_file is not None and name is not None:
         typer.echo("specify either a formula name or --from-file, not both.", err=True)
         raise typer.Exit(2)
+
+    if when is not None:
+        _run_scheduled(name=name, from_file=from_file, when=when, extras=extras)
+        return
 
     if from_file is not None:
         try:
@@ -286,6 +302,86 @@ def run(
             typer.echo(f"run `po show {label}` to see the signature", err=True)
         raise typer.Exit(2) from exc
     typer.echo(result)
+
+
+def _run_scheduled(
+    *,
+    name: str | None,
+    from_file: Path | None,
+    when: str,
+    extras: list[str],
+) -> None:
+    """Implementation of `po run <formula> --time <when>`.
+
+    Resolves `<formula>-manual` on the Prefect server (per
+    engdocs/principles.md §1 — collapses
+    `prefect deployment run <flow>/<formula>-manual --start-in 2h`
+    into the by-convention shape) and submits a one-shot scheduled
+    flow-run with the parsed CLI kwargs as parameters.
+    """
+    if from_file is not None:
+        typer.echo(
+            "--time and --from-file are mutually exclusive: scratch flows "
+            "aren't registered as deployments and have no manual deployment "
+            "to schedule against.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if name is None:
+        typer.echo(
+            "--time requires a formula name (no scratch-flow scheduling).",
+            err=True,
+        )
+        raise typer.Exit(2)
+    formulas = _load_formulas()
+    if name not in formulas:
+        typer.echo(f"no formula named {name!r}. Run `po list`.", err=True)
+        raise typer.Exit(1)
+
+    try:
+        when_spec = _scheduling.parse_when(when)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
+
+    kwargs = _parse_kwargs(extras)
+    issue_id = kwargs.get("issue_id")
+
+    import asyncio
+
+    from prefect.client.orchestration import get_client
+
+    async def _go() -> tuple[Any, str]:
+        async with get_client() as client:
+            return await _scheduling.submit_scheduled_run(
+                client=client,
+                formula=name,
+                parameters=kwargs,
+                when=when_spec,
+                issue_id=issue_id if isinstance(issue_id, str) else None,
+            )
+
+    try:
+        flow_run, full_name = asyncio.run(_go())
+    except _scheduling.ManualDeploymentMissing as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(3) from exc
+    except Exception as exc:  # noqa: BLE001 — surface the Prefect failure with a hint
+        api = os.environ.get("PREFECT_API_URL", "<unset>")
+        typer.echo(
+            f"error: could not schedule run via Prefect at {api}: {exc}\n"
+            f"  hint: `po serve install` or `prefect server start` "
+            f"to bring one up.",
+            err=True,
+        )
+        raise typer.Exit(4) from exc
+
+    sched = when_spec.scheduled_time().isoformat()
+    typer.echo(f"scheduled flow-run {flow_run.id} ({full_name}) at {sched}")
+    typer.echo(
+        f"queued for {when}; ensure `prefect worker start --pool po` "
+        f"is running before then."
+    )
 
 
 @app.command()
