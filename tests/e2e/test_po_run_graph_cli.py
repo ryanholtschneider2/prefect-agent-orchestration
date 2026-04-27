@@ -63,8 +63,12 @@ def test_po_run_graph_discovers_via_bd_dep_edges(
     # form — `--quiet` still prints the human-readable creation banner.
     def _create(title: str, kind: str = "task") -> str:
         proc = _bd_in(
-            rig, "create", f"--type={kind}", f"--title={title}",
-            "--priority=2", "--json",
+            rig,
+            "create",
+            f"--type={kind}",
+            f"--title={title}",
+            "--priority=2",
+            "--json",
         )
         return json.loads(proc.stdout)["id"]
 
