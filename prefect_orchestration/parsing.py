@@ -19,6 +19,7 @@ verdicts without reading transcripts.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +50,16 @@ def prompt_for_verdict(
     matters (per parsing.py docstring: file artifacts beat prose
     parsing). ``read_verdict`` raises ``FileNotFoundError`` if the
     agent skipped writing the file.
+
+    When ``PO_RESUME=1`` is set in the environment AND a verdict file
+    for ``name`` already exists, the agent is NOT prompted — the
+    existing verdict is read and returned. This is what `po resume`
+    relies on to skip already-completed steps when relaunching a flow.
     """
+    if os.environ.get("PO_RESUME") == "1":
+        existing = verdicts_dir(run_dir) / f"{name}.json"
+        if existing.exists():
+            return read_verdict(run_dir, name)
     if fork:
         sess.prompt(prompt, fork_session=True)
     else:

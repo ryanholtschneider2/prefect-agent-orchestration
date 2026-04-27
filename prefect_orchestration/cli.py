@@ -30,6 +30,7 @@ from prefect_orchestration import commands as _commands
 from prefect_orchestration import deployments as _deployments
 from prefect_orchestration import doctor as _doctor
 from prefect_orchestration import packs as _packs
+from prefect_orchestration import resume as _resume
 from prefect_orchestration import retry as _retry
 from prefect_orchestration import run_lookup as _run_lookup
 from prefect_orchestration import scratch_loader as _scratch_loader
@@ -674,6 +675,66 @@ def retry(
         typer.echo(f"reopened bead {issue_id}")
     if result.kept_sessions:
         typer.echo("restored metadata.json (--keep-sessions)")
+    typer.echo(result.flow_result)
+
+
+@app.command()
+def resume(
+    issue_id: str = typer.Argument(
+        ..., help="Beads issue id whose flow should be resumed in place."
+    ),
+    rig: str | None = typer.Option(
+        None,
+        "--rig",
+        help="Rig name passed to the formula. Defaults to the rig_path basename.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Skip the in-flight check (Prefect Running runs for this issue).",
+    ),
+    formula: str = typer.Option(
+        _resume.DEFAULT_FORMULA,
+        "--formula",
+        help="Formula entry-point name to relaunch.",
+    ),
+) -> None:
+    """Resume a failed flow without archiving its run_dir.
+
+    Unlike `po retry` (which archives run_dir → `.bak-<utc>` and starts
+    fresh from triage), `po resume` preserves the run_dir as-is. Steps
+    whose `verdicts/<step>.json` already exists are skipped — the
+    formula's `prompt_for_verdict` short-circuits via `PO_RESUME=1` and
+    returns the existing verdict instead of re-prompting the agent.
+
+    Use this when a wave wedges deep in the DAG (e.g. on review with
+    triage/baseline/plan/build/lint/test verdicts already written): it
+    picks up at the failing step instead of burning 10+ min re-running
+    the upstream successes.
+    """
+    try:
+        result = _resume.resume_issue(
+            issue_id,
+            rig=rig,
+            force=force,
+            formula=formula,
+        )
+    except _run_lookup.RunDirNotFound as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    except _resume.ResumeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(exc.exit_code) from exc
+
+    if result.completed_steps:
+        typer.echo(
+            f"resuming {issue_id} — {len(result.completed_steps)} step(s) "
+            f"already complete: {', '.join(result.completed_steps)}"
+        )
+    else:
+        typer.echo(f"resuming {issue_id} — no prior verdicts on disk; running from top")
+    if result.reopened:
+        typer.echo(f"reopened bead {issue_id}")
     typer.echo(result.flow_result)
 
 
