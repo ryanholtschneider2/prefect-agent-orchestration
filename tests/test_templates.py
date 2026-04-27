@@ -112,7 +112,12 @@ def test_rig_path_kwarg_is_also_substitution_var(tmp_path: Path) -> None:
     # Mirror the formula's call shape: ctx unpacked into **vars where
     # rig_path is one of the entries.
     ctx = {"rig_path": str(rig), "issue_id": "x"}
-    out = render_template(pack, "triager", rig_path=rig, **{k: v for k, v in ctx.items() if k != "rig_path"})
+    out = render_template(
+        pack,
+        "triager",
+        rig_path=rig,
+        **{k: v for k, v in ctx.items() if k != "rig_path"},
+    )
     assert f"rig at: {rig}" in out
 
     # Also verify the case where the formula passes rig_path explicitly
