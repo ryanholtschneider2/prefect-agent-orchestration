@@ -280,10 +280,15 @@ def build_registry(
     if not dry_run and shutil.which("bd") is not None:
         subprocess.run(
             [
-                "bd", "update", issue_id,
-                "--set-metadata", f"po.rig_path={rig_path_p}",
-                "--set-metadata", f"po.run_dir={run_dir}",
-                "--set-metadata", f"po.pack_path={pack_path_p}",
+                "bd",
+                "update",
+                issue_id,
+                "--set-metadata",
+                f"po.rig_path={rig_path_p}",
+                "--set-metadata",
+                f"po.run_dir={run_dir}",
+                "--set-metadata",
+                f"po.pack_path={pack_path_p}",
             ],
             check=False,
         )

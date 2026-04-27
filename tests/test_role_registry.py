@@ -32,11 +32,15 @@ def test_select_backend_factory_env_cli(monkeypatch: pytest.MonkeyPatch) -> None
     assert _select_backend_factory(dry_run=False) is ClaudeCliBackend
 
 
-def test_build_registry_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_registry_dry_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """build_registry with dry_run=True returns (RoleRegistry, base_ctx) and
     creates the run_dir + verdicts/ subtree without shelling out to bd."""
     # Force the bd shellouts off so this test runs in any environment.
-    monkeypatch.setattr("prefect_orchestration.role_registry.shutil.which", lambda _: None)
+    monkeypatch.setattr(
+        "prefect_orchestration.role_registry.shutil.which", lambda _: None
+    )
 
     rig = "test-rig"
     issue_id = "test-issue-1"
@@ -72,7 +76,9 @@ def test_build_registry_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 def test_build_registry_custom_formula_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("prefect_orchestration.role_registry.shutil.which", lambda _: None)
+    monkeypatch.setattr(
+        "prefect_orchestration.role_registry.shutil.which", lambda _: None
+    )
     reg, _ctx = build_registry(
         issue_id="x",
         rig="rig",
