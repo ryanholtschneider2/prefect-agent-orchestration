@@ -145,3 +145,40 @@ def test_render_table_header_only_when_empty():
     assert lines[0].split()[0] == "ROLE"
     assert set(lines[1].replace(" ", "")) == {"-"}
     assert len(lines) == 2
+
+
+def test_render_table_pod_column_hidden_when_no_k8s():
+    rows = [sessions.SessionRow("builder", "u1", "1", "now", pod=None)]
+    out = sessions.render_table(rows)
+    assert "POD" not in out
+
+
+def test_render_table_pod_column_shown_when_any_row_has_k8s():
+    rows = [sessions.SessionRow("builder", "u1", "1", "now", pod="po-worker-7c5")]
+    out = sessions.render_table(rows)
+    assert "POD" in out
+    assert "po-worker-7c5" in out
+
+
+def test_build_rows_passes_pod_through(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(json.dumps({"session_builder": "u"}))
+    rows = sessions.build_rows(run_dir, {"session_builder": "u"}, pod="pod-7")
+    assert rows[0].pod == "pod-7"
+
+
+def test_sessions_cli_shows_pod_when_bead_metadata_set(tmp_path, runner, monkeypatch):
+    run_dir, _ = _seed_run_dir(tmp_path)
+    loc = run_lookup.RunLocation(rig_path=tmp_path, run_dir=run_dir)
+    monkeypatch.setattr(cli._run_lookup, "resolve_run_dir", lambda _id: loc)
+    monkeypatch.setattr(
+        cli._attach,
+        "fetch_bead_metadata",
+        lambda _id: {"po.k8s_pod": "po-worker-xyz"},
+    )
+
+    result = runner.invoke(cli.app, ["sessions", "beads-xyz"])
+    assert result.exit_code == 0, result.stderr
+    assert "POD" in result.stdout
+    assert "po-worker-xyz" in result.stdout

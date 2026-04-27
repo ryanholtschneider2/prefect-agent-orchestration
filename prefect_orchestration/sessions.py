@@ -46,6 +46,7 @@ class SessionRow:
     uuid: str
     last_iter: str  # string so "-" fits alongside numbers
     last_updated: str  # ISO-8601 local seconds, or "-"
+    pod: str | None = None  # k8s worker pod name when the run is on a cluster
 
 
 def load_metadata(run_dir: Path) -> dict[str, str]:
@@ -96,8 +97,17 @@ def _artifact_info(run_dir: Path, role: str, meta_mtime: float) -> tuple[str, st
     return last_iter, _fmt_mtime(freshest.stat().st_mtime)
 
 
-def build_rows(run_dir: Path, metadata: dict[str, str]) -> list[SessionRow]:
-    """Collect one SessionRow per `session_<role>` key in metadata, sorted by role."""
+def build_rows(
+    run_dir: Path,
+    metadata: dict[str, str],
+    *,
+    pod: str | None = None,
+) -> list[SessionRow]:
+    """Collect one SessionRow per `session_<role>` key in metadata, sorted by role.
+
+    `pod` (when supplied — typically from bead metadata `po.k8s_pod`) is
+    stamped on every row, surfaced as a POD column by `render_table`.
+    """
     meta_path = run_dir / METADATA_FILENAME
     meta_mtime = meta_path.stat().st_mtime if meta_path.exists() else 0.0
     rows: list[SessionRow] = []
@@ -112,6 +122,7 @@ def build_rows(run_dir: Path, metadata: dict[str, str]) -> list[SessionRow]:
                 uuid=str(value),
                 last_iter=last_iter,
                 last_updated=last_updated,
+                pod=pod,
             )
         )
     rows.sort(key=lambda r: r.role)
@@ -119,9 +130,21 @@ def build_rows(run_dir: Path, metadata: dict[str, str]) -> list[SessionRow]:
 
 
 def render_table(rows: list[SessionRow]) -> str:
-    """Width-aligned text table. Empty rows list still renders the header."""
-    headers = ("ROLE", "UUID", "LAST-ITER", "LAST-UPDATED")
-    data = [(r.role, r.uuid, r.last_iter, r.last_updated) for r in rows]
+    """Width-aligned text table. Empty rows list still renders the header.
+
+    Adds a POD column iff at least one row has `pod is not None`. Pure-host
+    runs keep the original four-column output (back-compat for scripts that
+    parse this).
+    """
+    show_pod = any(r.pod for r in rows)
+    if show_pod:
+        headers = ("ROLE", "UUID", "LAST-ITER", "LAST-UPDATED", "POD")
+        data = [
+            (r.role, r.uuid, r.last_iter, r.last_updated, r.pod or "-") for r in rows
+        ]
+    else:
+        headers = ("ROLE", "UUID", "LAST-ITER", "LAST-UPDATED")
+        data = [(r.role, r.uuid, r.last_iter, r.last_updated) for r in rows]
     widths = [
         max(len(h), *(len(row[i]) for row in data)) if data else len(h)
         for i, h in enumerate(headers)

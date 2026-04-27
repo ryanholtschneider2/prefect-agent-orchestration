@@ -6,6 +6,13 @@ against a non-`process` Prefect work pool. Two paths:
 1. **Local docker-compose** — laptop dev / smoke
 2. **Kubernetes** — scale-out / cloud
 
+> Lurking on a remote agent session: see [`engdocs/attach.md`](attach.md)
+> for `po attach <issue-id>` (auto-discovers the worker pod and wraps
+> `kubectl exec -it … -- tmux attach`). The k8s Deployment must surface
+> `POD_NAME` / `POD_NAMESPACE` (downward API) plus a static
+> `PO_KUBE_CONTEXT` for that to work — already wired in
+> `k8s/po-worker-deployment.yaml`.
+
 Both use the same image: `Dockerfile` produces `po-worker:base`
 (ubuntu:24.04 + node22 + tmux + git + uv + bd + Claude Code +
 `prefect-orchestration`); `Dockerfile.pack` overlays a formula pack on

@@ -61,6 +61,24 @@ spec:
               value: http://prefect-server:4200/api
             - name: PO_BACKEND
               value: cli
+            # Downward API — surfaced to bead metadata at flow entry by
+            # `attach.stamp_runtime_location`, so `po attach <issue>` can
+            # `kubectl exec -it <pod> -- tmux attach -t <session>` from
+            # the operator's laptop.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Operator-supplied: which kubeconfig context the user runs
+            # `po attach` against. Pods don't know the user's local
+            # kubeconfig label; set this on the Deployment to make
+            # `po attach` route to the right cluster every time.
+            # - name: PO_KUBE_CONTEXT
+            #   value: my-cluster-context
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:

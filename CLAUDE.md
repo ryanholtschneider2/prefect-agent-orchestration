@@ -426,6 +426,7 @@ picks a non-default entry-point.
 | Tail / follow logs for an issue's run | `po logs <issue-id> [-f] [-n N] [--file NAME]` |
 | Dump full forensic trail for a run | `po artifacts <issue-id> [--verdicts] [--open]` |
 | Show per-role Claude session UUIDs for a run | `po sessions <issue-id> [--resume <role>]` |
+| Attach to an issue's tmux session (k8s pod or host) | `po attach <issue-id> [--role <role>] [--list] [--print-argv]` |
 | Archive a run_dir and relaunch its formula | `po retry <issue-id> [--keep-sessions] [--force] [--rig NAME] [--formula NAME]` |
 | Live merged feed of flow state + run_dir artifacts | `po watch <issue-id> [--replay] [--replay-n N]` |
 | List active / recent runs grouped by bead `issue_id` tag | `po status [--issue-id ID] [--since 24h] [--state Running] [--all]` |

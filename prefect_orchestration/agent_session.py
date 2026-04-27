@@ -415,13 +415,11 @@ class TmuxClaudeBackend:
     scope: str | None = None
 
     def _session_name(self, suffix: str = "") -> str:
-        # tmux uses '.' as a pane separator in target specs (session.window.pane).
-        # Replace dots in issue IDs like `prefect-orchestration-4ja.1` so
-        # `kill-session -t <name>` and `send-keys -t <name>` resolve to the
-        # whole session, not a pane inside it.
-        safe_issue = self.issue.replace(".", "_")
-        safe_role = self.role.replace(".", "_")
-        base = f"po-{safe_issue}-{safe_role}"
+        # Delegated to `attach.session_name` so `po attach` and the live
+        # `TmuxClaudeBackend` agree byte-for-byte on the naming rule.
+        from prefect_orchestration.attach import session_name as _session_name_for
+
+        base = _session_name_for(self.issue, self.role)
         return f"{base}-{suffix}" if suffix else base
 
     def _scoped_names(self, suffix: str = "") -> tuple[str, str]:
@@ -848,9 +846,9 @@ class TmuxInteractiveClaudeBackend:
     settle_s: float = 8.0
 
     def _session_name(self, suffix: str = "") -> str:
-        safe_issue = self.issue.replace(".", "_")
-        safe_role = self.role.replace(".", "_")
-        base = f"po-{safe_issue}-{safe_role}"
+        from prefect_orchestration.attach import session_name as _session_name_for
+
+        base = _session_name_for(self.issue, self.role)
         return f"{base}-{suffix}" if suffix else base
 
     def _scoped_names(self, suffix: str = "") -> tuple[str, str]:

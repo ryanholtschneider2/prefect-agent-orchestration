@@ -25,6 +25,7 @@ from typing import Any
 import typer
 
 from prefect_orchestration import artifacts as _artifacts
+from prefect_orchestration import attach as _attach
 from prefect_orchestration import commands as _commands
 from prefect_orchestration import deployments as _deployments
 from prefect_orchestration import doctor as _doctor
@@ -609,7 +610,9 @@ def sessions(
         typer.echo(_sessions.resume_command(uuid))
         return
 
-    rows = _sessions.build_rows(loc.run_dir, metadata)
+    bead_meta = _attach.fetch_bead_metadata(issue_id)
+    pod = bead_meta.get(_attach.META_K8S_POD)
+    rows = _sessions.build_rows(loc.run_dir, metadata, pod=pod)
     typer.echo(_sessions.render_table(rows))
 
 
@@ -870,6 +873,142 @@ def tui(ctx: typer.Context) -> None:
         raise SystemExit(1)
     extra = ctx.args or []
     os.execvp(binary, [binary, *extra])
+
+
+@app.command()
+def attach(
+    issue_id: str = typer.Argument(
+        ..., help="Beads issue id whose tmux agent session(s) you want to attach to."
+    ),
+    role: str | None = typer.Option(
+        None,
+        "--role",
+        help="Pick a specific role's session. Required when multiple roles "
+        "exist and stdin isn't a TTY.",
+    ),
+    list_only: bool = typer.Option(
+        False,
+        "--list",
+        help="List the resolved attach target(s) and exit; do not attach.",
+    ),
+    print_argv: bool = typer.Option(
+        False,
+        "--print-argv",
+        help="Print the argv that would be exec'd and exit (debug / e2e harness).",
+    ),
+) -> None:
+    """Attach to the tmux agent session for a beads issue's run.
+
+    Wraps `kubectl exec -it <pod> -- tmux attach` when the bead carries
+    `po.k8s_pod` metadata; falls through to `tmux attach` directly on
+    the host otherwise.
+    """
+    try:
+        loc = _run_lookup.resolve_run_dir(issue_id)
+    except _run_lookup.RunDirNotFound as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    roles = _attach.discover_roles(loc.run_dir)
+    if not roles:
+        typer.echo(
+            f"no roles found in {loc.run_dir}/metadata.json — "
+            "the flow may not have started any agent sessions yet.",
+            err=True,
+        )
+        raise typer.Exit(3)
+
+    bead_meta = _attach.fetch_bead_metadata(issue_id)
+
+    if list_only:
+        for r in roles:
+            target = _attach.resolve_attach_target(
+                issue=issue_id, role=r, bead_metadata=bead_meta
+            )
+            if isinstance(target, _attach.K8sTarget):
+                ctx = target.context or "<current-context>"
+                typer.echo(
+                    f"{r}\tk8s\tcontext={ctx} ns={target.namespace} "
+                    f"pod={target.pod} session={target.session}"
+                )
+            else:
+                typer.echo(f"{r}\tlocal\tsession={target.session}")
+        return
+
+    chosen: str
+    if role is not None:
+        if role not in roles:
+            typer.echo(
+                f"unknown role {role!r}. Known roles: {', '.join(roles)}",
+                err=True,
+            )
+            raise typer.Exit(4)
+        chosen = role
+    elif len(roles) == 1:
+        chosen = roles[0]
+    else:
+        is_tty = bool(getattr(sys.stdin, "isatty", lambda: False)())
+        if not is_tty:
+            typer.echo(
+                f"multiple roles available ({', '.join(roles)}); "
+                "specify --role <role> (stdin is not a TTY).",
+                err=True,
+            )
+            raise typer.Exit(5)
+        typer.echo("Multiple roles available:")
+        for i, r in enumerate(roles, start=1):
+            typer.echo(f"  [{i}] {r}")
+        try:
+            sel = input("pick number (or role name): ").strip()
+        except EOFError:
+            raise typer.Exit(5) from None
+        if sel.isdigit() and 1 <= int(sel) <= len(roles):
+            chosen = roles[int(sel) - 1]
+        elif sel in roles:
+            chosen = sel
+        else:
+            typer.echo(f"invalid selection {sel!r}", err=True)
+            raise typer.Exit(5)
+
+    target = _attach.resolve_attach_target(
+        issue=issue_id, role=chosen, bead_metadata=bead_meta
+    )
+
+    if isinstance(target, _attach.K8sTarget):
+        if target.context is None:
+            typer.echo(
+                f"warning: bead has {_attach.META_K8S_POD}={target.pod} but no "
+                f"{_attach.META_K8S_CONTEXT} — using your current kubeconfig context. "
+                "Set PO_KUBE_CONTEXT on the worker Deployment to make this explicit.",
+                err=True,
+            )
+        status, detail = _attach.probe_pod(target)
+        if status == "gone":
+            typer.echo(
+                f"pod gone, run was on {target.pod!r} ({detail}). "
+                f"Try `po retry {issue_id}` to relaunch.",
+                err=True,
+            )
+            raise typer.Exit(6)
+        if status == "forbidden":
+            typer.echo(
+                f"RBAC: caller needs pods/exec in namespace {target.namespace!r} "
+                f"({detail}).",
+                err=True,
+            )
+            raise typer.Exit(7)
+        if status == "unknown":
+            typer.echo(f"kubectl probe failed: {detail}", err=True)
+            raise typer.Exit(8)
+        argv = _attach.build_kubectl_argv(target)
+    else:
+        argv = _attach.build_local_argv(target)
+
+    if print_argv:
+        typer.echo(" ".join(argv))
+        return
+
+    os.execvp(argv[0], argv)
 
 
 def main() -> None:
