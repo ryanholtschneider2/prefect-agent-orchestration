@@ -40,6 +40,24 @@
   **Alternatives considered**: Default `mail_agent_name = name` in
   loader — rejected as it muddles file fidelity.
 
+- **Decision** (this iter, hermetic test fix): Added
+  `monkeypatch.delenv("PO_RESUME", raising=False)` to the two
+  `prompt_for_verdict` tests in `tests/test_parsing.py`.
+  **Why**: `parsing.prompt_for_verdict` gained a `PO_RESUME=1`
+  short-circuit (skip prompting if the verdict file already exists)
+  after my iter-3 commit landed. The tests pre-write the verdict file
+  to satisfy `read_verdict` — combined with `PO_RESUME=1` leaking into
+  the test runner from the parent shell, that triggers the early
+  return and the stub's `prompt()` is never called. Unsetting the env
+  var per-test makes the tests hermetic regardless of caller
+  environment, matching the "tests should not depend on shell state"
+  convention.
+  **Alternatives considered**: Move the verdict-file write below the
+  `prompt_for_verdict` call — rejected; the stub doesn't actually write
+  the file, the test does, so the file must be present before the call.
+  Globally `monkeypatch.delenv` in a fixture — rejected; only these two
+  tests are sensitive to `PO_RESUME`.
+
 - **Decision** (iter 3, regression-gate fix): Added `prompt_for_verdict`
   helper to `prefect_orchestration.parsing` and a unit-test file
   `tests/test_parsing.py`.

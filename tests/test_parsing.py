@@ -46,7 +46,10 @@ def test_read_verdict_invalid_json_raises(tmp_path: Path) -> None:
         read_verdict(tmp_path, "x")
 
 
-def test_prompt_for_verdict_passes_prompt_and_returns_file(tmp_path: Path) -> None:
+def test_prompt_for_verdict_passes_prompt_and_returns_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PO_RESUME", raising=False)
     (verdicts_dir(tmp_path) / "step.json").write_text(
         json.dumps({"verdict": "approved"})
     )
@@ -56,7 +59,10 @@ def test_prompt_for_verdict_passes_prompt_and_returns_file(tmp_path: Path) -> No
     assert out == {"verdict": "approved"}
 
 
-def test_prompt_for_verdict_fork_forwards_kwarg(tmp_path: Path) -> None:
+def test_prompt_for_verdict_fork_forwards_kwarg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PO_RESUME", raising=False)
     (verdicts_dir(tmp_path) / "step.json").write_text("{}")
     sess = _StubSession()
     prompt_for_verdict(sess, "p", tmp_path, "step", fork=True)
