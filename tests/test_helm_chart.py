@@ -283,3 +283,117 @@ def test_workpools_doc_mentions_helm_path() -> None:
     doc = (REPO_ROOT / "engdocs" / "work-pools.md").read_text()
     assert "helm install po ./charts/po" in doc
     assert "## Helm install" in doc
+
+
+# --------------------------------------------------------------------------
+# HPA + pool concurrency for fanout demos (5wk.2)
+# --------------------------------------------------------------------------
+
+
+def _helm_template_with_files(*flags: str) -> str:
+    cmd = ["helm", "template", "po", str(CHART_DIR), *flags]
+    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+
+
+@pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
+def test_default_profile_has_no_hpa_and_static_replicas() -> None:
+    docs = _docs(_helm_template())
+    assert not any(d["kind"] == "HorizontalPodAutoscaler" for d in docs)
+    workers = [
+        d
+        for d in docs
+        if d["kind"] == "Deployment" and "worker" in d["metadata"]["name"]
+    ]
+    assert len(workers) == 1
+    assert workers[0]["spec"].get("replicas") == 1
+
+
+@pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
+def test_default_profile_pool_concurrency_env_present() -> None:
+    docs = _docs(_helm_template())
+    jobs = [d for d in docs if d["kind"] == "Job"]
+    assert len(jobs) == 1
+    env = jobs[0]["spec"]["template"]["spec"]["containers"][0]["env"]
+    pc = next(e for e in env if e["name"] == "POOL_CONCURRENCY")
+    assert pc["value"] == "5"
+    script = jobs[0]["spec"]["template"]["spec"]["containers"][0]["command"][-1]
+    assert "set-concurrency-limit" in script
+    assert "POOL_CONCURRENCY" in script
+
+
+@pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
+def test_demo_profile_renders_hpa_and_pool_concurrency() -> None:
+    rendered = _helm_template_with_files("-f", str(CHART_DIR / "values-demo.yaml"))
+    docs = _docs(rendered)
+    hpas = [d for d in docs if d["kind"] == "HorizontalPodAutoscaler"]
+    assert len(hpas) == 1
+    hpa = hpas[0]
+    assert hpa["spec"]["minReplicas"] == 20
+    assert hpa["spec"]["maxReplicas"] == 100
+    assert hpa["spec"]["scaleTargetRef"]["kind"] == "Deployment"
+    assert "worker" in hpa["spec"]["scaleTargetRef"]["name"]
+    assert hpa["spec"]["scaleTargetRef"]["apiVersion"] == "apps/v1"
+    cpu_metric = next(m for m in hpa["spec"]["metrics"] if m["type"] == "Resource")
+    assert cpu_metric["resource"]["name"] == "cpu"
+    assert cpu_metric["resource"]["target"]["averageUtilization"] == 70
+
+    # When HPA owns scaling, the Deployment must omit spec.replicas.
+    workers = [
+        d
+        for d in docs
+        if d["kind"] == "Deployment" and "worker" in d["metadata"]["name"]
+    ]
+    assert len(workers) == 1
+    assert "replicas" not in workers[0]["spec"]
+
+    # Pool concurrency wired through to register Job.
+    jobs = [d for d in docs if d["kind"] == "Job"]
+    env = jobs[0]["spec"]["template"]["spec"]["containers"][0]["env"]
+    pc = next(e for e in env if e["name"] == "POOL_CONCURRENCY")
+    assert pc["value"] == "100"
+
+
+@pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
+def test_demo_profile_helm_lints_clean() -> None:
+    res = subprocess.run(
+        [
+            "helm",
+            "lint",
+            str(CHART_DIR),
+            "-f",
+            str(CHART_DIR / "values-demo.yaml"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0, res.stdout + res.stderr
+
+
+@pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
+def test_autoscaling_enabled_omits_replicas_via_set_flag() -> None:
+    rendered = _helm_template("--set", "worker.autoscaling.enabled=true")
+    docs = _docs(rendered)
+    workers = [
+        d
+        for d in docs
+        if d["kind"] == "Deployment" and "worker" in d["metadata"]["name"]
+    ]
+    assert "replicas" not in workers[0]["spec"]
+    assert any(d["kind"] == "HorizontalPodAutoscaler" for d in docs)
+
+
+@pytest.mark.skipif(not _have_helm(), reason="helm not on PATH")
+def test_pool_concurrency_zero_skips_set_call_in_script() -> None:
+    rendered = _helm_template("--set", "pool.concurrencyLimit=0")
+    docs = _docs(rendered)
+    jobs = [d for d in docs if d["kind"] == "Job"]
+    env = jobs[0]["spec"]["template"]["spec"]["containers"][0]["env"]
+    pc = next(e for e in env if e["name"] == "POOL_CONCURRENCY")
+    assert pc["value"] == "0"
+
+
+def test_workpools_doc_documents_demo_profile() -> None:
+    doc = (REPO_ROOT / "engdocs" / "work-pools.md").read_text()
+    assert "values-demo.yaml" in doc
+    assert "Demo profile" in doc

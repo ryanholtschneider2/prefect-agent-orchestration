@@ -1,0 +1,27 @@
+# Demo profile — large fanout (100 concurrent flow runs).
+#
+# Composes with the chart defaults; only the deltas needed to drive the
+# demo are listed here. Apply with:
+#
+#   helm upgrade --install po ./charts/po -f charts/po/values-demo.yaml
+#
+# Assumes the cluster has node capacity for ~100 worker pods (each
+# requesting cpu=200m / memory=256Mi by default → 20 cpu / 25 GiB at
+# steady state, more under load). See engdocs/work-pools.md "Demo
+# profile (large fanout)".
+#
+# RWO rig PVC is incompatible with multi-replica workers — this profile
+# assumes you've switched `rig.accessMode` to ReadWriteMany via your own
+# overlay, OR are running the demo in stub mode where workers don't
+# touch /rig.
+
+pool:
+  # Match worker maxReplicas so all spawned pods have a slot to run in.
+  concurrencyLimit: 100
+
+worker:
+  autoscaling:
+    enabled: true
+    minReplicas: 20
+    maxReplicas: 100
+    targetCPUUtilizationPercentage: 70

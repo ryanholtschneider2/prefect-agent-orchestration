@@ -13,8 +13,9 @@
       "type": "object",
       "required": ["name", "type"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "type": { "type": "string", "enum": ["process", "kubernetes", "docker"] }
+        "name":             { "type": "string", "minLength": 1 },
+        "type":             { "type": "string", "enum": ["process", "kubernetes", "docker"] },
+        "concurrencyLimit": { "type": ["integer", "null"], "minimum": 0 }
       }
     },
 
@@ -41,7 +42,16 @@
             "annotations": { "type": "object" }
           }
         },
-        "backend": { "type": "string", "enum": ["cli", "tmux", "stub"] }
+        "backend": { "type": "string", "enum": ["cli", "tmux", "stub"] },
+        "autoscaling": {
+          "type": "object",
+          "properties": {
+            "enabled":                        { "type": "boolean" },
+            "minReplicas":                    { "type": "integer", "minimum": 1 },
+            "maxReplicas":                    { "type": "integer", "minimum": 1 },
+            "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 }
+          }
+        }
       }
     },
 

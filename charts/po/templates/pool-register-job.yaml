@@ -42,9 +42,13 @@ spec:
               value: {{ .Values.pool.name | quote }}
             - name: POOL_TYPE
               value: {{ .Values.pool.type | quote }}
+            - name: POOL_CONCURRENCY
+              value: {{ .Values.pool.concurrencyLimit | default 0 | quote }}
           # Idempotent: succeed if the pool already exists, create
           # otherwise. `prefect work-pool inspect` exits non-zero when
           # the pool is missing — which we use as the "create" signal.
+          # After create-or-skip, apply the concurrency-limit (if set)
+          # on every run so values.yaml stays the source of truth.
           command:
             - /bin/sh
             - -ec
@@ -60,10 +64,16 @@ spec:
               done
               if prefect work-pool inspect "$POOL_NAME" >/dev/null 2>&1; then
                 echo "Work pool '$POOL_NAME' already exists — leaving as-is."
-                exit 0
+              else
+                echo "Creating work pool '$POOL_NAME' (type=$POOL_TYPE) ..."
+                prefect work-pool create "$POOL_NAME" --type "$POOL_TYPE"
               fi
-              echo "Creating work pool '$POOL_NAME' (type=$POOL_TYPE) ..."
-              prefect work-pool create "$POOL_NAME" --type "$POOL_TYPE"
+              if [ "${POOL_CONCURRENCY:-0}" -gt 0 ] 2>/dev/null; then
+                echo "Setting '$POOL_NAME' concurrency-limit=$POOL_CONCURRENCY ..."
+                prefect work-pool set-concurrency-limit "$POOL_NAME" "$POOL_CONCURRENCY"
+              else
+                echo "POOL_CONCURRENCY unset/0 — leaving pool unbounded."
+              fi
           resources:
             {{- toYaml .Values.poolRegister.resources | nindent 12 }}
 {{- end }}

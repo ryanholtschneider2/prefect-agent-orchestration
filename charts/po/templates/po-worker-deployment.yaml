@@ -11,7 +11,9 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
+  {{- if not .Values.worker.autoscaling.enabled }}
   replicas: {{ .Values.worker.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "po.selectorLabels" . | nindent 6 }}

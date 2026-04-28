@@ -242,6 +242,54 @@ helm install po ./charts/po -n po \
 cert-manager wiring is intentionally not bundled — pass annotations +
 `tls:` via values for your cluster's setup.
 
+### Demo profile (large fanout)
+
+For epic fanouts that drive 100+ concurrent flow runs (showcase /
+benchmark / capacity tests), `charts/po/values-demo.yaml` overlays the
+chart defaults with a HorizontalPodAutoscaler on the worker
+Deployment plus a matching pool concurrency-limit:
+
+```bash
+helm upgrade --install po ./charts/po -f charts/po/values-demo.yaml
+kubectl get hpa -n po       # autoscaler resource
+kubectl get pods -n po -w   # workers scale 20 → 100 under load
+```
+
+What changes versus defaults:
+
+| Knob | Default | Demo |
+|---|---|---|
+| `worker.autoscaling.enabled` | `false` (single replica) | `true` |
+| `worker.autoscaling.minReplicas` | n/a | `20` |
+| `worker.autoscaling.maxReplicas` | n/a | `100` |
+| `worker.autoscaling.targetCPUUtilizationPercentage` | n/a | `70` |
+| `pool.concurrencyLimit` | `5` | `100` |
+
+When `worker.autoscaling.enabled=true`, the chart **omits**
+`spec.replicas` from the worker Deployment so HPA owns the count —
+otherwise every `helm upgrade` would reset replicas to `replicaCount`
+and fight the autoscaler.
+
+The pool-register pre-install Job applies
+`prefect work-pool set-concurrency-limit` from
+`pool.concurrencyLimit` on every install/upgrade, keeping
+values.yaml the source of truth. Setting it to `0` (or omitting it)
+leaves the pool unbounded.
+
+CPU-based scaling is a pragmatic stand-in for ideal "scale on Prefect
+work-queue depth" — the actual bottleneck is claude-process CPU
+during turn streaming, so CPU utilization tracks load reasonably.
+External-metric scaling on queue depth is filed as a follow-up bead.
+
+**Capacity assumption** — 100 worker pods × default
+`requests: cpu=200m, memory=256Mi` ≈ 20 vCPU / 25 GiB at idle, more
+under load. Size the node pool accordingly.
+
+**RWO rig PVC caveat** — multi-replica workers need RWX storage on
+`/rig`, OR `PO_BACKEND=stub` runs that don't touch the rig. The demo
+profile assumes you've layered an `accessMode: ReadWriteMany`
+overlay on top, OR the workload is stub-mode.
+
 ### Cloud smoke (kind / Hetzner)
 
 End-to-end validation of `chart + image + bd + software-dev-full` on a

@@ -17,6 +17,11 @@ commonAnnotations: {}
 pool:
   name: po
   type: process
+  # Per-pool concurrency limit applied by the pool-register Job on every
+  # install/upgrade. 0 or null leaves the pool unbounded (Prefect
+  # default). The demo profile overrides this to 100 to match
+  # maxReplicas for fanout demos.
+  concurrencyLimit: 5
 
 # ---------------------------------------------------------------------------
 # po-worker Deployment. Mirrors k8s/po-worker-deployment.yaml.
@@ -58,6 +63,21 @@ worker:
   extraEnv: []
   # Forces the backend selector. Process pool + container = cli (no TTY).
   backend: cli
+  # HorizontalPodAutoscaler for the worker Deployment. Off by default
+  # (single-replica RWO rig PVC). When enabled, the Deployment's
+  # `spec.replicas` is omitted so the HPA owns scaling decisions —
+  # otherwise every helm upgrade would reset replicas back to
+  # `replicaCount` and fight the HPA.
+  #
+  # CPU-based scaling tracks load reasonably here: the bottleneck is
+  # claude-process CPU during turn streaming. External-metric scaling
+  # on Prefect work-queue depth would be ideal but is out of scope —
+  # see follow-up bead.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
 
 # ---------------------------------------------------------------------------
 # Prefect server. Single-replica Deployment using the upstream image.
