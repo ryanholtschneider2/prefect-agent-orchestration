@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -35,9 +36,11 @@ class _FakeBd:
         self.edges = edges or {}
         self.shows = shows or {}
         self.calls: list[list[str]] = []
+        self.cwds: list[Any] = []
 
-    def __call__(self, cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+    def __call__(self, cmd: list[str], **kw: Any) -> subprocess.CompletedProcess:
         self.calls.append(list(cmd))
+        self.cwds.append(kw.get("cwd"))
         if cmd[:3] == ["bd", "dep", "list"]:
             issue_id = cmd[3]
             direction = next(
@@ -215,3 +218,87 @@ def test_topo_sort_blocks_cycle_raises_with_member_list() -> None:
 
 def test_topo_sort_blocks_empty_input_returns_empty() -> None:
     assert beads_meta.topo_sort_blocks([]) == []
+
+
+# ─────────────────────── cwd propagation (3mw) ────────────────────────
+
+
+def test_list_subgraph_threads_cwd_to_every_shellout(
+    fake_bd: _FakeBd, tmp_path: Path
+) -> None:
+    """Every bd shellout under list_subgraph must carry cwd=rig_path.
+
+    Backs prefect-orchestration-3mw: Prefect runners inherit a cwd that
+    rarely matches the rig, so omitting cwd silently targets the wrong
+    `.beads/`.
+    """
+    fake_bd.edges = {
+        ("R", "up", "parent-child"): [{"id": "A", "status": "open", "title": "A"}],
+        ("R", "up", "blocks"): [],
+        ("A", "up", "parent-child"): [],
+        ("A", "up", "blocks"): [],
+        ("A", "down", "blocks"): [],
+    }
+    beads_meta.list_subgraph("R", rig_path=tmp_path)
+    bd_cwds = {
+        cwd
+        for cmd, cwd in zip(fake_bd.calls, fake_bd.cwds, strict=True)
+        if cmd[:1] == ["bd"]
+    }
+    assert bd_cwds == {str(tmp_path)}
+
+
+def test_list_epic_children_deps_threads_cwd(
+    fake_bd: _FakeBd, tmp_path: Path
+) -> None:
+    fake_bd.edges = {
+        ("E", "up", "parent-child"): [
+            {"id": "C1", "status": "open", "title": "c1"},
+        ],
+        ("E", "up", "blocks"): [],
+        ("C1", "up", "parent-child"): [],
+        ("C1", "up", "blocks"): [],
+        ("C1", "down", "blocks"): [],
+    }
+    beads_meta.list_epic_children("E", mode="deps", rig_path=tmp_path)
+    bd_cwds = {
+        cwd
+        for cmd, cwd in zip(fake_bd.calls, fake_bd.cwds, strict=True)
+        if cmd[:1] == ["bd"]
+    }
+    assert bd_cwds == {str(tmp_path)}
+
+
+def test_collect_explicit_children_threads_cwd(
+    fake_bd: _FakeBd, tmp_path: Path
+) -> None:
+    fake_bd.shows = {
+        "X": {"id": "X", "status": "open", "title": "x"},
+    }
+    fake_bd.edges = {
+        ("X", "down", "blocks"): [],
+    }
+    beads_meta.collect_explicit_children(["X"], rig_path=tmp_path)
+    bd_cwds = {
+        cwd
+        for cmd, cwd in zip(fake_bd.calls, fake_bd.cwds, strict=True)
+        if cmd[:1] == ["bd"]
+    }
+    assert bd_cwds == {str(tmp_path)}
+
+
+def test_traversal_default_no_cwd_kwarg_when_rig_path_omitted(
+    fake_bd: _FakeBd,
+) -> None:
+    """Backward compat: omitting rig_path keeps the legacy cwd=None call."""
+    fake_bd.edges = {
+        ("R", "up", "parent-child"): [],
+        ("R", "up", "blocks"): [],
+    }
+    beads_meta.list_subgraph("R")
+    bd_cwds = {
+        cwd
+        for cmd, cwd in zip(fake_bd.calls, fake_bd.cwds, strict=True)
+        if cmd[:1] == ["bd"]
+    }
+    assert bd_cwds == {None}
