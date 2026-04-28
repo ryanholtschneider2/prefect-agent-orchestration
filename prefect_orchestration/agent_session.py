@@ -38,7 +38,113 @@ logger = logging.getLogger(__name__)
 
 MAX_INBOX_MESSAGES = 20
 
+# Default wall-clock cap on a single Claude turn before we declare the
+# session wedged and bail. 30 min is generous enough for deep cogitation,
+# long plans, ralph loops, and verifier passes — but short enough that a
+# rate-limited / hung session surfaces as an error instead of polling the
+# sentinel forever (sav.1: storybook flow hung 12+ hours after Claude hit
+# Anthropic's rate limit at 02:47Z because timeout_s defaulted to None).
+DEFAULT_AGENT_TIMEOUT_S = 1800.0
+
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+class RateLimitError(RuntimeError):
+    """Claude returned a rate-limit (429) for this turn — terminal, not retryable in-loop.
+
+    Raised by interactive backends when the pane shows ``You've hit your
+    limit`` or the JSONL transcript contains the synthetic
+    ``error: "rate_limit"`` assistant event. ``reset_time`` is the
+    human-readable reset string Claude surfaces (e.g.
+    ``"1:30am (America/New_York)"``); ``None`` if the message was detected
+    but the time substring couldn't be parsed.
+
+    Callers (`po retry`, beadsd worker) inspect ``reset_time`` to decide
+    whether to defer + retry or fail loudly. AgentSession.prompt() lets
+    this propagate without firing the verdict-nudge retry — the turn
+    didn't fail to write a verdict, it never ran.
+    """
+
+    def __init__(self, reset_time: str | None = None, message: str | None = None):
+        self.reset_time = reset_time or None
+        super().__init__(
+            message or f"Claude rate-limit hit; resets {self.reset_time or '?'}"
+        )
+
+
+# `resets <time>` capture stops at end-of-line, closing-paren, or middle-dot
+# so we don't slurp trailing punctuation. Claude's exact format is
+# `You've hit your limit · resets 1:30am (America/New_York)`.
+_RATE_LIMIT_RESET_RE = re.compile(r"resets\s+([^\n)·]+?)(?:\s*[)\n·]|$)", re.IGNORECASE)
+_RATE_LIMIT_MARKERS = (
+    "you've hit your limit",
+    "you have hit your limit",
+    "rate limit",
+)
+
+
+def _extract_reset_time(text: str) -> str:
+    """Return the parsed reset-time substring (no parens), or '' if absent."""
+    m = _RATE_LIMIT_RESET_RE.search(text)
+    return m.group(1).strip() if m else ""
+
+
+def _detect_rate_limit_in_pane(pane_text: str) -> str | None:
+    """Return reset-time (possibly '') if the tmux pane shows a rate-limit; else None.
+
+    Empty-string return means the marker was found but no parseable reset
+    time; ``None`` means no rate-limit at all. Callers must distinguish:
+    empty string is still a rate-limit, just a less-informative one.
+    """
+    lower = pane_text.lower()
+    if not any(m in lower for m in _RATE_LIMIT_MARKERS):
+        return None
+    return _extract_reset_time(pane_text)
+
+
+def _detect_rate_limit_in_jsonl(jsonl_path: Path) -> str | None:
+    """Scan a Claude JSONL transcript for the synthetic rate_limit event.
+
+    Claude itself writes a deterministic terminal-failure marker when a
+    turn hits the API rate limit: an assistant event with
+    ``model="<synthetic>"``, top-level ``error="rate_limit"``,
+    ``isApiErrorMessage=true``, ``apiErrorStatus=429``, and a single text
+    block whose body is the user-facing ``You've hit your limit · resets
+    <time>`` string.
+
+    Returns reset-time substring (possibly '') if found, else ``None``.
+    """
+    if not jsonl_path.exists():
+        return None
+    try:
+        raw_text = jsonl_path.read_text()
+    except OSError:
+        return None
+    for raw in raw_text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("error") != "rate_limit" and ev.get("apiErrorStatus") != 429:
+            continue
+        msg = ev.get("message") if isinstance(ev.get("message"), dict) else {}
+        # Defence-in-depth: only trust this marker when it's clearly the
+        # synthetic assistant event, not e.g. a tool call whose content
+        # happens to mention "rate_limit".
+        if msg.get("model") != "<synthetic>" and not ev.get("isApiErrorMessage"):
+            continue
+        text = ""
+        for block in msg.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text") or ""
+                break
+        return _extract_reset_time(text)
+    return None
 
 
 class SessionBackend(Protocol):
@@ -384,6 +490,13 @@ def _spawn_tmux(
         wid = proc.stdout.decode().strip()
         if not wid.startswith("@"):
             raise RuntimeError(f"tmux returned unexpected window id: {wid!r}")
+        from prefect_orchestration import tmux_tracker
+
+        tmux_tracker.register(
+            tmux_tracker.TmuxRef(
+                session_name=session_name, window_name=window_name, target=wid
+            )
+        )
         return wid
 
     # Unscoped: dedicated session per (issue, role) — old behaviour.
@@ -417,6 +530,13 @@ def _spawn_tmux(
         env=dict(env),
         cwd=cwd,
     )
+    from prefect_orchestration import tmux_tracker
+
+    tmux_tracker.register(
+        tmux_tracker.TmuxRef(
+            session_name=session_name, window_name=None, target=session_name
+        )
+    )
     return session_name
 
 
@@ -431,6 +551,9 @@ def _cleanup_tmux(target: str, *, scoped: bool) -> None:
     subprocess.run(
         cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
+    from prefect_orchestration import tmux_tracker
+
+    tmux_tracker.unregister_by_target(target)
 
 
 @dataclass
@@ -458,7 +581,9 @@ class TmuxClaudeBackend:
     role: str
     start_command: str = "claude --dangerously-skip-permissions"
     attach_hint: bool = True
-    timeout_s: float | None = None
+    # Finite default (sav.1) — see DEFAULT_AGENT_TIMEOUT_S. Set to a larger
+    # value or None on the dataclass instance for unusually long turns.
+    timeout_s: float | None = DEFAULT_AGENT_TIMEOUT_S
     scope: str | None = None
 
     def _session_name(self, suffix: str = "") -> str:
@@ -823,6 +948,44 @@ def _discover_resumed_sentinel(
     )
 
 
+def _format_wedge_error(
+    *,
+    target: str,
+    issue: str,
+    role: str,
+    session_id: str | None,
+    timeout_s: float,
+) -> str:
+    """Build the diagnostic string for a wedged-agent RuntimeError (sav.1).
+
+    Captures the last ~30 lines of the tmux pane so the operator can see
+    rate-limit dialogs ('hit your limit'), missing-credentials errors,
+    or whatever else stalled the session — instead of guessing why the
+    flow stopped.
+    """
+    pane_tail = "(pane unavailable)"
+    try:
+        captured = subprocess.run(
+            ["tmux", "capture-pane", "-pt", target, "-S", "-200"],
+            capture_output=True,
+            check=False,
+        )
+        text = captured.stdout.decode(errors="replace")
+        if text:
+            pane_tail = "\n".join(text.splitlines()[-30:])
+    except (OSError, subprocess.SubprocessError):
+        pass
+    sid = session_id or "(unknown — pre-discovery)"
+    return (
+        f"agent session wedged: issue={issue!r} role={role!r} "
+        f"session_id={sid} target={target!r} timeout={timeout_s}s. "
+        f"Hint: check ~/.cache/po-stops/ for the missing sentinel and "
+        f"the pane tail below for a rate-limit dialog "
+        f"('hit your limit') or other failure.\n--- pane tail ---\n"
+        f"{pane_tail}"
+    )
+
+
 def _last_assistant_text_from_jsonl(jsonl_path: Path) -> str:
     """Return the most recent assistant text-message from a Claude JSONL.
 
@@ -893,7 +1056,11 @@ class TmuxInteractiveClaudeBackend:
     role: str
     start_command: str = "claude --dangerously-skip-permissions"
     attach_hint: bool = True
-    timeout_s: float | None = None
+    # Finite default (sav.1) — see DEFAULT_AGENT_TIMEOUT_S. A wedged or
+    # rate-limited Claude session would otherwise poll the sentinel
+    # forever; with a finite deadline `run()` raises a diagnostic
+    # RuntimeError naming the issue, role, session_id, and pane tail.
+    timeout_s: float | None = DEFAULT_AGENT_TIMEOUT_S
     scope: str | None = None
     # Used as a fallback wait if `_wait_for_tui_ready` can't positively
     # detect the input prompt — typically only matters for very long
@@ -1134,17 +1301,39 @@ class TmuxInteractiveClaudeBackend:
                 # Resume mode: claude assigned its own session_id internally
                 # — find it via prompt-content match against the sentinel's
                 # transcript_path.
-                new_sid, jsonl = _discover_resumed_sentinel(
-                    _stop_dir(),
-                    cwd,
-                    prompt,
-                    spawn_start=spawn_start,
-                    session_name=target,
-                    timeout=self.timeout_s,
-                )
+                try:
+                    new_sid, jsonl = _discover_resumed_sentinel(
+                        _stop_dir(),
+                        cwd,
+                        prompt,
+                        spawn_start=spawn_start,
+                        session_name=target,
+                        timeout=self.timeout_s,
+                    )
+                except TimeoutError as exc:
+                    raise RuntimeError(
+                        _format_wedge_error(
+                            target=target,
+                            issue=self.issue,
+                            role=self.role,
+                            session_id=None,
+                            timeout_s=self.timeout_s or 0.0,
+                        )
+                    ) from exc
                 sentinel = _stop_dir() / f"{new_sid}.stopped"
             else:
-                _wait_for_stop(sentinel, target, timeout=self.timeout_s)
+                try:
+                    _wait_for_stop(sentinel, target, timeout=self.timeout_s)
+                except TimeoutError as exc:
+                    raise RuntimeError(
+                        _format_wedge_error(
+                            target=target,
+                            issue=self.issue,
+                            role=self.role,
+                            session_id=new_sid,
+                            timeout_s=self.timeout_s or 0.0,
+                        )
+                    ) from exc
                 slug = str(cwd.resolve()).replace("/", "-")
                 jsonl = Path.home() / ".claude" / "projects" / slug / f"{new_sid}.jsonl"
             # Pull the agent's final assistant text from the JSONL transcript
