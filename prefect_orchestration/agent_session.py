@@ -75,7 +75,7 @@ class RateLimitError(RuntimeError):
 # `resets <time>` capture stops at end-of-line, closing-paren, or middle-dot
 # so we don't slurp trailing punctuation. Claude's exact format is
 # `You've hit your limit · resets 1:30am (America/New_York)`.
-_RATE_LIMIT_RESET_RE = re.compile(r"resets\s+([^\n)·]+?)(?:\s*[)\n·]|$)", re.IGNORECASE)
+_RATE_LIMIT_RESET_RE = re.compile(r"resets\s+([^\n·]+)", re.IGNORECASE)
 _RATE_LIMIT_MARKERS = (
     "you've hit your limit",
     "you have hit your limit",
@@ -1295,6 +1295,47 @@ class TmuxInteractiveClaudeBackend:
                 break
             # Still sitting at the input prompt — likely the paste chip
             # never committed. Loop and try Enter again.
+
+        # Rate-limit terminal-state guard (sav.2). The active_markers loop
+        # treats 'hit your limit' as a "submission landed" signal because
+        # the bracketed paste did in fact reach Claude — but Claude's
+        # response is the terminal rate-limit dialog, not a real turn.
+        # The Stop hook never fires for synthetic rate_limit events, so
+        # `_wait_for_stop` would poll the sentinel until `timeout_s`
+        # elapses (sav.1's finite timeout caps that, but the operator
+        # still gets a useless "wedged" error 30 minutes later instead of
+        # a clean "rate limit, try again at <reset>" right now).
+        #
+        # Two complementary detectors:
+        #   1. Pane scrape — fast, works in fresh + resume + fork modes,
+        #      surfaces the human-readable reset string Claude prints.
+        #   2. JSONL synthetic-event scan — only viable in fresh/fork
+        #      modes (resume doesn't know `new_sid` yet); deterministic
+        #      ground-truth from Claude's own transcript writer.
+        final_pane = subprocess.run(
+            ["tmux", "capture-pane", "-pt", target, "-S", "-200"],
+            capture_output=True,
+            check=False,
+        ).stdout.decode(errors="replace")
+        reset = _detect_rate_limit_in_pane(final_pane)
+        if reset is None and new_sid is not None:
+            slug = str(cwd.resolve()).replace("/", "-")
+            jsonl_probe = (
+                Path.home() / ".claude" / "projects" / slug / f"{new_sid}.jsonl"
+            )
+            # The synthetic event lands a beat after the paste — poll
+            # briefly so we don't false-negative on a fast capture.
+            for _ in range(10):
+                reset = _detect_rate_limit_in_jsonl(jsonl_probe)
+                if reset is not None:
+                    break
+                time.sleep(0.3)
+        if reset is not None:
+            _cleanup_tmux(target, scoped=scoped)
+            if sentinel is not None:
+                sentinel.unlink(missing_ok=True)
+            prompt_path.unlink(missing_ok=True)
+            raise RateLimitError(reset_time=reset or None)
 
         try:
             if new_sid is None:
