@@ -19,8 +19,8 @@ class _StubSession:
         self.calls: list[tuple[str, bool]] = []
         self.reply = "ack"
 
-    def prompt(self, text: str, *, fork_session: bool = False) -> str:
-        self.calls.append((text, fork_session))
+    def prompt(self, text: str, *, fork: bool = False) -> str:
+        self.calls.append((text, fork))
         return self.reply
 
 

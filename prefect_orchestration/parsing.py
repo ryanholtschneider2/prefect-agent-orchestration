@@ -43,7 +43,7 @@ def prompt_for_verdict(
     Convenience helper used by formula packs: every step that ends with
     a verdict has the same shape — prompt the agent, then read
     ``<run_dir>/verdicts/<name>.json``. ``fork`` forwards to
-    ``AgentSession.prompt(fork_session=...)`` so callers can opt into a
+    ``AgentSession.prompt(fork=...)`` so callers can opt into a
     forked turn that doesn't bump the parent session's resume UUID.
 
     The agent's textual reply is discarded — only the verdict file
@@ -61,14 +61,14 @@ def prompt_for_verdict(
         return read_verdict(run_dir, name)
     try:
         if fork:
-            sess.prompt(prompt, fork_session=True, expect_verdict=expected)
+            sess.prompt(prompt, fork=True, expect_verdict=expected)
         else:
             sess.prompt(prompt, expect_verdict=expected)
     except TypeError:
         # Stub sessions used in older tests don't accept expect_verdict;
         # fall through and let read_verdict's FileNotFoundError surface.
         if fork:
-            sess.prompt(prompt, fork_session=True)
+            sess.prompt(prompt, fork=True)
         else:
             sess.prompt(prompt)
     return read_verdict(run_dir, name)
