@@ -337,14 +337,14 @@ def topo_sort_blocks(nodes: list[dict]) -> list[dict]:
 def _dot_suffix_children(epic_id: str) -> list[dict]:
     """Probe `<epic>.1`, `<epic>.2`, … until 3 consecutive misses.
 
-    Returns rows shaped `{id, status, title, dependencies}` (raw bd
-    `dependencies` field, not yet restricted to the in-set). Skips closed
-    children. Internal helper for `list_epic_children(mode="ids")`; kept
-    as a separate function so the historical probe loop is grep-able.
+    Returns graph-shape rows `{id, status, title, block_deps}` with
+    `block_deps` restricted to ids also in the discovered set (same
+    contract `list_subgraph` produces, so the result is topo-sortable
+    by `topo_sort_blocks` directly). Skips closed children.
     """
     if not _bd_available():
         return []
-    rows: list[dict] = []
+    raw: list[tuple[dict, list[str]]] = []
     consecutive_missing = 0
     n = 0
     while consecutive_missing < 3:
@@ -370,35 +370,19 @@ def _dot_suffix_children(epic_id: str) -> list[dict]:
                 d["id"] if isinstance(d, dict) else d
                 for d in row.get("dependencies") or []
             ]
-            rows.append(
-                {
-                    "id": row["id"],
-                    "status": row["status"],
-                    "title": row.get("title", ""),
-                    "dependencies": deps,
-                }
+            raw.append(
+                (
+                    {
+                        "id": row["id"],
+                        "status": row["status"],
+                        "title": row.get("title", ""),
+                    },
+                    deps,
+                )
             )
-    return rows
-
-
-def _ids_mode_nodes(epic_id: str) -> list[dict]:
-    """`mode="ids"`: dot-suffix probe → graph-shape nodes.
-
-    Adapts the raw probe rows to `{id, status, title, block_deps}` with
-    `block_deps` restricted to ids that are also in the dot-suffix set.
-    """
-    rows = _dot_suffix_children(epic_id)
-    if not rows:
-        return []
-    in_set = {r["id"] for r in rows}
+    in_set = {node["id"] for node, _ in raw}
     return [
-        {
-            "id": r["id"],
-            "status": r["status"],
-            "title": r.get("title", ""),
-            "block_deps": [d for d in r.get("dependencies", []) if d in in_set],
-        }
-        for r in rows
+        {**node, "block_deps": [d for d in deps if d in in_set]} for node, deps in raw
     ]
 
 
@@ -433,23 +417,21 @@ def list_epic_children(
             f"unknown discover mode {mode!r}; valid: {list(VALID_DISCOVER_MODES)}"
         )
     if mode == "ids":
-        return _ids_mode_nodes(epic_id)
-    if mode == "deps":
-        return list_subgraph(
-            epic_id,
-            traverse=("parent-child", "blocks"),
-            include_closed=False,
-            include_root=False,
-        )
-
-    # mode == "both": deps order first, then dot-suffix-only ids appended.
+        return _dot_suffix_children(epic_id)
     deps_nodes = list_subgraph(
         epic_id,
         traverse=("parent-child", "blocks"),
         include_closed=False,
         include_root=False,
     )
-    ids_nodes = _ids_mode_nodes(epic_id)
+    if mode == "deps":
+        return deps_nodes
+
+    # mode == "both": deps order first, then dot-suffix-only ids appended.
+    # Both sources already restrict block_deps to their own in-set, and
+    # the merged set is a superset of each — so per-node union is enough
+    # without a final merged-set re-restriction.
+    ids_nodes = _dot_suffix_children(epic_id)
     if not deps_nodes:
         return ids_nodes
     if not ids_nodes:
@@ -462,24 +444,12 @@ def list_epic_children(
         order.append(node["id"])
     for node in ids_nodes:
         if node["id"] in by_id:
-            # Union block_deps from both sources (de-dup, preserve order).
-            seen = set(by_id[node["id"]].get("block_deps", []))
-            merged = list(by_id[node["id"]].get("block_deps", []))
-            for dep in node.get("block_deps", []):
-                if dep not in seen:
-                    merged.append(dep)
-                    seen.add(dep)
-            by_id[node["id"]]["block_deps"] = merged
+            existing = by_id[node["id"]].get("block_deps", [])
+            incoming = node.get("block_deps", [])
+            by_id[node["id"]]["block_deps"] = list(dict.fromkeys(existing + incoming))
         else:
             by_id[node["id"]] = dict(node)
             order.append(node["id"])
-
-    # Re-restrict block_deps to the merged in-set so dropped ids don't
-    # leak through (e.g. a deps-only id whose blocker only existed in
-    # the ids set, or vice versa).
-    in_set = set(by_id)
-    for node in by_id.values():
-        node["block_deps"] = [d for d in node.get("block_deps", []) if d in in_set]
     return [by_id[i] for i in order]
 
 
