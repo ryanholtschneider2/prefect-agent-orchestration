@@ -388,8 +388,13 @@ def _stub_judge_all_cases(
 # ---------------------------------------------------------------------------
 
 
-def _select_backend(dry_run: bool) -> Any:
-    """Pick a `SessionBackend` factory honoring `--dry-run` + `PO_BACKEND`."""
+def _select_backend(dry_run: bool, *, issue_id: str | None = None) -> Any:
+    """Pick a `SessionBackend` factory honoring `--dry-run` + `PO_BACKEND`.
+
+    `TmuxClaudeBackend` requires `issue` + `role` to name its tmux
+    session; we pass `issue_id` (or a stable fallback) and the fixed
+    `skill-evals` role so concurrent skill-eval runs don't collide.
+    """
     if dry_run:
         return StubBackend()
     choice = (os.environ.get("PO_BACKEND") or "").lower()
@@ -397,12 +402,13 @@ def _select_backend(dry_run: bool) -> Any:
         return ClaudeCliBackend()
     if choice == "stub":
         return StubBackend()
+    tmux_kwargs = {"issue": issue_id or "skill-evals", "role": "skill-evals"}
     if choice == "tmux":
         if shutil.which("tmux") is None:
             raise RuntimeError("PO_BACKEND=tmux but tmux not on PATH")
-        return TmuxClaudeBackend()
+        return TmuxClaudeBackend(**tmux_kwargs)
     if shutil.which("tmux"):
-        return TmuxClaudeBackend()
+        return TmuxClaudeBackend(**tmux_kwargs)
     return ClaudeCliBackend()
 
 
@@ -411,6 +417,7 @@ def _build_session(
     rig_path: Path | None,
     *,
     dry_run: bool,
+    issue_id: str | None = None,
 ) -> AgentSession:
     """Construct one `AgentSession` reused across all cases.
 
@@ -419,7 +426,7 @@ def _build_session(
     in the rig, not in the pack tree. `skip_mail_inject=True` because
     eval reproducibility must not depend on any agent's inbox state.
     """
-    backend = _select_backend(dry_run)
+    backend = _select_backend(dry_run, issue_id=issue_id)
     repo_path = rig_path if rig_path is not None else skill_dir.parent.parent
     return AgentSession(
         role="skill-evals",
@@ -628,7 +635,9 @@ def skill_evals(
     ) as run_span:
         try:
             # Phase 1: drive the agent for each case (one shared session).
-            session = _build_session(skill_dir, rig_path_p, dry_run=dry_run)
+            session = _build_session(
+                skill_dir, rig_path_p, dry_run=dry_run, issue_id=issue_id
+            )
             skill_md = skill_dir / "SKILL.md"
             case_io_pairs: list[tuple[CaseSpec, str]] = []
             elapsed: list[float] = []

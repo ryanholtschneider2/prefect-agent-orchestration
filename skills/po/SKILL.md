@@ -5,6 +5,10 @@ description: Dispatch beads issues and epics for autonomous implementation via t
 
 # PO — Prefect Orchestration for autonomous bead work
 
+> **Skill status**: see [`reports/latest.md`](reports/latest.md) for the
+> latest eval pass rate. Run `po run skill-evals --pack
+> prefect-orchestration --skill po` to refresh.
+
 `po` is a CLI (installed globally via `po packs install` / `uv tool install`) that dispatches
 beads issues to an actor-critic pipeline and dispatches beads epics as
 DAG-ordered fan-outs. Each role in the pipeline (triager, planner,
@@ -211,3 +215,5 @@ in session names because tmux uses `.` as a pane separator.
 - **Exploratory / research beads without clear acceptance criteria**:
   PO's verifier expects ACs to check against. Without them the
   verifier either rubber-stamps or rejects nothing meaningfully.
+
+<!-- po-skill-evals last-run: 2026-04-28T23:29:50Z n_pass=9/9 -->

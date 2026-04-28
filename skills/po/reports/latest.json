@@ -1,0 +1,220 @@
+{
+  "skill": "po",
+  "pack": "prefect-orchestration",
+  "judge_model": "openai:gpt-5-mini",
+  "tier": null,
+  "case_filter": null,
+  "pass_threshold": 0.75,
+  "n_cases": 9,
+  "n_passed": 9,
+  "overall_pass": true,
+  "cases": [
+    {
+      "case": "smoke-what-is-po",
+      "tier": "smoke",
+      "score": 1.0,
+      "pass": true,
+      "criteria": [
+        {
+          "criterion": "responds-with-content",
+          "score": 1.0,
+          "reason": "The output is substantive and directly addresses the question: it explains what the `po` CLI does and how it relates to beads (work state) and Prefect (orchestration), so it is on-topic and non-empty."
+        },
+        {
+          "criterion": "mentions-core-vocabulary",
+          "score": 1.0,
+          "reason": "The output correctly references 'beads', 'formula', and 'Prefect' and frames beads as the source of truth for work, formulas as the unit executed (via a formula's @flow), and 'po' as the glue that claims a bead, runs the flow on Prefect, and closes the bead. This matches the project's mental model and vocabulary."
+        }
+      ],
+      "output": "The `po` CLI dispatches beads issues and epics into autonomous actor-critic pipelines, with each role (triager, planner, builder, critic, verifier, …) running as a Claude subprocess inside a lurkable tmux session. Beads is the source of truth for *what* work to do (issues, dependencies, status), while Prefect provides the *when/where* — the DAG scheduler, UI, retries, and concurrency limits — so a `po run` claims a bead, executes the formula's `@flow` on Prefect, and closes the bead on success. In short: beads = work state, Prefect = orchestration runtime, `po` = the glue that wraps both behind a single CLI.",
+      "elapsed_seconds": 6.927
+    },
+    {
+      "case": "smoke-recommend-command-for-issue",
+      "tier": "smoke",
+      "score": 1.0,
+      "pass": true,
+      "criteria": [
+        {
+          "criterion": "responds-with-content",
+          "score": 1.0,
+          "reason": "The provided output gives a concrete command to run and explains what it does and how to monitor progress—substantive and on-topic."
+        },
+        {
+          "criterion": "recommends-correct-subcommand",
+          "score": 1.0,
+          "reason": "The output recommends 'po run software-dev-full' for dispatching a single bead (issue foo-1), matching the reference mapping for dispatching a single bead. Flags and follow-up log advice are appropriate."
+        },
+        {
+          "criterion": "includes-rig-flags",
+          "score": 1.0,
+          "reason": "The command includes both flags: --rig myrig and --rig-path /tmp/myrig, matching the rig name and absolute path from the prompt."
+        }
+      ],
+      "output": "```bash\npo run software-dev-full --issue-id foo-1 --rig myrig --rig-path /tmp/myrig\n```\n\nThis claims the bead, runs the 16-step actor-critic pipeline (triage → plan ⟲ → build → lint+test → review ⟲ → verification ⟲ → docs → learn), and closes the bead on success. Tail progress with `po logs foo-1 -f`, or `tmux attach -t po-foo-1-builder` to watch a role live.",
+      "elapsed_seconds": 5.324
+    },
+    {
+      "case": "smoke-po-vs-prefect-deference",
+      "tier": "smoke",
+      "score": 1.0,
+      "pass": true,
+      "criteria": [
+        {
+          "criterion": "responds-with-content",
+          "score": 1.0,
+          "reason": "The output directly answers the question by recommending 'prefect flow-run cancel <flow-run-id>' and explains that 'po' defers to Prefect for cancel/list flow-run operations while handling only higher-level verbs. It's on-topic and substantive."
+        },
+        {
+          "criterion": "defers-to-prefect-cli",
+          "score": 1.0,
+          "reason": "The output explicitly recommends using the Prefect CLI command `prefect flow-run cancel <flow-run-id>` and explains that `po` defers to Prefect for pure-Prefect operations (cancel, list flow runs, work-pool config) while `po` only wraps non-Prefect concerns. This matches the documented division of labor."
+        }
+      ],
+      "output": "Use `prefect` — specifically `prefect flow-run cancel <flow-run-id>`. `po` doesn't wrap this; it defers to Prefect for anything that's purely a Prefect operation (cancel, list flow runs, work-pool config, etc.). `po` only adds verbs for things Prefect doesn't natively know about (rig-path, run-dir, per-role session UUIDs, bead claim/close).",
+      "elapsed_seconds": 7.824
+    },
+    {
+      "case": "tier1-dispatch-bead",
+      "tier": "regression",
+      "score": 1.0,
+      "pass": true,
+      "criteria": [
+        {
+          "criterion": "responds-with-content",
+          "score": 1.0,
+          "reason": "The assistant provided a non-empty, on-topic bash command to dispatch the issue (matches the user's request), so it satisfies the rubric."
+        },
+        {
+          "criterion": "recommends-correct-subcommand",
+          "score": 1.0,
+          "reason": "Recommended subcommand 'po run software-dev-full' matches the reference mapping for dispatching a single bead (correct primary recommendation)."
+        },
+        {
+          "criterion": "includes-rig-flags",
+          "score": 1.0,
+          "reason": "Output includes both --rig myrig and --rig-path /tmp/rig alongside the required command 'po run software-dev-full', satisfying the rubric."
+        },
+        {
+          "criterion": "no-todowrite",
+          "score": 1.0,
+          "reason": "The suggested command contains only the beads-related dispatch and does not mention TodoWrite, markdown TODO files, or any non-beads task tracking; it adheres to the rubric."
+        }
+      ],
+      "output": "```bash\npo run software-dev-full --issue-id foo-1 --rig myrig --rig-path /tmp/rig\n```",
+      "elapsed_seconds": 5.56
+    },
+    {
+      "case": "tier1-fan-out-epic",
+      "tier": "regression",
+      "score": 1.0,
+      "pass": true,
+      "criteria": [
+        {
+          "criterion": "responds-with-content",
+          "score": 1.0,
+          "reason": "The output includes a concrete command to run (po run epic ...), explains how children are discovered and fanned out, and warns about embedded-dolt — it is non-empty and on-topic."
+        },
+        {
+          "criterion": "recommends-correct-subcommand",
+          "score": 1.0,
+          "reason": "The provided output recommends 'po run epic' to fan out an epic, which matches the reference mapping (fan out an epic → 'po run epic' OR 'po run graph')."
+        },
+        {
+          "criterion": "includes-rig-flags",
+          "score": 1.0,
+          "reason": "Both --rig and --rig-path flags are present with values 'myrig' and '/tmp/rig' matching the prompt, satisfying the rubric requirement."
+        }
+      ],
+      "output": "```bash\npo run epic --epic-id foo-e9b --rig myrig --rig-path /tmp/rig\n```\n\nThis discovers children by dot-suffix convention (`foo-e9b.1`, `foo-e9b.2`, …), topo-sorts them by their `bd dep` graph, and fans each out as a concurrent `software-dev-full` sub-flow gated on its dependencies. If the rig's beads backend is embedded-dolt, migrate to dolt-server first — embedded serializes `bd update` and will stall parallel children.",
+      "elapsed_seconds": 6.122
+    },
+    {
+      "case": "tier1-retry-stuck-run",
+      "tier": "regression",
+      "score": 1.0,
+      "pass": true,
+      "criteria": [
+        {
+          "criterion": "responds-with-content",
+          "score": 1.0,
+          "reason": "The output provides a direct, non-empty, on-topic answer: it gives the exact command 'po retry foo-2 --keep-sessions' and explains what that does (preserves metadata.json, reopens bead, relaunches, and mentions --force for an existing Running flow-run)."
+        },
+        {
+          "criterion": "recommends-correct-subcommand",
+          "score": 1.0,
+          "reason": "The output recommends 'po retry' (po retry foo-2 --keep-sessions) which matches the reference mapping for retrying a stuck run. It correctly suggests keeping sessions and mentions force option for existing Running flow-runs."
+        }
+      ],
+      "output": "```bash\npo retry foo-2 --keep-sessions\n```\n\n`po retry` archives the existing run_dir to a `.bak-<utc>` sibling, reopens the bead if it was closed, and relaunches the formula in-process. `--keep-sessions` preserves `metadata.json` so per-role Claude session UUIDs survive the archive and roles resume from where they left off. If a `Running` flow-run for the issue still exists, add `--force` to bypass the safety check (kill it in the Prefect UI first if it's actually wedged).",
+      "elapsed_seconds": 6.389
+    },
+    {
+      "case": "tier1-see-role-sessions",
+      "tier": "regression",
+      "score": 1.0,
+      "pass": true,
+      "criteria": [
+        {
+          "criterion": "responds-with-content",
+          "score": 1.0,
+          "reason": "The output provides concrete, on-topic commands: 'po sessions foo-3' to list role|uuid and 'po sessions foo-3 --resume builder' to print the exact 'claude --print --resume <uuid> --fork-session' resume command. This answers the question directly and substantively."
+        },
+        {
+          "criterion": "recommends-correct-subcommand",
+          "score": 1.0,
+          "reason": "The response recommends the 'po sessions' subcommand (example: 'po sessions foo-3'), which exactly matches the rubric mapping for seeing per-role session UUIDs."
+        }
+      ],
+      "output": "```bash\npo sessions foo-3\n```\n\nThis reads `metadata.json` from the run_dir and prints a `role | uuid | last-iter | last-updated` table. To get a ready-to-run resume one-liner for a specific role:\n\n```bash\npo sessions foo-3 --resume builder\n```\n\nThat emits the exact `claude --print --resume <uuid> --fork-session` command for the builder role.",
+      "elapsed_seconds": 6.37
+    },
+    {
+      "case": "tier1-inspect-verdicts",
+      "tier": "regression",
+      "score": 1.0,
+      "pass": true,
+      "criteria": [
+        {
+          "criterion": "responds-with-content",
+          "score": 1.0,
+          "reason": "The response gives a clear, on-topic command (po artifacts foo-3 --verdicts) and a brief explanation that it dumps only verdicts JSON, which satisfies the request."
+        },
+        {
+          "criterion": "recommends-correct-subcommand",
+          "score": 1.0,
+          "reason": "The response recommends the exact subcommand 'po artifacts foo-3 --verdicts', which matches the reference mapping for inspecting verdict JSON files."
+        }
+      ],
+      "output": "```bash\npo artifacts foo-3 --verdicts\n```\n\nThis dumps just the `verdicts/*.json` files from the run_dir, pretty-printed — skipping the markdown forensic trail (triage, plan, critiques, verification reports).",
+      "elapsed_seconds": 5.123
+    },
+    {
+      "case": "tier1-cancel-flow-run-defers-to-prefect",
+      "tier": "regression",
+      "score": 1.0,
+      "pass": true,
+      "criteria": [
+        {
+          "criterion": "responds-with-content",
+          "score": 1.0,
+          "reason": "The reply directly answers the question: it states there is no 'po cancel' command, provides the correct Prefect CLI command ('prefect flow-run cancel <flow-run-id>'), and explains how to find the flow-run ID and why 'po' defers to the Prefect CLI. The response is substantive and on-topic."
+        },
+        {
+          "criterion": "defers-to-prefect-cli",
+          "score": 1.0,
+          "reason": "The output explicitly states there is no 'po cancel' and instructs the user to use the Prefect CLI (prefect flow-run cancel <flow-run-id>), explains that cancellation is a pure-Prefect operation and that 'po' defers to 'prefect' for cancel/list/work-pool config, and suggests ways to find the flow-run-id (UI or 'prefect flow-run ls'/'po status'). This matches the rubric."
+        },
+        {
+          "criterion": "no-invented-po-verbs",
+          "score": 1.0,
+          "reason": "The response correctly states there is no 'po cancel' command and does not invent any non-existent 'po' verbs. It references only valid 'po' verbs (e.g., 'po status') and advises using the Prefect CLI for cancellation."
+        }
+      ],
+      "output": "No, there is no `po cancel` command. Cancellation is a pure-Prefect operation, so use the Prefect CLI directly:\n\n```bash\nprefect flow-run cancel <flow-run-id>\n```\n\nFind the flow-run-id either in the Prefect UI at http://127.0.0.1:4200 or via `prefect flow-run ls` (or `po status` to see active PO runs grouped by issue_id, which can help you locate the right one). `po` only adds verbs for things Prefect doesn't natively do — it deliberately defers to `prefect` for cancel, list, work-pool config, etc.",
+      "elapsed_seconds": 6.533
+    }
+  ],
+  "started_at": "2026-04-28T23:28:38Z",
+  "finished_at": "2026-04-28T23:29:50Z"
+}

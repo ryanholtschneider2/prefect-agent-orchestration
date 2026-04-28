@@ -37,6 +37,18 @@ po = "prefect_orchestration.cli:main"
 prompt = "prefect_orchestration.prompt_formula:prompt_run"
 skill-evals = "prefect_orchestration.skill_evals:skill_evals"
 
+# Pack-contributed `po doctor` checks. The `po` skill ships from core, so
+# its eval-freshness check lives here (not in a sibling pack).
+[project.entry-points."po.doctor_checks"]
+po-skill-evals-fresh = "prefect_orchestration.skill_evals_doctor:po_skill_evals_fresh"
+
+# Skills shipped at the dist root (next to pyproject.toml). Hatchling's
+# wheel target only packages the importable Python module by default;
+# include the skills/ tree explicitly so wheel installs (not just
+# editable installs) resolve `--pack prefect-orchestration --skill po`.
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "skills"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

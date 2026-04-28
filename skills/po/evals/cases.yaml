@@ -1,0 +1,111 @@
+# Eval cases for the `po` skill.
+#
+# Schema: prefect_orchestration.skill_evals_schema.CasesFile
+# Runner: `po run skill-evals --pack prefect-orchestration --skill po`
+#
+# Tiers:
+#   smoke      — fast capability checks, run on every PR
+#   regression — real workflow recommendations, run before tagging a release
+#
+# `evaluators:` is a subset of criterion names from rubrics.yaml. Omit to
+# evaluate against every criterion.
+
+cases:
+  # -------------------------------------------------------------------
+  # smoke (3 cases) — does the skill respond at all and mention the
+  # core mental model? Cheap, every-PR.
+  # -------------------------------------------------------------------
+
+  - name: smoke-what-is-po
+    tier: smoke
+    prompt: |
+      In two or three sentences, what is the `po` CLI and how does it
+      relate to beads and Prefect?
+    evaluators: [responds-with-content, mentions-core-vocabulary]
+
+  - name: smoke-recommend-command-for-issue
+    tier: smoke
+    prompt: |
+      I have an open beads issue `foo-1` in the rig at `/tmp/myrig`. I
+      want it implemented autonomously. What should I run?
+    evaluators:
+      - responds-with-content
+      - recommends-correct-subcommand
+      - includes-rig-flags
+
+  - name: smoke-po-vs-prefect-deference
+    tier: smoke
+    prompt: |
+      I want to cancel a running Prefect flow run. Should I use `po` or
+      `prefect`?
+    evaluators:
+      - responds-with-content
+      - defers-to-prefect-cli
+
+  # -------------------------------------------------------------------
+  # regression (6 cases) — real workflow recommendations. Run before
+  # tagging a release. Each case has a known-correct subcommand the
+  # judge looks for.
+  # -------------------------------------------------------------------
+
+  - name: tier1-dispatch-bead
+    tier: regression
+    prompt: |
+      I want to dispatch beads issue `foo-1` for autonomous
+      implementation. The rig is at `/tmp/rig` and I'd call it `myrig`.
+      What's the exact command?
+    evaluators:
+      - responds-with-content
+      - recommends-correct-subcommand
+      - includes-rig-flags
+      - no-todowrite
+
+  - name: tier1-fan-out-epic
+    tier: regression
+    prompt: |
+      I have an epic bead `foo-e9b` whose children should fan out
+      concurrently. Rig `myrig` at `/tmp/rig`. Recommend a command.
+    evaluators:
+      - responds-with-content
+      - recommends-correct-subcommand
+      - includes-rig-flags
+
+  - name: tier1-retry-stuck-run
+    tier: regression
+    prompt: |
+      A `po run` for bead `foo-2` got stuck halfway through and I want
+      to relaunch it (preserving any per-role Claude sessions). What
+      do I run?
+    evaluators:
+      - responds-with-content
+      - recommends-correct-subcommand
+
+  - name: tier1-see-role-sessions
+    tier: regression
+    prompt: |
+      For bead `foo-3`, how do I see which Claude session UUIDs each
+      role used so I can `claude --resume` one of them?
+    evaluators:
+      - responds-with-content
+      - recommends-correct-subcommand
+
+  - name: tier1-inspect-verdicts
+    tier: regression
+    prompt: |
+      For bead `foo-3`, I want to see only the JSON verdict files from
+      its run — the orchestrator-readable pass/fail artifacts, not the
+      full markdown trail. Command?
+    evaluators:
+      - responds-with-content
+      - recommends-correct-subcommand
+
+  - name: tier1-cancel-flow-run-defers-to-prefect
+    tier: regression
+    prompt: |
+      I want to cancel a Prefect flow run that one of my `po run`s
+      kicked off. Is there a `po cancel` command? If not, what should
+      I do?
+    evaluators:
+      - responds-with-content
+      - defers-to-prefect-cli
+      - no-invented-po-verbs
