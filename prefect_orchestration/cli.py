@@ -294,6 +294,28 @@ def run(
         label = name
 
     kwargs = _parse_kwargs(extras)
+
+    # SIGINT / SIGTERM cleanup: when the user Ctrl-Cs `po run` (or the
+    # process is killed), the spawned tmux sessions are detached so they
+    # outlive us. Drain the in-process registry before exiting so we
+    # don't leak zombie claude+tmux pairs eating rate-limit slots
+    # indefinitely (sav.3).
+    import signal
+
+    from prefect_orchestration import tmux_tracker
+
+    def _signal_cleanup(signum: int, _frame: Any) -> None:
+        n = tmux_tracker.kill_all()
+        if n:
+            typer.echo(
+                f"[po] killed {n} tmux session(s)/window(s) on signal {signum}",
+                err=True,
+            )
+        # 128 + signum — conventional exit code for signal-terminated.
+        raise typer.Exit(128 + signum)
+
+    prior_int = signal.signal(signal.SIGINT, _signal_cleanup)
+    prior_term = signal.signal(signal.SIGTERM, _signal_cleanup)
     try:
         result = flow_obj(**kwargs)
     except TypeError as exc:
@@ -301,6 +323,9 @@ def run(
         if from_file is None:
             typer.echo(f"run `po show {label}` to see the signature", err=True)
         raise typer.Exit(2) from exc
+    finally:
+        signal.signal(signal.SIGINT, prior_int)
+        signal.signal(signal.SIGTERM, prior_term)
     typer.echo(result)
 
 

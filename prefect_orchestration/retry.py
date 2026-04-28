@@ -215,6 +215,18 @@ def retry_issue(
     lock_path = run_dir.with_name(run_dir.name + LOCK_SUFFIX)
 
     with _exclusive_lock(lock_path):
+        # Kill any tmux artifacts left behind by the prior crashed run
+        # before relaunching. Without this, a hung flow's tmux session +
+        # its claude child + `sleep infinity` keep-alive pane persist
+        # indefinitely and stomp the new spawn's session-name collision
+        # check (sav.3).
+        from prefect_orchestration import tmux_tracker
+
+        try:
+            tmux_tracker.kill_for_issue(issue_id)
+        except Exception as exc:  # noqa: BLE001
+            warn(f"tmux pre-cleanup for {issue_id} failed (non-fatal): {exc}")
+
         stashed_metadata: bytes | None = None
         if keep_sessions:
             meta_file = run_dir / "metadata.json"

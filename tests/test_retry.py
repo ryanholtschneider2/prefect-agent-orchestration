@@ -315,3 +315,51 @@ def test_unknown_formula_exit_four(tmp_path, monkeypatch):
     with pytest.raises(retry.RetryError) as exc:
         retry.retry_issue("beads-xyz", formula="nope", _in_flight_probe=lambda _i: 0)
     assert exc.value.exit_code == 4
+
+
+# ─── sav.3: tmux pre-cleanup before relaunch ──────────────────────────
+
+
+def test_retry_kills_prior_tmux_for_issue(tmp_path, monkeypatch):
+    """Before archiving, retry asks tmux_tracker to kill any prior session."""
+    from prefect_orchestration import tmux_tracker
+
+    rig_path, run_dir = _seed_run(tmp_path)
+    _patch_resolve(monkeypatch, rig_path, run_dir)
+    monkeypatch.setattr(retry.subprocess, "run", _BdFake(status="open"))
+    spy = _FormulaSpy()
+    _patch_formula(monkeypatch, spy)
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        tmux_tracker, "kill_for_issue", lambda iid: calls.append(iid) or 0
+    )
+
+    retry.retry_issue("beads-xyz", _in_flight_probe=lambda _i: 0)
+
+    assert calls == ["beads-xyz"]
+
+
+def test_retry_tmux_cleanup_failure_is_nonfatal(tmp_path, monkeypatch):
+    """A raised exception from kill_for_issue must not abort retry."""
+    from prefect_orchestration import tmux_tracker
+
+    rig_path, run_dir = _seed_run(tmp_path)
+    _patch_resolve(monkeypatch, rig_path, run_dir)
+    monkeypatch.setattr(retry.subprocess, "run", _BdFake(status="open"))
+    spy = _FormulaSpy()
+    _patch_formula(monkeypatch, spy)
+
+    def _raise(_iid: str) -> int:
+        raise RuntimeError("tmux blew up")
+
+    monkeypatch.setattr(tmux_tracker, "kill_for_issue", _raise)
+
+    warnings: list[str] = []
+    result = retry.retry_issue(
+        "beads-xyz",
+        _in_flight_probe=lambda _i: 0,
+        warn=warnings.append,
+    )
+    assert result.launched is True
+    assert any("tmux pre-cleanup" in w for w in warnings)

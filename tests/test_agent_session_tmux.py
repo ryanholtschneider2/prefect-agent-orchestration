@@ -380,3 +380,24 @@ def test_tmux_backend_kills_preexisting_session(tmp_path):
             check=False,
             stderr=subprocess.DEVNULL,
         )
+
+
+# ─── sav.3: sleep-infinity is conditional on non-zero claude exit ─────
+
+
+def test_interactive_wrapper_sleep_infinity_only_on_failure():
+    """sav.3 regression: `sleep infinity` must be guarded on rc != 0.
+
+    The prior unconditional `<cmd> ; sleep infinity` left zombie tmux
+    sessions + claude children whenever the parent `po` process died,
+    holding rate-limit slots indefinitely. The new shape only sleeps
+    when claude exited abnormally, so clean exits collapse the pane.
+    """
+    import inspect
+
+    from prefect_orchestration.agent_session import TmuxInteractiveClaudeBackend
+
+    src = inspect.getsource(TmuxInteractiveClaudeBackend.run)
+    assert '"$rc" -ne 0' in src
+    # Legacy unconditional shape must be gone.
+    assert ' ; sleep infinity"' not in src

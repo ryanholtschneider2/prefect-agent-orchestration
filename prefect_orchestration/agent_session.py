@@ -25,9 +25,10 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Iterator, Mapping, Protocol
 
 from prefect_orchestration.secrets import (
     DEFAULT_PREFIXES,
@@ -782,13 +783,17 @@ def _wait_for_tui_ready(
     *,
     fallback_s: float = 8.0,
     poll: float = 0.4,
-) -> None:
+) -> bool:
     """Poll the tmux pane until the Claude Code TUI input box renders.
 
     The input row always contains a `❯` glyph; once it shows up the TUI is
     ready to accept paste. If we never see it within `fallback_s` (rare —
     splash screen issue, OAuth prompt, etc.) we proceed anyway and let
     the paste-buffer attempt surface whatever's wrong.
+
+    Returns True if the TUI glyph (or `[claude exited` marker) was
+    positively detected, False on fallback-timeout. Callers may log the
+    False case for correlation with later wedge-detection (nfs).
     """
     deadline = time.monotonic() + fallback_s
     while time.monotonic() < deadline:
@@ -801,11 +806,104 @@ def _wait_for_tui_ready(
         if "❯" in text or "Welcome back" in text:
             # TUI rendered. Tiny extra delay so the key handler is wired.
             time.sleep(0.2)
-            return
+            return True
         if "[claude exited" in text:
             # Caller's exit-marker check will pick this up.
+            return True
+        time.sleep(poll)
+    return False
+
+
+# Per-rig advisory lock around the brief Claude-CLI spawn + TUI-ready
+# window. Two parallel `claude --dangerously-skip-permissions` processes
+# in the same cwd race on Claude Code's startup-time on-disk state
+# (credentials read, project-slug mkdir under ~/.claude/projects/<slug>,
+# OAuth refresh) and one wedges with an empty TUI: no `❯` glyph, no
+# `[claude exited` marker, sentinel never fires. Serializing only the
+# spawn window avoids that without serializing the multi-minute work
+# turn itself. Honor PO_DISABLE_SPAWN_LOCK for opt-out / A-B testing.
+@contextmanager
+def _with_rig_spawn_lock(cwd: Path) -> Iterator[None]:
+    """Hold an exclusive flock on `<cwd>/.planning/.po-claude-spawn.lock`."""
+    if os.environ.get("PO_DISABLE_SPAWN_LOCK") == "1":
+        yield
+        return
+    import fcntl
+
+    lock_dir = cwd / ".planning"
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Read-only or otherwise unwritable rig — degrade to no-op rather
+        # than tank the run. The detection path (_assert_submission_landed)
+        # still catches wedges.
+        yield
+        return
+    lock_path = lock_dir / ".po-claude-spawn.lock"
+    with open(lock_path, "w") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+            except OSError:
+                pass
+
+
+def _assert_submission_landed(
+    target: str,
+    *,
+    active_markers: tuple[str, ...],
+    issue: str,
+    role: str,
+    session_id: str | None,
+    timeout_s: float,
+    grace_s: float = 30.0,
+    poll: float = 1.0,
+) -> None:
+    """Raise a clear wedge error if the prompt never reached the agent.
+
+    Called after the 3× send-keys Enter loop has finished without seeing
+    any `active_marker` in the pane. Gives Claude one final grace window
+    to show *any* sign of life — active marker, rate-limit dialog, or the
+    `[claude exited` keep-alive marker. If none appear, raise RuntimeError
+    with `_format_wedge_error` so the operator sees the pane tail and a
+    pointer to `~/.cache/po-stops/`.
+
+    Total worst-case latency from spawn to wedge-error stays under 60 s
+    (TUI wait 8 s + paste retries ~9 s + grace 30 s). nfs.
+    """
+    deadline = time.monotonic() + grace_s
+    while time.monotonic() < deadline:
+        pane = subprocess.run(
+            ["tmux", "capture-pane", "-pt", target, "-S", "-50"],
+            capture_output=True,
+            check=False,
+        ).stdout.decode(errors="replace")
+        if any(m in pane for m in active_markers):
+            return
+        if "[claude exited" in pane:
+            # Real exit — caller's downstream checks (or rate-limit
+            # detection) will surface a more specific error.
             return
         time.sleep(poll)
+    raise RuntimeError(
+        _format_wedge_error(
+            target=target,
+            issue=issue,
+            role=role,
+            session_id=session_id,
+            timeout_s=timeout_s,
+        )
+        + "\n--- root cause hint ---\n"
+        "prompt submission never landed: no active-processing marker "
+        f"appeared within {grace_s}s after Enter retries. Likely a "
+        "Claude CLI startup race (parallel spawns in same rig). "
+        "Re-run via `po retry`; if persistent, set "
+        "PO_DISABLE_SPAWN_LOCK=0 (default) and ensure no other "
+        "`po run` is mid-spawn in the same rig."
+    )
 
 
 def _wait_for_stop(
@@ -1165,48 +1263,68 @@ class TmuxInteractiveClaudeBackend:
             + ["--model", model, "--setting-sources", "project,local"]
         )
 
-        # Keep the tmux pane alive even if claude exits early (rate
-        # limit, bad arg, missing UUID, etc.). Without the trailing
-        # `; sleep infinity`, an early claude exit collapses bash, which
-        # kills the tmux pane, which makes the next `paste-buffer`
-        # fail with a useless "no current session" error and obscures
-        # the real cause. With the keep-alive the pane stays around so
-        # we can capture-pane it for diagnostics.
+        # Keep the tmux pane alive only when claude exits *abnormally*
+        # (rate limit, bad arg, missing UUID, etc.) so an operator can
+        # `capture-pane` it for diagnostics. On a clean exit the wrapper
+        # falls through and bash exits, collapsing the pane — otherwise
+        # an unconditional `sleep infinity` keep-alive would persist
+        # forever after the parent `po` process is killed, leaving
+        # zombie claude+tmux pairs eating rate-limit slots indefinitely
+        # (sav.3).
         wrapper = (
             f"cd {shlex.quote(str(cwd))} && "
-            f"{shlex.join(argv)} ; "
-            f'echo "[claude exited $? — session held open for diagnostics]" ; '
-            f"sleep infinity"
+            f"{shlex.join(argv)}; rc=$?; "
+            f'if [ "$rc" -ne 0 ]; then '
+            f'echo "[claude exited $rc — session held open for diagnostics]"; '
+            f"sleep infinity; "
+            f"fi"
         )
-        target = _spawn_tmux(
-            session_name=session_name,
-            window_name=window_name,
-            wrapper=wrapper,
-            env=_clean_env(extra_env),
-            cwd=cwd,
-            geometry=(240, 60),
-        )
-        if self.attach_hint:
-            if window_name:
-                print(
-                    f"[tmux] attach with: tmux attach -t {session_name} "
-                    f"\\; select-window -t {window_name}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            else:
-                print(
-                    f"[tmux] attach with: tmux attach -t {session_name}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+        # Per-rig advisory lock around spawn + TUI-ready: dodges the
+        # parallel-Claude-CLI startup race that wedged 1-of-2 concurrent
+        # po runs at triager init (nfs). Held only for the brief startup
+        # window — released before the multi-minute work turn begins.
+        with _with_rig_spawn_lock(cwd):
+            target = _spawn_tmux(
+                session_name=session_name,
+                window_name=window_name,
+                wrapper=wrapper,
+                env=_clean_env(extra_env),
+                cwd=cwd,
+                geometry=(240, 60),
+            )
+            if self.attach_hint:
+                if window_name:
+                    print(
+                        f"[tmux] attach with: tmux attach -t {session_name} "
+                        f"\\; select-window -t {window_name}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[tmux] attach with: tmux attach -t {session_name}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
-        # Wait for the TUI to actually finish rendering its input box. The
-        # bordered prompt always contains a `❯` glyph in the input row; if
-        # we paste before that lands the keystrokes go to /dev/null. Falls
-        # back to fixed `settle_s` after a hard cap so we never block
-        # forever on a stuck splash screen.
-        _wait_for_tui_ready(target, fallback_s=self.settle_s)
+            # Wait for the TUI to actually finish rendering its input box. The
+            # bordered prompt always contains a `❯` glyph in the input row; if
+            # we paste before that lands the keystrokes go to /dev/null. Falls
+            # back to fixed `settle_s` after a hard cap so we never block
+            # forever on a stuck splash screen.
+            tui_ready = _wait_for_tui_ready(target, fallback_s=self.settle_s)
+        if not tui_ready:
+            # Best-effort signal: TUI glyph never appeared. Don't raise
+            # here — the post-paste detection (_assert_submission_landed)
+            # is the firm gate, and a glyph false-negative on an otherwise
+            # healthy run shouldn't tank it. (nfs)
+            logger.warning(
+                "TUI input glyph never rendered for target=%r within %.1fs "
+                "— may be a slow startup or a parallel-spawn race; will "
+                "fall through to submission-landed check.",
+                target,
+                self.settle_s,
+            )
 
         # Verify the tmux target is still around AND claude actually
         # came up. If claude died on startup the pane will still
@@ -1279,6 +1397,7 @@ class TmuxInteractiveClaudeBackend:
             "Searched",
             "hit your limit",  # rate-limit dialog — also a "submitted" state
         )
+        submission_seen = False
         for attempt in range(3):
             time.sleep(1.0 if attempt == 0 else 2.0)
             subprocess.run(
@@ -1292,9 +1411,32 @@ class TmuxInteractiveClaudeBackend:
                 check=False,
             ).stdout.decode(errors="replace")
             if any(m in pane for m in active_markers):
+                submission_seen = True
                 break
             # Still sitting at the input prompt — likely the paste chip
             # never committed. Loop and try Enter again.
+
+        if not submission_seen:
+            # Wedge detection (nfs): the 3 Enter retries didn't see any
+            # active marker. Give one more grace window for slow startup;
+            # if still nothing, raise a clear, actionable error so the
+            # operator sees the wedge within ~60s of spawn — not after the
+            # 1800s timeout_s deadline polling a sentinel that never fires.
+            try:
+                _assert_submission_landed(
+                    target,
+                    active_markers=active_markers,
+                    issue=self.issue,
+                    role=self.role,
+                    session_id=new_sid,
+                    timeout_s=self.timeout_s or 0.0,
+                )
+            except RuntimeError:
+                _cleanup_tmux(target, scoped=scoped)
+                if sentinel is not None:
+                    sentinel.unlink(missing_ok=True)
+                prompt_path.unlink(missing_ok=True)
+                raise
 
         # Rate-limit terminal-state guard (sav.2). The active_markers loop
         # treats 'hit your limit' as a "submission landed" signal because
