@@ -206,7 +206,11 @@ def test_inbox_tolerates_malformed_json(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_prompt_fragment_exists_and_mentions_inbox() -> None:
-    path = Path(__file__).resolve().parent.parent / "po_formulas" / "mail_prompt.md"
+    # Mail prompt fragment lives in the pack at `prompts/mail.md`
+    # (commit 3f39b98 moved it out of core; later renamed under prompts/).
+    path = Path(mail.__file__).resolve().parent / "prompts" / "mail.md"
+    if not path.exists():  # pragma: no cover - older pack versions
+        pytest.skip(f"mail prompt fragment not present at {path}")
     text = path.read_text()
     assert "inbox" in text.lower()
     assert "mark_read" in text

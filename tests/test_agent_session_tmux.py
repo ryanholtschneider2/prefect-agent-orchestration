@@ -111,7 +111,9 @@ def test_clean_env_strips_api_key(monkeypatch):
 
 def test_session_name_derivation():
     backend = TmuxClaudeBackend(issue="sr-8yu.3", role="builder")
-    assert backend._session_name() == "po-sr-8yu.3-builder"
+    # Dots in issue ids are sanitized to underscores because tmux treats
+    # `.` as a pane separator (see CLAUDE.md "Backend selection").
+    assert backend._session_name() == "po-sr-8yu_3-builder"
 
 
 def test_tmux_missing_raises(monkeypatch, tmp_path):

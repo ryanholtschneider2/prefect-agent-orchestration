@@ -214,10 +214,13 @@ def test_cli_deploy_apply_continues_past_failure(patch_eps, monkeypatch):
 
 
 def test_po_list_still_works(monkeypatch):
-    # No formulas installed in test env → friendly message, exit 0.
+    # No formulas AND no commands installed → friendly message, exit 0.
+    # `po list` lists both formula and command entry points; stub both.
     from prefect_orchestration import cli as cli_mod
+    from prefect_orchestration import commands as commands_mod
 
     monkeypatch.setattr(cli_mod, "_load_formulas", lambda: {})
+    monkeypatch.setattr(commands_mod, "load_commands", lambda: {})
     res = CliRunner().invoke(app, ["list"])
     assert res.exit_code == 0
     assert "no formulas" in res.stdout
