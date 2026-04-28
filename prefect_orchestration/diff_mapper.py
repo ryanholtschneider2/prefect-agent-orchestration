@@ -38,7 +38,21 @@ TRIPWIRES: tuple[str, ...] = (
     "setup.cfg",
     "tox.ini",
     "noxfile.py",
+    "Makefile",
+    "requirements.txt",
 )
+
+# Per-layer test-root mapping. ``None`` (the historical default) keeps
+# scope = ``test_root`` and excludes nothing — used by callers that
+# don't slice by layer (e.g. the regression-gate path-aware helper).
+_LAYER_DIRS: dict[str, str] = {
+    "unit": "tests",
+    "e2e": "tests/e2e",
+    "playwright": "tests/playwright",
+}
+# Sibling layer directories the ``unit`` layer must NOT execute. Kept in
+# sync with `_LAYER_DIRS` minus the unit root.
+_UNIT_EXCLUDES: tuple[str, ...] = ("tests/e2e", "tests/playwright")
 
 # Cheap, broadly-importing tests that are run unconditionally so
 # cross-cutting breakage still surfaces. Tuned for the
@@ -117,6 +131,7 @@ def map_files_to_tests(
     repo_root: Path,
     *,
     test_root: Path = Path("tests"),
+    layer: str | None = None,
 ) -> tuple[set[Path], bool]:
     """Map source-file changes to test files via stem heuristics.
 
@@ -132,24 +147,70 @@ def map_files_to_tests(
       • anything else → no contribution. The smoke set is the safety
         net.
 
+    When ``layer`` is given (``"unit" | "e2e" | "playwright"``) candidate
+    tests are looked up under the layer's subdir (e.g. ``tests/e2e/``)
+    and any results outside the layer are filtered out so layers stay
+    non-overlapping. ``layer=None`` preserves the historical
+    ``tests/``-only behavior used by the regression-gate path-aware
+    helper.
+
     Returns `(mapped_test_paths_relative_to_repo_root, force_full)`.
     """
     repo_root = Path(repo_root)
+    layer_root = _layer_test_root(test_root, layer)
     mapped: set[Path] = set()
     for raw in changed:
         rel = Path(raw)
         if rel.name in TRIPWIRES:
             return set(), True
         if _is_test_file(rel, test_root):
-            if (repo_root / rel).is_file():
+            if (repo_root / rel).is_file() and _path_in_layer(rel, test_root, layer):
                 mapped.add(rel)
             continue
         if rel.suffix != ".py":
             # Non-Python source changes (md, yaml, …) don't map; smoke
             # covers cross-cutting risk.
             continue
-        mapped.update(_candidate_tests_for(rel, repo_root, test_root))
+        mapped.update(_candidate_tests_for(rel, repo_root, layer_root))
+    if layer == "unit":
+        mapped = {p for p in mapped if _path_in_layer(p, test_root, "unit")}
     return mapped, False
+
+
+def _layer_test_root(test_root: Path, layer: str | None) -> Path:
+    """Return the test-root subdir to search for `layer`-scoped candidates."""
+    if layer is None or layer == "unit":
+        return test_root
+    sub = _LAYER_DIRS.get(layer)
+    if sub is None:
+        return test_root
+    return Path(sub)
+
+
+def _path_in_layer(rel: Path, test_root: Path, layer: str | None) -> bool:
+    """True iff `rel` belongs to `layer` (or `layer` is None)."""
+    if layer is None:
+        return True
+    if layer == "unit":
+        for excl in _UNIT_EXCLUDES:
+            try:
+                rel.relative_to(Path(excl))
+                return False
+            except ValueError:
+                continue
+        try:
+            rel.relative_to(test_root)
+            return True
+        except ValueError:
+            return False
+    sub = _LAYER_DIRS.get(layer)
+    if sub is None:
+        return True
+    try:
+        rel.relative_to(Path(sub))
+        return True
+    except ValueError:
+        return False
 
 
 def _is_test_file(rel: Path, test_root: Path) -> bool:

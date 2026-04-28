@@ -56,6 +56,16 @@ def _make_layout(repo: Path) -> None:
     (repo / "pyproject.toml").write_text("[project]\nname='x'\n")
 
 
+def _make_layered_layout(repo: Path) -> None:
+    """Layout with sibling layer dirs under tests/ (e2e + playwright)."""
+    _make_layout(repo)
+    (repo / "tests" / "e2e").mkdir()
+    (repo / "tests" / "e2e" / "__init__.py").write_text("")
+    (repo / "tests" / "e2e" / "test_foo.py").write_text("def test_e(): ...\n")
+    (repo / "tests" / "playwright").mkdir()
+    (repo / "tests" / "playwright" / "test_foo.py").write_text("def test_p(): ...\n")
+
+
 # ─────────────────────── compute_changed_files ───────────────────────
 
 
@@ -248,3 +258,87 @@ def test_artifact_header_records_force_full_flag(tmp_path: Path) -> None:
     )
     text = artifact.read_text()
     assert "force_full=False" in text
+
+
+# ─────────────────────── layer-aware mapping ─────────────────────────
+
+
+def test_layer_unit_excludes_e2e_and_playwright_test_files(tmp_path: Path) -> None:
+    """Touching `tests/e2e/test_foo.py` is not in the unit layer."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _make_layered_layout(repo)
+    mapped, force = map_files_to_tests(
+        [Path("tests/e2e/test_foo.py")], repo, layer="unit"
+    )
+    assert force is False
+    assert mapped == set()
+
+
+def test_layer_e2e_only_includes_e2e_paths(tmp_path: Path) -> None:
+    """`prefect_orchestration/foo.py` under layer=e2e looks in `tests/e2e/`."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _make_layered_layout(repo)
+    mapped, force = map_files_to_tests(
+        [Path("prefect_orchestration/foo.py")], repo, layer="e2e"
+    )
+    assert force is False
+    assert Path("tests/e2e/test_foo.py") in mapped
+    # Top-of-tests `test_foo.py` (a unit test) must NOT be in the e2e set.
+    assert Path("tests/test_foo.py") not in mapped
+
+
+def test_layer_playwright_only_includes_playwright_paths(tmp_path: Path) -> None:
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _make_layered_layout(repo)
+    mapped, force = map_files_to_tests(
+        [Path("prefect_orchestration/foo.py")], repo, layer="playwright"
+    )
+    assert force is False
+    assert Path("tests/playwright/test_foo.py") in mapped
+    assert Path("tests/test_foo.py") not in mapped
+    assert Path("tests/e2e/test_foo.py") not in mapped
+
+
+def test_layer_unit_changed_test_under_e2e_filtered_out(tmp_path: Path) -> None:
+    """A test file change under tests/e2e/ is not unit work."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _make_layered_layout(repo)
+    mapped, force = map_files_to_tests(
+        [Path("tests/e2e/test_foo.py"), Path("tests/test_bar.py")],
+        repo,
+        layer="unit",
+    )
+    assert force is False
+    # Only the unit-layer test file survives.
+    assert mapped == {Path("tests/test_bar.py")}
+
+
+def test_layer_unit_default_behavior_matches_unscoped(tmp_path: Path) -> None:
+    """Layer=unit on a flat layout (no e2e/playwright dirs) == unscoped."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _make_layout(repo)  # flat — no e2e/playwright dirs
+    unscoped, _ = map_files_to_tests([Path("prefect_orchestration/foo.py")], repo)
+    unit_scoped, _ = map_files_to_tests(
+        [Path("prefect_orchestration/foo.py")], repo, layer="unit"
+    )
+    assert unscoped == unit_scoped
+
+
+def test_layer_aware_tripwire_still_forces_full(tmp_path: Path) -> None:
+    """Tripwires force full regardless of layer."""
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _make_layered_layout(repo)
+    _, force = map_files_to_tests([Path("conftest.py")], repo, layer="e2e")
+    assert force is True
+
+
+def test_makefile_and_requirements_are_tripwires() -> None:
+    """`Makefile` and `requirements.txt` widen the tripwire safety net."""
+    assert "Makefile" in TRIPWIRES
+    assert "requirements.txt" in TRIPWIRES

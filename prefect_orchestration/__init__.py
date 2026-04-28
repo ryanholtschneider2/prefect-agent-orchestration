@@ -16,6 +16,14 @@ from prefect_orchestration.secrets import (
     resolve_role_env,
     role_env_key,
 )
+from prefect_orchestration.test_cache import (
+    cache_get,
+    cache_key,
+    cache_put,
+    compute_collection_hash,
+    compute_scope_hash,
+    compute_source_hash,
+)
 
 __version__ = "0.1.0"
 
@@ -27,6 +35,12 @@ __all__ = [
     "Identity",
     "IdentityLoadError",
     "SecretProvider",
+    "cache_get",
+    "cache_key",
+    "cache_put",
+    "compute_collection_hash",
+    "compute_scope_hash",
+    "compute_source_hash",
     "format_self_block",
     "identity_vars",
     "load_identity",
