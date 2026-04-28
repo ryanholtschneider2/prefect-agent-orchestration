@@ -254,6 +254,11 @@ po run software-dev-full \
 # (bd close) on successful exit. Don't `bd update` manually during a run.
 ```
 
+For trivial fanout children (e.g. the snake-bead demo) where the full
+actor-critic loop would burn tokens, use `po run minimal-task` instead
+— `triage → plan → build → lint → close`, fails out with no ralph
+fallback when lint fails twice. See `engdocs/minimal-task.md`.
+
 ### Running an epic (DAG fan-out)
 
 ```bash
