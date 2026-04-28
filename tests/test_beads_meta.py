@@ -134,3 +134,154 @@ def test_resolve_seed_threads_rig_path(
     monkeypatch.setattr(beads_meta, "_bd_dep_list", _fake)
     resolve_seed_bead("solo", rig_path=tmp_path)
     assert seen == [tmp_path]
+
+
+# ─── create_child_bead `blocks` kwarg (prefect-orchestration-7vs.4) ───
+
+
+def test_create_child_bead_forwards_blocks_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`blocks="prev-id"` appends `--deps blocks:prev-id` to the bd command."""
+    monkeypatch.setattr(beads_meta, "_bd_available", lambda: True)
+    captured: list[list[str]] = []
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(cmd, *a, **kw):  # type: ignore[no-untyped-def]
+        captured.append(list(cmd))
+        return _Proc()
+
+    monkeypatch.setattr(beads_meta.subprocess, "run", _fake_run)
+    out = beads_meta.create_child_bead(
+        "parent",
+        "parent.iter2",
+        title="t",
+        description="d",
+        rig_path=tmp_path,
+        blocks="parent.iter1",
+    )
+    assert out == "parent.iter2"
+    assert captured, "no shellout recorded"
+    cmd = captured[0]
+    assert "--deps" in cmd
+    deps_idx = cmd.index("--deps")
+    assert cmd[deps_idx + 1] == "blocks:parent.iter1"
+
+
+def test_create_child_bead_omits_blocks_flag_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No `blocks` kwarg → no `--deps` token in the cmd (back-compat)."""
+    monkeypatch.setattr(beads_meta, "_bd_available", lambda: True)
+    captured: list[list[str]] = []
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(cmd, *a, **kw):  # type: ignore[no-untyped-def]
+        captured.append(list(cmd))
+        return _Proc()
+
+    monkeypatch.setattr(beads_meta.subprocess, "run", _fake_run)
+    beads_meta.create_child_bead(
+        "parent",
+        "parent.lint.1",
+        title="t",
+        description="d",
+        rig_path=tmp_path,
+    )
+    cmd = captured[0]
+    assert "--deps" not in cmd
+
+
+# ─── read_iter_cap (prefect-orchestration-7vs.4) ───
+
+
+def test_read_iter_cap_default_when_bd_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(beads_meta, "_bd_available", lambda: False)
+    assert beads_meta.read_iter_cap("parent", 3) == 3
+
+
+def test_read_iter_cap_default_when_key_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(beads_meta, "_bd_available", lambda: True)
+    monkeypatch.setattr(
+        beads_meta,
+        "_bd_show",
+        lambda issue_id, rig_path=None: {"id": "parent", "metadata": {}},
+    )
+    assert beads_meta.read_iter_cap("parent", 5) == 5
+
+
+def test_read_iter_cap_parses_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(beads_meta, "_bd_available", lambda: True)
+    monkeypatch.setattr(
+        beads_meta,
+        "_bd_show",
+        lambda issue_id, rig_path=None: {
+            "id": "parent",
+            "metadata": {"po.iter_cap": "7"},
+        },
+    )
+    assert beads_meta.read_iter_cap("parent", 3) == 7
+
+
+def test_read_iter_cap_falls_back_on_non_int(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(beads_meta, "_bd_available", lambda: True)
+    monkeypatch.setattr(
+        beads_meta,
+        "_bd_show",
+        lambda issue_id, rig_path=None: {
+            "id": "parent",
+            "metadata": {"po.iter_cap": "not-an-int"},
+        },
+    )
+    assert beads_meta.read_iter_cap("parent", 4) == 4
+
+
+def test_read_iter_cap_falls_back_on_non_positive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(beads_meta, "_bd_available", lambda: True)
+    monkeypatch.setattr(
+        beads_meta,
+        "_bd_show",
+        lambda issue_id, rig_path=None: {
+            "id": "parent",
+            "metadata": {"po.iter_cap": "0"},
+        },
+    )
+    assert beads_meta.read_iter_cap("parent", 4) == 4
+
+
+def test_read_iter_cap_honors_metadata_key_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(beads_meta, "_bd_available", lambda: True)
+    monkeypatch.setattr(
+        beads_meta,
+        "_bd_show",
+        lambda issue_id, rig_path=None: {
+            "id": "parent",
+            "metadata": {"po.plan_iter_cap": "2"},
+        },
+    )
+    assert (
+        beads_meta.read_iter_cap(
+            "parent", 5, metadata_key="po.plan_iter_cap"
+        )
+        == 2
+    )

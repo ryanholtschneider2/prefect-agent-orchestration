@@ -154,6 +154,7 @@ def create_child_bead(
     issue_type: str = "task",
     rig_path: Path | str | None = None,
     priority: int = 2,
+    blocks: str | None = None,
 ) -> str:
     """Create a child bead with explicit id + parent edge.
 
@@ -168,6 +169,13 @@ def create_child_bead(
     "already exists" stderr) we treat the call as a successful no-op
     so callers retrying (Prefect task retry, ralph re-entry) reuse
     the existing bead's state instead of erroring.
+
+    `blocks` (when set) emits `--deps blocks:<id>` so the new bead
+    is recorded as blocked-by `<id>` (the prior iter). Best-effort:
+    on the idempotent already-exists path the dep edge is NOT
+    re-applied (bd would no-op, but we don't shell out at all to
+    avoid a second call). If the dep edge needs to be added after
+    the fact, callers should `bd dep add` directly.
     """
     if not _bd_available():
         raise NotImplementedError(
@@ -188,6 +196,8 @@ def create_child_bead(
         "-p",
         str(priority),
     ]
+    if blocks:
+        cmd += ["--deps", f"blocks:{blocks}"]
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -224,6 +234,47 @@ def close_issue(
         check=False,
         cwd=str(rig_path) if rig_path is not None else None,
     )
+
+
+def read_iter_cap(
+    parent_id: str,
+    default: int,
+    *,
+    rig_path: Path | str | None = None,
+    metadata_key: str = "po.iter_cap",
+) -> int:
+    """Return the iter cap for a parent bead, falling back to `default`.
+
+    Looks up `metadata_key` (default `"po.iter_cap"`) in the parent's
+    bd metadata. Falls back to `default` when:
+
+    - `bd` is not on PATH (FileStore path / no-bd dev),
+    - the parent has no such metadata key,
+    - or the value isn't a positive int (non-numeric, zero, negative).
+
+    The kwarg-fallback shape preserves backwards compatibility for
+    callers that still pass `iter_cap=N` to a flow — per-bead override
+    via `bd update <id> --set-metadata po.iter_cap=N` wins when set,
+    otherwise the kwarg default sticks.
+    """
+    if not _bd_available() or not parent_id:
+        return default
+    row = _bd_show(parent_id, rig_path=rig_path)
+    if row is None:
+        return default
+    metadata = row.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        return default
+    raw = metadata.get(metadata_key)
+    if raw is None:
+        return default
+    try:
+        parsed = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
 
 
 # ─────────────────────── graph traversal ────────────────────────────
