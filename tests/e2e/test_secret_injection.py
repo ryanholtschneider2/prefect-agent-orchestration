@@ -63,17 +63,18 @@ def test_role_isolation_via_stub_backend(
     # Act: each role takes a turn (prompt content steers StubBackend
     # to write a triage verdict — irrelevant here, we just want the
     # extra_env capture).
-    prompt = (
-        "stub turn — write verdict to "
-        f"cat > {tmp_path}/verdicts/triage.json <<EOF"
-    )
+    prompt = f"stub turn — write verdict to cat > {tmp_path}/verdicts/triage.json <<EOF"
     planner.prompt(prompt)
     builder.prompt(prompt)
 
     # Assert: each session's captured extra_env contains only its own token.
     captured = backend.captured_extra_env
-    planner_envs = [v for k, v in captured.items() if v.get("SLACK_TOKEN") == "xoxb-A-env"]
-    builder_envs = [v for k, v in captured.items() if v.get("SLACK_TOKEN") == "xoxb-B-dotenv"]
+    planner_envs = [
+        v for k, v in captured.items() if v.get("SLACK_TOKEN") == "xoxb-A-env"
+    ]
+    builder_envs = [
+        v for k, v in captured.items() if v.get("SLACK_TOKEN") == "xoxb-B-dotenv"
+    ]
     assert planner_envs, f"planner should have its env-set SLACK_TOKEN: {captured}"
     assert builder_envs, f"builder should have its dotenv SLACK_TOKEN: {captured}"
 

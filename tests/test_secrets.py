@@ -77,7 +77,7 @@ def test_env_provider_custom_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_dotenv_parser_quotes_and_comments() -> None:
-    text = '\n'.join(
+    text = "\n".join(
         [
             "# a comment",
             "",
@@ -115,9 +115,7 @@ def test_chain_first_hit_wins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     env_path.write_text("SLACK_TOKEN_PLANNER=from-dotenv\n")
     monkeypatch.setenv("SLACK_TOKEN_PLANNER", "from-process")
     monkeypatch.setenv("GMAIL_CREDS_PLANNER", "gmail-from-process")
-    chain = ChainSecretProvider(
-        [DotenvSecretProvider(env_path), EnvSecretProvider()]
-    )
+    chain = ChainSecretProvider([DotenvSecretProvider(env_path), EnvSecretProvider()])
     out = chain.get_role_env("planner")
     assert out["SLACK_TOKEN"] == "from-dotenv"  # dotenv wins
     assert out["GMAIL_CREDS"] == "gmail-from-process"  # env fills the gap

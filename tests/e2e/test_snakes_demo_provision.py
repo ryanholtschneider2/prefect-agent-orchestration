@@ -25,7 +25,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _run(rig_path: Path, *args: str, force_failure_ok: bool = False) -> subprocess.CompletedProcess:
+def _run(
+    rig_path: Path, *args: str, force_failure_ok: bool = False
+) -> subprocess.CompletedProcess:
     env = {
         **os.environ,
         "RIG_PATH": str(rig_path),
@@ -75,7 +77,8 @@ def test_provisions_clean_rig(tmp_path: Path) -> None:
 
     # languages.txt has 100 non-empty, non-comment lines.
     langs = [
-        line for line in (rig / "engdocs" / "languages.txt").read_text().splitlines()
+        line
+        for line in (rig / "engdocs" / "languages.txt").read_text().splitlines()
         if line.strip() and not line.startswith("#")
     ]
     assert len(langs) == 100
@@ -86,7 +89,9 @@ def test_provisions_clean_rig(tmp_path: Path) -> None:
     # Initial commit on main exists.
     log = subprocess.run(
         ["git", "-C", str(rig), "log", "--oneline"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     assert "Initial snakes-demo rig" in log
 
@@ -126,7 +131,9 @@ def test_remote_flag_adds_origin(tmp_path: Path) -> None:
     _run(rig, "--remote", "git@example.com:foo/bar.git")
     remotes = subprocess.run(
         ["git", "-C", str(rig), "remote", "-v"],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     assert "git@example.com:foo/bar.git" in remotes
 
@@ -138,10 +145,13 @@ def test_unknown_arg_exits_2(tmp_path: Path) -> None:
     assert "unknown argument" in proc.stderr
 
 
-@pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck not installed")
+@pytest.mark.skipif(
+    shutil.which("shellcheck") is None, reason="shellcheck not installed"
+)
 def test_shellcheck_strict_passes() -> None:
     proc = subprocess.run(
         ["shellcheck", "-S", "style", str(SCRIPT)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
