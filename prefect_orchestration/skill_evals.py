@@ -206,7 +206,10 @@ def build_judges(
     out: dict[str, LLMJudge] = {}
     for crit in rubrics.criteria:
         rubric_text = _compose_rubric_text(crit)
-        kwargs: dict[str, Any] = {"rubric": rubric_text, "include_input": crit.include_input}
+        kwargs: dict[str, Any] = {
+            "rubric": rubric_text,
+            "include_input": crit.include_input,
+        }
         chosen = crit.model or default_model
         if chosen is not None:
             kwargs["model"] = chosen
@@ -435,12 +438,7 @@ def _build_skill_prompt(skill_md: Path, case_prompt: str) -> str:
         body = skill_md.read_text(encoding="utf-8")
     except FileNotFoundError:
         body = ""
-    return (
-        "<skill>\n"
-        f"{body}\n"
-        "</skill>\n\n"
-        f"{case_prompt}\n"
-    )
+    return f"<skill>\n{body}\n</skill>\n\n{case_prompt}\n"
 
 
 def drive_skill(
@@ -464,9 +462,7 @@ def _render_markdown_report(verdict: SkillEvalsVerdict) -> str:
     lines: list[str] = []
     lines.append(f"# skill-evals: {verdict.pack} / {verdict.skill}")
     lines.append("")
-    lines.append(
-        f"- **judge_model**: `{verdict.judge_model or '(library default)'}`"
-    )
+    lines.append(f"- **judge_model**: `{verdict.judge_model or '(library default)'}`")
     lines.append(f"- **tier**: `{verdict.tier or '(all)'}`")
     if verdict.case_filter:
         lines.append(f"- **case filter**: `{verdict.case_filter}`")
@@ -505,9 +501,7 @@ def _stamp_skill_marker(skill_md: Path, verdict: SkillEvalsVerdict) -> None:
         skill_md.write_text(new_text, encoding="utf-8")
 
 
-def write_reports(
-    skill_dir: Path, verdict: SkillEvalsVerdict
-) -> tuple[Path, Path]:
+def write_reports(skill_dir: Path, verdict: SkillEvalsVerdict) -> tuple[Path, Path]:
     """Write reports/latest.{json,md} next to the skill. Returns (json, md)."""
     reports_dir = skill_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)

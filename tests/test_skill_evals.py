@@ -24,7 +24,6 @@ from prefect_orchestration.skill_evals_schema import (
     CriterionResult,
     RubricCriterion,
     RubricsFile,
-    SkillEvalsVerdict,
 )
 
 
@@ -237,9 +236,7 @@ def test_stub_judging_does_not_import_pydantic_evals(
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    rubrics = RubricsFile(
-        criteria=[RubricCriterion(name="correctness", rubric="r")]
-    )
+    rubrics = RubricsFile(criteria=[RubricCriterion(name="correctness", rubric="r")])
     pairs = [(CaseSpec(name="a", prompt="p"), "out")]
     out = se._stub_judge_all_cases(pairs, rubrics)
     assert seen == []
@@ -254,9 +251,7 @@ def test_stub_judging_does_not_import_pydantic_evals(
 
 def test_drive_skill_with_stub_backend(tmp_path: Path) -> None:
     session = se._build_session(SAMPLE_SKILL_DIR, tmp_path, dry_run=True)
-    out = se.drive_skill(
-        session, SAMPLE_SKILL_DIR / "SKILL.md", "say hi", fork=False
-    )
+    out = se.drive_skill(session, SAMPLE_SKILL_DIR / "SKILL.md", "say hi", fork=False)
     # StubBackend's deterministic ack
     assert "[dry-run] ack" in out
 
@@ -339,7 +334,14 @@ def test_skill_evals_flow_dry_run_writes_reports(
     assert parsed["skill"] == "sample"
     assert parsed["n_cases"] == 2
     # Verdict file under run dir is written when issue_id + rig_path provided.
-    rd_verdict = rig / ".planning" / "skill-evals" / "bd-9r2-test" / "verdicts" / "skill-evals.json"
+    rd_verdict = (
+        rig
+        / ".planning"
+        / "skill-evals"
+        / "bd-9r2-test"
+        / "verdicts"
+        / "skill-evals.json"
+    )
     assert rd_verdict.is_file()
     assert out["run_dir_verdict"] == str(rd_verdict)
     # Marker stamped on SKILL.md
@@ -514,7 +516,9 @@ def test_skill_evals_registered_as_po_formula() -> None:
     ep = next(ep for ep in eps if ep.name == "skill-evals")
     func = ep.load()
     # Prefect wraps the underlying function; its name should match.
-    assert getattr(func, "name", None) == "skill_evals" or func.__name__ == "skill_evals"
+    assert (
+        getattr(func, "name", None) == "skill_evals" or func.__name__ == "skill_evals"
+    )
 
 
 # ---------------------------------------------------------------------------
