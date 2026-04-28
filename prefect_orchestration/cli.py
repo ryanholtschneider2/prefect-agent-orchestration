@@ -719,11 +719,47 @@ def sessions(
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
 
+    # Resolve the seed bead so reads union the seed's role-sessions
+    # map (BeadsStore tier + role-sessions.json) with the legacy
+    # per-bead metadata.json shim. For solo runs (no parent-child
+    # parent), seed == issue_id and behaviour is identical to before.
+    from prefect_orchestration import beads_meta as _beads_meta
+
     try:
-        metadata = _sessions.load_metadata(loc.run_dir)
-    except _sessions.MetadataNotFound as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(3) from exc
+        seed_id = _beads_meta.resolve_seed_bead(issue_id, rig_path=loc.rig_path)
+    except ValueError:
+        seed_id = issue_id
+    seed_run_dir = loc.run_dir
+    if seed_id != issue_id:
+        # Try the canonical layout `<rig>/.planning/<formula>/<seed>/`,
+        # using the active issue's run_dir to infer `<formula>`.
+        formula_dir = loc.run_dir.parent
+        candidate = formula_dir / seed_id
+        if candidate.is_dir():
+            seed_run_dir = candidate
+        # else: keep loc.run_dir; RoleSessionStore.all() degrades to
+        # legacy + BeadsStore tiers (json file just won't be found).
+
+    metadata = _sessions.load_role_sessions(
+        loc.run_dir,
+        seed_id=seed_id,
+        seed_run_dir=seed_run_dir,
+        rig_path=loc.rig_path,
+    )
+
+    if not metadata:
+        # Preserve the legacy "metadata.json missing" exit code (3) so
+        # scripted callers keep working. We only land here when *all*
+        # three tiers are empty — which is genuinely "session info not
+        # yet recorded."
+        legacy_path = loc.run_dir / _sessions.METADATA_FILENAME
+        if not legacy_path.exists():
+            typer.echo(
+                f"no {_sessions.METADATA_FILENAME} in {loc.run_dir}. "
+                "The flow may not have completed the session-stamping step yet.",
+                err=True,
+            )
+            raise typer.Exit(3)
 
     if resume is not None:
         uuid = _sessions.lookup_session(metadata, resume)
@@ -747,7 +783,14 @@ def retry(
     keep_sessions: bool = typer.Option(
         False,
         "--keep-sessions",
-        help="Preserve per-role Claude session UUIDs from the prior run's metadata.json.",
+        help=(
+            "Preserve per-role Claude session UUIDs from the prior run's "
+            "metadata.json. No-op for sessions stored on the seed bead "
+            "(BeadsStore) or in role-sessions.json — those survive the "
+            "archive automatically. The legacy-shim path still honours "
+            "this flag; the archive's metadata.json is also resurfaced "
+            "via the migration shim post-archive."
+        ),
     ),
     rig: str | None = typer.Option(
         None,

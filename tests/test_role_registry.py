@@ -220,6 +220,97 @@ def test_stamp_run_url_on_bead_passes_cwd(
     assert cwd == str(tmp_path)
 
 
+def test_seed_inheritance_across_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC (a): two RoleRegistry instances on different children of the same
+    seed share the role's session uuid via the seed-keyed RoleSessionStore.
+
+    Uses a no-bd setup so writes land in `<seed_run_dir>/role-sessions.json`,
+    which both child registries can read deterministically.
+    """
+    from prefect_orchestration.beads_meta import FileStore
+    from prefect_orchestration.role_sessions import RoleSessionStore
+
+    seed_run = tmp_path / "seed"
+    # Child 1: persists builder uuid
+    legacy_c1 = tmp_path / "C1"
+    legacy_c1.mkdir()
+    store_c1 = RoleSessionStore(
+        seed_id="P", seed_run_dir=seed_run, legacy_self_run_dir=legacy_c1
+    )
+    reg1 = RoleRegistry(
+        rig_path=tmp_path,
+        store=FileStore(path=legacy_c1 / "metadata.json"),
+        backend_factory=StubBackend,
+        issue_id="C1",
+        role_session_store=store_c1,
+    )
+    sess1 = reg1.get("builder")
+    sess1.session_id = "uuid-shared-builder"
+    reg1.persist("builder")
+
+    # Child 2: fresh registry pointed at same seed; should *inherit* uuid.
+    legacy_c2 = tmp_path / "C2"
+    legacy_c2.mkdir()
+    store_c2 = RoleSessionStore(
+        seed_id="P", seed_run_dir=seed_run, legacy_self_run_dir=legacy_c2
+    )
+    reg2 = RoleRegistry(
+        rig_path=tmp_path,
+        store=FileStore(path=legacy_c2 / "metadata.json"),
+        backend_factory=StubBackend,
+        issue_id="C2",
+        role_session_store=store_c2,
+    )
+    sess2 = reg2.get("builder")
+    assert sess2.session_id == "uuid-shared-builder"
+
+
+def test_persist_to_new_seed_does_not_pollute_original(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC (b): `persist_to(role, branch_seed)` writes only to the branch
+    seed; the registry's bound seed is untouched, preserving the
+    inheritance chain on the original branch."""
+    from prefect_orchestration.beads_meta import FileStore
+    from prefect_orchestration.role_sessions import RoleSessionStore
+
+    # Original seed: P; branch seed: B (shares the formula dir).
+    formula_dir = tmp_path / ".planning" / "software-dev-full"
+    formula_dir.mkdir(parents=True)
+    p_seed = formula_dir / "P"
+    b_seed = formula_dir / "B"
+
+    legacy = tmp_path / ".planning" / "software-dev-full" / "C1"
+    legacy.mkdir()
+
+    store = RoleSessionStore(
+        seed_id="P", seed_run_dir=p_seed, legacy_self_run_dir=legacy
+    )
+    reg = RoleRegistry(
+        rig_path=tmp_path,
+        store=FileStore(path=legacy / "metadata.json"),
+        backend_factory=StubBackend,
+        issue_id="C1",
+        role_session_store=store,
+    )
+    # Pre-populate original seed with the pre-fork uuid.
+    sess = reg.get("critic")
+    sess.session_id = "pre-fork"
+    reg.persist("critic")
+    # Now simulate a forked turn yielding a new uuid.
+    sess.session_id = "post-fork"
+    reg.persist_to("critic", seed_id="B")
+
+    # Branch seed has the post-fork uuid; original seed retains pre-fork.
+    branch_store = RoleSessionStore(seed_id="B", seed_run_dir=b_seed)
+    assert branch_store.get("critic") == "post-fork"
+    # Re-read the original seed — must not be polluted by the branch write.
+    original_store = RoleSessionStore(seed_id="P", seed_run_dir=p_seed)
+    assert original_store.get("critic") == "pre-fork"
+
+
 def test_role_registry_cwd_routing(tmp_path: Path) -> None:
     """code_roles route to code_path; non-code roles stay on rig_path."""
     from prefect_orchestration.beads_meta import FileStore

@@ -7,6 +7,12 @@ Flow:
    Prefect server (unless `--force`).
 3. Take an exclusive advisory lock on `<run_dir>.retry.lock`.
 4. Stash `run_dir/metadata.json` bytes if `keep_sessions` is set.
+   Note: as of prefect-orchestration-7vs.2, role-session UUIDs live on
+   the seed bead (BeadsStore) or in `<seed_run_dir>/role-sessions.json`,
+   neither of which is touched by archiving the issue's own run_dir —
+   so `--keep-sessions` is a no-op for the new path. It still honours
+   legacy `metadata.json`-resident sessions, and the migration shim in
+   `RoleSessionStore` reads them back even from an archived run_dir.
 5. Rename `run_dir` → `<run_dir>.bak-<UTC-timestamp>`.
 6. Re-open the bead (and clear the assignee) if it was closed.
 7. Restore `metadata.json` into a freshly-created `run_dir`.

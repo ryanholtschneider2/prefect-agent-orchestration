@@ -168,6 +168,56 @@ def test_build_rows_passes_pod_through(tmp_path):
     assert rows[0].pod == "pod-7"
 
 
+def test_load_role_sessions_unioned(tmp_path, monkeypatch):
+    """`load_role_sessions` unions legacy metadata.json + role-sessions.json,
+    returning the prefixed-key shape that build_rows/lookup_session expect."""
+    from prefect_orchestration import beads_meta
+    from prefect_orchestration.role_sessions import ROLE_SESSIONS_FILENAME
+
+    # No bd → BeadsStore tier is empty; we exercise legacy + json file only.
+    monkeypatch.setattr(beads_meta.shutil, "which", lambda _name: None)
+
+    issue_run = tmp_path / "issue1"
+    issue_run.mkdir()
+    (issue_run / "metadata.json").write_text(
+        json.dumps({"session_only_legacy": "L", "session_shared": "L-shared"})
+    )
+
+    seed_run = tmp_path / "seed"
+    seed_run.mkdir()
+    (seed_run / ROLE_SESSIONS_FILENAME).write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "sessions": {"only_json": "J", "shared": "J-shared"},
+            }
+        )
+    )
+
+    out = sessions.load_role_sessions(
+        issue_run, seed_id="seed", seed_run_dir=seed_run
+    )
+    # Prefixed shape — what build_rows/lookup_session consume.
+    assert out["session_only_legacy"] == "L"
+    assert out["session_only_json"] == "J"
+    # JSON file wins over legacy on overlap.
+    assert out["session_shared"] == "J-shared"
+
+
+def test_load_role_sessions_returns_empty_when_all_tiers_empty(tmp_path, monkeypatch):
+    from prefect_orchestration import beads_meta
+
+    monkeypatch.setattr(beads_meta.shutil, "which", lambda _name: None)
+    issue_run = tmp_path / "issue1"
+    issue_run.mkdir()
+    seed_run = tmp_path / "seed"
+    seed_run.mkdir()
+    out = sessions.load_role_sessions(
+        issue_run, seed_id="seed", seed_run_dir=seed_run
+    )
+    assert out == {}
+
+
 def test_sessions_cli_shows_pod_when_bead_metadata_set(tmp_path, runner, monkeypatch):
     run_dir, _ = _seed_run_dir(tmp_path)
     loc = run_lookup.RunLocation(rig_path=tmp_path, run_dir=run_dir)

@@ -25,8 +25,14 @@ from prefect_orchestration.agent_session import (
     TmuxClaudeBackend,
     TmuxInteractiveClaudeBackend,
 )
-from prefect_orchestration.beads_meta import MetadataStore, auto_store, claim_issue
+from prefect_orchestration.beads_meta import (
+    MetadataStore,
+    auto_store,
+    claim_issue,
+    resolve_seed_bead,
+)
 from prefect_orchestration.role_artifacts import publish_role_artifacts
+from prefect_orchestration.role_sessions import RoleSessionStore
 from prefect_orchestration.run_handles import stamp_run_url_on_bead, write_run_handles
 
 _DEFAULT_CODE_ROLES: frozenset[str] = frozenset({"builder", "linter", "cleaner"})
@@ -56,6 +62,11 @@ class RoleRegistry:
     # `rig_path`. Default covers the SDF case (`builder`/`linter`/`cleaner`);
     # other packs can override.
     code_roles: frozenset[str] = field(default_factory=lambda: _DEFAULT_CODE_ROLES)
+    # Seed-bead-keyed role→uuid persistence. When None (legacy callers
+    # constructing `RoleRegistry` directly without going through
+    # `build_registry`), `get`/`persist` fall back to `store.get/set`
+    # with the `session_<role>` prefix — preserves existing behaviour.
+    role_session_store: RoleSessionStore | None = None
     _sessions: dict[str, AgentSession] = field(default_factory=dict)
 
     def _make_backend(self, role: str) -> Any:
@@ -77,9 +88,21 @@ class RoleRegistry:
             return self.code_path
         return self.rig_path
 
+    def _read_session(self, role: str) -> str | None:
+        """Resolve the prior session uuid for `role` from the configured store."""
+        if self.role_session_store is not None:
+            return self.role_session_store.get(role)
+        return self.store.get(f"session_{role}")
+
+    def _write_session(self, role: str, uuid: str) -> None:
+        if self.role_session_store is not None:
+            self.role_session_store.set(role, uuid)
+            return
+        self.store.set(f"session_{role}", uuid)
+
     def get(self, role: str) -> AgentSession:
         if role not in self._sessions:
-            sid = self.store.get(f"session_{role}")
+            sid = self._read_session(role)
             self._sessions[role] = AgentSession(
                 role=role,
                 repo_path=self._cwd_for_role(role),
@@ -91,10 +114,47 @@ class RoleRegistry:
     def persist(self, role: str) -> None:
         sess = self._sessions.get(role)
         if sess and sess.session_id:
-            self.store.set(f"session_{role}", sess.session_id)
+            self._write_session(role, sess.session_id)
         # Refresh links.md so the user always sees the latest UUIDs.
         if self.run_dir is not None:
             self._refresh_handles()
+
+    def persist_to(self, role: str, seed_id: str) -> None:
+        """Persist the role's current uuid to a *different* seed bead.
+
+        For the branch-fork case (AC b): a critic forking work onto a
+        new sub-graph branch should write the post-fork uuid to the
+        branch root, not the parent's seed. The 90% case (iteration of
+        a single role) uses `persist(role)`; this method is opt-in for
+        the explicit branch handoff.
+
+        Constructs a one-shot `RoleSessionStore` pointing at
+        `seed_id`'s run-dir under the same formula and writes there.
+        Caller's own seed is left untouched, preserving the inheritance
+        chain for downstream resumes on the original branch.
+        """
+        sess = self._sessions.get(role)
+        if not (sess and sess.session_id):
+            return
+        if self.role_session_store is None:
+            # No seed-aware store wired (legacy direct-construction path);
+            # fall back to writing on `store` with the bead-prefixed key.
+            # This is best-effort and shouldn't happen in `build_registry`
+            # call sites.
+            self.store.set(f"session_{role}", sess.session_id)
+            return
+        # Mirror seed_run_dir derivation from the registry's own seed_run_dir.
+        # The formula directory is the parent of the existing seed_run_dir
+        # (e.g. `<rig>/.planning/software-dev-full/<seed>/`).
+        parent_dir = self.role_session_store.seed_run_dir.parent
+        new_seed_run_dir = parent_dir / seed_id
+        new_store = RoleSessionStore(
+            seed_id=seed_id,
+            seed_run_dir=new_seed_run_dir,
+            rig_path=self.role_session_store.rig_path,
+            legacy_self_run_dir=None,
+        )
+        new_store.set(role, sess.session_id)
 
     def publish(
         self,
@@ -127,9 +187,9 @@ class RoleRegistry:
 
     def _refresh_handles(self) -> None:
         sessions = {
-            role: self.store.get(f"session_{role}")
+            role: self._read_session(role)
             for role in self.roles
-            if self.store.get(f"session_{role}")
+            if self._read_session(role)
         }
         prefix = f"po-{self.issue_id.replace('.', '_')}"
         write_run_handles(
@@ -300,6 +360,34 @@ def build_registry(
     fr_id = flow_run.get_id() or "local"
     tmux_scope = _resolve_tmux_scope(rig, issue_id, parent_bead, rig_path_p, dry_run)
 
+    # Resolve seed bead for role-session affinity.
+    # Precedence: explicit `parent_bead` (epic/graph callers) >
+    # parent-child walk (`resolve_seed_bead`) > self (solo run).
+    if parent_bead is not None:
+        seed_id = parent_bead
+    elif not dry_run and shutil.which("bd") is not None:
+        try:
+            seed_id = resolve_seed_bead(issue_id, rig_path=rig_path_p)
+        except ValueError:
+            # Cycle or absurd-depth chain — fall back to self-seed; caller
+            # gets identical-to-today's-solo-run behaviour rather than
+            # crashing the bootstrap.
+            seed_id = issue_id
+    else:
+        seed_id = issue_id
+    seed_run_dir = rig_path_p / ".planning" / formula_name / seed_id
+    seed_run_dir.mkdir(parents=True, exist_ok=True)
+    role_session_store = RoleSessionStore(
+        seed_id=seed_id,
+        seed_run_dir=seed_run_dir,
+        rig_path=rig_path_p,
+        # Migration shim: the issue's *own* run-dir, where solo
+        # `auto_store(parent_id=None)` runs historically wrote
+        # `session_<role>` keys. Distinct from `seed_run_dir` when
+        # seed_id != issue_id.
+        legacy_self_run_dir=run_dir,
+    )
+
     reg = RoleRegistry(
         rig_path=rig_path_p,
         store=store,
@@ -311,6 +399,7 @@ def build_registry(
         tmux_scope=tmux_scope,
         roles=roles,
         code_roles=code_roles if code_roles is not None else _DEFAULT_CODE_ROLES,
+        role_session_store=role_session_store,
     )
 
     # Tag the flow run with `issue_id:<id>` so `po status` can group by

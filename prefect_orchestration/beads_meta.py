@@ -270,6 +270,58 @@ def _bd_show(
     return rows if isinstance(rows, dict) else None
 
 
+def resolve_seed_bead(
+    issue_id: str,
+    rig_path: Path | str | None = None,
+    *,
+    max_hops: int = 16,
+) -> str:
+    """Topmost ancestor reachable via parent-child edges (or `issue_id`).
+
+    Walks `bd dep list <cur> --direction=down --type=parent-child` upward.
+    On this rig (verified 2026-04-28 against 7vs.2 ↔ 7vs):
+    `--direction=down --type=parent-child` returns *parents* (ancestors)
+    of the queried bead; `--direction=up` returns *children*. We use
+    `down` to walk to the topmost ancestor.
+
+    Returns `issue_id` itself when:
+      - `bd` is not on PATH (no graph to walk → solo-run / FileStore path)
+      - the issue has no parent-child parent (it IS a seed)
+
+    Cycle guard: caps at `max_hops` (default 16); raises `ValueError` if
+    a cycle or absurdly deep chain is detected.
+
+    Distinct from `_resolve_tmux_scope` (in `role_registry`) which reads
+    `bd show <issue>.metadata.{parent,epic,...}` for one-hop tmux
+    grouping. This walks the dep graph for session-affinity seed
+    resolution; do not unify.
+    """
+    if not _bd_available():
+        return issue_id
+    cur = issue_id
+    seen: set[str] = {cur}
+    for _ in range(max_hops):
+        parents = _bd_dep_list(
+            cur, direction="down", edge_type="parent-child", rig_path=rig_path
+        )
+        if not parents:
+            return cur
+        # parent-child edges from a child point at exactly one parent in
+        # the canonical case; tolerate >1 deterministically by sorted
+        # first id (matches plan §Risks "Multiple parents").
+        candidate_ids = sorted(p["id"] for p in parents if p.get("id"))
+        if not candidate_ids:
+            return cur
+        nxt = candidate_ids[0]
+        if nxt in seen:
+            raise ValueError(f"parent-child cycle through {cur}->{nxt}")
+        seen.add(nxt)
+        cur = nxt
+    raise ValueError(
+        f"parent-child chain exceeds {max_hops} hops from {issue_id}"
+    )
+
+
 def list_subgraph(
     root_id: str,
     traverse: str | Iterable[str] = DEFAULT_TRAVERSE,

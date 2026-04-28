@@ -50,7 +50,13 @@ class SessionRow:
 
 
 def load_metadata(run_dir: Path) -> dict[str, str]:
-    """Read metadata.json from a run_dir. Raises MetadataNotFound if absent."""
+    """Read metadata.json from a run_dir. Raises MetadataNotFound if absent.
+
+    Thin back-compat wrapper retained for callers that only want the raw
+    per-run metadata dict. New code that needs the role-session map
+    should call `load_role_sessions` (which unions across the seed
+    bead's BeadsStore + `role-sessions.json` + this legacy file).
+    """
     path = run_dir / METADATA_FILENAME
     if not path.exists():
         raise MetadataNotFound(
@@ -58,6 +64,45 @@ def load_metadata(run_dir: Path) -> dict[str, str]:
             "The flow may not have completed the session-stamping step yet."
         )
     return json.loads(path.read_text())
+
+
+def load_role_sessions(
+    run_dir: Path,
+    *,
+    seed_id: str,
+    seed_run_dir: Path,
+    rig_path: Path | str | None = None,
+) -> dict[str, str]:
+    """Unioned per-role session map in the legacy *prefixed* shape.
+
+    Returns `{"session_<role>": <uuid>, ...}` so existing helpers
+    (`build_rows`, `lookup_session`) consume it unchanged. Internal
+    storage uses bare-role keys; conversion happens here.
+
+    Source precedence (last-wins on overlap):
+      legacy `<run_dir>/metadata.json` (session_<role> keys) <
+      `<seed_run_dir>/role-sessions.json` <
+      `bd show <seed_id>.metadata.session_<role>` (BeadsStore tier).
+
+    Unlike `load_metadata`, this never raises when the legacy
+    `metadata.json` is missing — a fresh seed-only run is a normal
+    state. Returns an empty dict only when *all* tiers are empty.
+
+    `seed_run_dir` is permitted to equal `run_dir` (solo / self-seed
+    case); the migration shim path is then redundant but harmless.
+    """
+    # Re-use the same three-tier reader inside RoleSessionStore so this
+    # function and RoleRegistry can never disagree on lookup order.
+    from prefect_orchestration.role_sessions import RoleSessionStore
+
+    store = RoleSessionStore(
+        seed_id=seed_id,
+        seed_run_dir=seed_run_dir,
+        rig_path=rig_path,
+        legacy_self_run_dir=run_dir,
+    )
+    bare = store.all()
+    return {f"{SESSION_PREFIX}{role}": uuid for role, uuid in bare.items()}
 
 
 def _role_from_key(key: str) -> str | None:
