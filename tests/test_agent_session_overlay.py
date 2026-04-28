@@ -23,6 +23,7 @@ class _RecordingBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        extra_env: object = None,
     ) -> tuple[str, str]:
         self.calls.append(prompt)
         return "ok", session_id or "sid-1"

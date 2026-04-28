@@ -37,6 +37,7 @@ class RecordingBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        extra_env: object = None,
     ) -> tuple[str, str]:
         self.captured.append(prompt)
         if self.raise_exc is not None:
