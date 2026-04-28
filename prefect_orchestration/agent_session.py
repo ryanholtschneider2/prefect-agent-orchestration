@@ -196,6 +196,7 @@ _STUB_VERDICTS: dict[str, dict] = {
     "regression": {"regression_detected": False},
     "ralph": {"ralph_found_improvement": False},
     "test": {"passed": True, "count": 7},
+    "full-test-gate": {"passed": True, "failures": [], "summary": "stub"},
 }
 
 
