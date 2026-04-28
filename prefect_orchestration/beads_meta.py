@@ -406,8 +406,10 @@ def list_epic_children(
       convention required.
     - ``"both"`` — union of `deps` and `ids` with stable de-dup. `deps`
       order first (BFS from `list_subgraph`), then any dot-suffix-only
-      ids appended. `block_deps` for shared ids unions both sources,
-      then re-restricts to the merged in-set.
+      ids appended. `block_deps` for shared ids unions both sources;
+      no merged-set re-restriction is needed because each source
+      already restricts its own `block_deps` to its in-set, and the
+      merged set is a superset of each.
 
     Closed beads are filtered out in every mode (matches the original
     `list_epic_children` semantics + `list_subgraph(include_closed=False)`).
