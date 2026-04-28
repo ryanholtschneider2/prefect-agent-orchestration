@@ -167,15 +167,20 @@ def test_create_child_bead_forwards_blocks_flag(
     assert out == "parent.iter2"
     assert captured, "no shellout recorded"
     cmd = captured[0]
+    assert "--parent" not in cmd
     assert "--deps" in cmd
     deps_idx = cmd.index("--deps")
-    assert cmd[deps_idx + 1] == "blocks:parent.iter1"
+    assert cmd[deps_idx + 1] == "parent-child:parent,blocks:parent.iter1"
 
 
-def test_create_child_bead_omits_blocks_flag_by_default(
+def test_create_child_bead_emits_parent_child_dep_by_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """No `blocks` kwarg → no `--deps` token in the cmd (back-compat)."""
+    """No `blocks` kwarg → `--deps parent-child:<parent>` only.
+
+    bd 1.0 rejects `--id` + `--parent` together, so the parent edge
+    is always expressed via `--deps`, never as a separate `--parent` flag.
+    """
     monkeypatch.setattr(beads_meta, "_bd_available", lambda: True)
     captured: list[list[str]] = []
 
@@ -197,7 +202,10 @@ def test_create_child_bead_omits_blocks_flag_by_default(
         rig_path=tmp_path,
     )
     cmd = captured[0]
-    assert "--deps" not in cmd
+    assert "--parent" not in cmd
+    assert "--deps" in cmd
+    deps_idx = cmd.index("--deps")
+    assert cmd[deps_idx + 1] == "parent-child:parent"
 
 
 # ─── read_iter_cap (prefect-orchestration-7vs.4) ───

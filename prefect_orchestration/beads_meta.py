@@ -182,11 +182,15 @@ def create_child_bead(
             "create_child_bead requires the `bd` CLI on PATH "
             "(FileStore has no graph support)."
         )
+    # bd 1.0 rejects `--id` + `--parent` together; the working alternative
+    # is to express the parent edge via `--deps parent-child:<id>`.
+    deps = [f"parent-child:{parent_id}"]
+    if blocks:
+        deps.append(f"blocks:{blocks}")
     cmd = [
         "bd",
         "create",
         f"--id={child_id}",
-        f"--parent={parent_id}",
         "--title",
         title,
         "--description",
@@ -195,9 +199,9 @@ def create_child_bead(
         issue_type,
         "-p",
         str(priority),
+        "--deps",
+        ",".join(deps),
     ]
-    if blocks:
-        cmd += ["--deps", f"blocks:{blocks}"]
     proc = subprocess.run(
         cmd,
         capture_output=True,
