@@ -743,6 +743,57 @@ installed but the install command exits non-zero — fix the pack's
 Run `po packs update` after registering a new command so `importlib.metadata`
 sees the new entry-point.
 
+## Graph-mode / per_role_step patterns (from 7vs.5)
+
+### Agent-driven bead closure is the contract; orchestrator is a defensive belt
+
+In graph mode the **agent closes its own role-step bead**; `per_role_step`
+only force-closes (with a sentinel `notes="agent did not close role-step bead"`)
+when the bead is still open after the @task returns. This mirrors the
+7vs.3 lint and 7vs.4 critic patterns. Never make the orchestrator the
+primary close path — that erases the verdict-keyword signal the agent
+writes.
+
+### Failure paths must not share close semantics with success
+
+`_MAX_PASSES` exhaustion and cap-exhaustion must NOT `bd close` with
+`complete` or the same notes as a success. Leave the seed open on
+runaway-loop exhaustion so `bd ready` keeps surfacing it for human
+triage. Only close iterN beads (and their subtree) with a distinct
+`cap-exhausted: …` reason.
+
+### Graph mode: "who creates the iter bead" must be unambiguous
+
+The seed graph creates the role-step iter bead in graph mode; legacy
+tasks (lint, critique_plan, review, …) create their own iter bead in
+legacy mode. Detect the mode via `ctx.get("role_step_bead_id")` and
+reuse the seeded bead — do NOT mint a second one. Two layers both
+creating beads with the same shape breaks verdict-reading causality.
+
+### Cross-task state must be reconstructed from disk
+
+Python scope does not exist across Prefect task boundaries. Every
+`ctx[...]` value consumed in a legacy task must be reconstructed from
+durable artifacts (run_dir files, bead metadata) in graph mode.
+Example: `_rebuild_critic_iter_context` re-reads prior critique
+markdown + seed-bead title. Audit all `ctx[...]` consumers when
+porting a legacy task to graph mode.
+
+### `software_dev_full` must keep explicit kwargs (not `**kwargs`)
+
+`graph.py::_check_formula_signature` validates that named params include
+`issue_id`, `rig`, `rig_path`. Pre-existing tests also assert the
+public signature. A "thin `**kwargs` dispatcher" plan will fail both
+gates. Keep the explicit signature; put the graph-vs-legacy branch in
+the body.
+
+### Use `build_registry` for seed bootstrap, not `claim_issue` directly
+
+`build_registry(claim=True)` wraps `claim_issue` with `po-<flow_run_id>`
+assignee logic AND creates the run_dir and stamps metadata in one call.
+Calling `claim_issue(issue_id, rig_path=...)` bare omits the assignee
+param that bd 1.x requires and misses the metadata stamp.
+
 ## Related beads (read before touching core or prompts)
 
 - `64y` TmuxClaudeBackend — lurkable sessions (shipped)
@@ -751,3 +802,4 @@ sees the new entry-point.
 - `9cn` OpenTelemetry / Logfire spans (open)
 - `pw4` rig-path vs pack-path split (shipped — see README §"Rig path vs pack path")
 - `7jr` `po run --time` for future-scheduled runs (open)
+- `7vs` graph-mode software-dev-full (shipped — see §"Graph-mode / per_role_step patterns")
