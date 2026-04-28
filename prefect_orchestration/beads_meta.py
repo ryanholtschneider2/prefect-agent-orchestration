@@ -145,6 +145,66 @@ def claim_issue(
     )
 
 
+def create_child_bead(
+    parent_id: str,
+    child_id: str,
+    *,
+    title: str,
+    description: str,
+    issue_type: str = "task",
+    rig_path: Path | str | None = None,
+    priority: int = 2,
+) -> str:
+    """Create a child bead with explicit id + parent edge.
+
+    Idempotent: if `child_id` already exists, returns it without
+    error. Returns the child id on success. NotImplementedError if
+    `bd` is missing (FileStore has no graph support — the
+    bead-mediated handoff requires bd).
+
+    Shells `bd create --id=<child_id> --parent=<parent_id> --title=...
+    --description=... --type=<type> -p <priority>` with
+    `cwd=rig_path`. On id collision (`bd` exits non-zero with
+    "already exists" stderr) we treat the call as a successful no-op
+    so callers retrying (Prefect task retry, ralph re-entry) reuse
+    the existing bead's state instead of erroring.
+    """
+    if not _bd_available():
+        raise NotImplementedError(
+            "create_child_bead requires the `bd` CLI on PATH "
+            "(FileStore has no graph support)."
+        )
+    cmd = [
+        "bd",
+        "create",
+        f"--id={child_id}",
+        f"--parent={parent_id}",
+        "--title",
+        title,
+        "--description",
+        description,
+        "--type",
+        issue_type,
+        "-p",
+        str(priority),
+    ]
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(rig_path) if rig_path is not None else None,
+    )
+    if proc.returncode == 0:
+        return child_id
+    stderr = (proc.stderr or "") + (proc.stdout or "")
+    if "already exists" in stderr.lower():
+        return child_id
+    raise RuntimeError(
+        f"bd create {child_id} failed (rc={proc.returncode}): {stderr.strip()}"
+    )
+
+
 def close_issue(
     issue_id: str,
     notes: str | None = None,
