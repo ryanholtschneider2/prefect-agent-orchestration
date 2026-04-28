@@ -55,12 +55,19 @@ def prefect_run_url(flow_run_id: str | None) -> str | None:
 
 
 def stamp_run_url_on_bead(
-    issue_id: str, flow_run_id: str | None, *, dry_run: bool = False
+    issue_id: str,
+    flow_run_id: str | None,
+    *,
+    dry_run: bool = False,
+    rig_path: Path | str | None = None,
 ) -> None:
     """Persist the Prefect UI URL onto the bead via `bd ... --set-metadata`.
 
     Best-effort: skipped silently when bd is missing, in dry-run mode,
     or when no URL can be composed.
+
+    `rig_path` (when set) becomes the bd shellout's `cwd` so it targets
+    the rig's `.beads/` rather than the Python process cwd.
     """
     if dry_run or shutil.which("bd") is None:
         return
@@ -70,6 +77,7 @@ def stamp_run_url_on_bead(
     subprocess.run(
         ["bd", "update", issue_id, "--set-metadata", f"po.prefect_run_url={url}"],
         check=False,
+        cwd=str(rig_path) if rig_path is not None else None,
     )
 
 

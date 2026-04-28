@@ -32,34 +32,48 @@ class MetadataStore(Protocol):
 
 @dataclass
 class BeadsStore:
-    """Reads/writes metadata on a beads parent molecule."""
+    """Reads/writes metadata on a beads parent molecule.
+
+    `rig_path` is the directory the bd binary should resolve `.beads/`
+    from. When set, every shellout passes `cwd=str(rig_path)`. When
+    `None`, the call inherits the Python process cwd — preserves
+    backward compatibility for ad-hoc callers without a rig.
+    """
 
     parent_id: str
+    rig_path: Path | str | None = None
 
-    def get(self, key: str, default: str | None = None) -> str | None:
+    def _cwd(self) -> str | None:
+        return str(self.rig_path) if self.rig_path is not None else None
+
+    def _show_metadata(self) -> dict[str, str]:
         out = subprocess.run(
             ["bd", "show", self.parent_id, "--json"],
             capture_output=True,
             text=True,
             check=True,
+            cwd=self._cwd(),
         ).stdout
-        meta = json.loads(out).get("metadata") or {}
-        return meta.get(key, default)
+        parsed = json.loads(out)
+        # Some bd versions return a single-row JSON list; others return
+        # a bare dict. Normalise to dict before reading metadata.
+        row = parsed[0] if isinstance(parsed, list) and parsed else parsed
+        if not isinstance(row, dict):
+            return {}
+        return row.get("metadata") or {}
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        return self._show_metadata().get(key, default)
 
     def set(self, key: str, value: str) -> None:
         subprocess.run(
             ["bd", "update", self.parent_id, "--set-metadata", f"{key}={value}"],
             check=True,
+            cwd=self._cwd(),
         )
 
     def all(self) -> dict[str, str]:
-        out = subprocess.run(
-            ["bd", "show", self.parent_id, "--json"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout
-        return json.loads(out).get("metadata") or {}
+        return self._show_metadata()
 
 
 @dataclass
@@ -89,35 +103,65 @@ class FileStore:
         return self._load()
 
 
-def auto_store(parent_id: str | None, run_dir: Path) -> MetadataStore:
-    """Use beads if available and parent_id given; else file store."""
+def auto_store(
+    parent_id: str | None,
+    run_dir: Path,
+    rig_path: Path | str | None = None,
+) -> MetadataStore:
+    """Use beads if available and parent_id given; else file store.
+
+    When `rig_path` is supplied, the constructed `BeadsStore` carries it
+    so every bd shellout runs with `cwd=rig_path`. Required when the
+    Python process cwd is not the rig (e.g. Prefect task runner).
+    """
     if parent_id and shutil.which("bd"):
-        return BeadsStore(parent_id=parent_id)
+        return BeadsStore(parent_id=parent_id, rig_path=rig_path)
     return FileStore(path=run_dir / "metadata.json")
 
 
 def _bd_available() -> bool:
+    # cwd-independent: shutil.which is PATH-based.
     return shutil.which("bd") is not None
 
 
-def claim_issue(issue_id: str, assignee: str) -> None:
-    """Mark a beads issue in_progress + claim it. No-op if bd missing."""
+def claim_issue(
+    issue_id: str,
+    assignee: str,
+    rig_path: Path | str | None = None,
+) -> None:
+    """Mark a beads issue in_progress + claim it. No-op if bd missing.
+
+    `rig_path` (when set) becomes the bd shellout's `cwd` so it targets
+    the rig's `.beads/` rather than the Python process cwd.
+    """
     if not _bd_available():
         return
     subprocess.run(
         ["bd", "update", issue_id, "--status", "in_progress", "--assignee", assignee],
         check=False,
+        cwd=str(rig_path) if rig_path is not None else None,
     )
 
 
-def close_issue(issue_id: str, notes: str | None = None) -> None:
-    """Close a beads issue. No-op if bd missing."""
+def close_issue(
+    issue_id: str,
+    notes: str | None = None,
+    rig_path: Path | str | None = None,
+) -> None:
+    """Close a beads issue. No-op if bd missing.
+
+    `rig_path` (when set) becomes the bd shellout's `cwd`.
+    """
     if not _bd_available():
         return
     cmd = ["bd", "close", issue_id]
     if notes:
         cmd += ["--reason", notes]
-    subprocess.run(cmd, check=False)
+    subprocess.run(
+        cmd,
+        check=False,
+        cwd=str(rig_path) if rig_path is not None else None,
+    )
 
 
 # ─────────────────────── graph traversal ────────────────────────────
@@ -164,19 +208,29 @@ def _bd_dep_list(
     issue_id: str,
     direction: str,
     edge_type: str | None = None,
+    rig_path: Path | str | None = None,
 ) -> list[dict]:
     """Run `bd dep list <id> --direction=<dir> [--type=<t>] --json`.
 
     Returns [] on any non-zero exit or empty body — bd has been observed
     to print "No issues depend on …" to stdout while exiting 0 with no
     JSON, so we tolerate `JSONDecodeError` too.
+
+    `rig_path` (when set) becomes the shellout's `cwd` so bd resolves the
+    rig's `.beads/` instead of the Python process cwd.
     """
     if not _bd_available():
         return []
     cmd = ["bd", "dep", "list", issue_id, f"--direction={direction}", "--json"]
     if edge_type is not None:
         cmd += ["--type", edge_type]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(rig_path) if rig_path is not None else None,
+    )
     if proc.returncode != 0 or not proc.stdout.strip():
         return []
     try:
@@ -186,8 +240,14 @@ def _bd_dep_list(
     return rows if isinstance(rows, list) else []
 
 
-def _bd_show(issue_id: str) -> dict | None:
-    """Return the bd show row for a single issue, or None if not found."""
+def _bd_show(
+    issue_id: str,
+    rig_path: Path | str | None = None,
+) -> dict | None:
+    """Return the bd show row for a single issue, or None if not found.
+
+    `rig_path` (when set) becomes the shellout's `cwd`.
+    """
     if not _bd_available():
         return None
     proc = subprocess.run(
@@ -195,6 +255,7 @@ def _bd_show(issue_id: str) -> dict | None:
         capture_output=True,
         text=True,
         check=False,
+        cwd=str(rig_path) if rig_path is not None else None,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
@@ -213,6 +274,7 @@ def list_subgraph(
     *,
     include_closed: bool = False,
     include_root: bool = False,
+    rig_path: Path | str | None = None,
 ) -> list[dict]:
     """BFS the bd-dep graph rooted at `root_id`; return collected nodes.
 
@@ -250,7 +312,7 @@ def list_subgraph(
     queue: deque[str] = deque([root_id])
 
     if include_root:
-        root_row = _bd_show(root_id)
+        root_row = _bd_show(root_id, rig_path=rig_path)
         if root_row is not None:
             root_status = root_row.get("status", "open")
             # Skip the row when it would be filtered out below — saves
@@ -265,7 +327,9 @@ def list_subgraph(
     while queue:
         cur = queue.popleft()
         for et in edge_types:
-            for row in _bd_dep_list(cur, direction="up", edge_type=et):
+            for row in _bd_dep_list(
+                cur, direction="up", edge_type=et, rig_path=rig_path
+            ):
                 rid = row.get("id")
                 if not rid or rid in visited:
                     continue
@@ -292,7 +356,9 @@ def list_subgraph(
     # only deps that are in the collected set.
     in_set = set(collected)
     for cid, node in collected.items():
-        deps_rows = _bd_dep_list(cid, direction="down", edge_type="blocks")
+        deps_rows = _bd_dep_list(
+            cid, direction="down", edge_type="blocks", rig_path=rig_path
+        )
         node["block_deps"] = [r["id"] for r in deps_rows if r.get("id") in in_set]
 
     return list(collected.values())
@@ -334,19 +400,25 @@ def topo_sort_blocks(nodes: list[dict]) -> list[dict]:
     return [by_id[i] for i in order]
 
 
-def _dot_suffix_children(epic_id: str) -> list[dict]:
+def _dot_suffix_children(
+    epic_id: str,
+    rig_path: Path | str | None = None,
+) -> list[dict]:
     """Probe `<epic>.1`, `<epic>.2`, … until 3 consecutive misses.
 
     Returns graph-shape rows `{id, status, title, block_deps}` with
     `block_deps` restricted to ids also in the discovered set (same
     contract `list_subgraph` produces, so the result is topo-sortable
     by `topo_sort_blocks` directly). Skips closed children.
+
+    `rig_path` (when set) becomes the `bd show` shellout's `cwd`.
     """
     if not _bd_available():
         return []
     raw: list[tuple[dict, list[str]]] = []
     consecutive_missing = 0
     n = 0
+    cwd = str(rig_path) if rig_path is not None else None
     while consecutive_missing < 3:
         n += 1
         candidate = f"{epic_id}.{n}"
@@ -355,6 +427,7 @@ def _dot_suffix_children(epic_id: str) -> list[dict]:
             capture_output=True,
             text=True,
             check=False,
+            cwd=cwd,
         )
         if proc.returncode != 0 or not proc.stdout.strip():
             consecutive_missing += 1
@@ -389,6 +462,7 @@ def _dot_suffix_children(epic_id: str) -> list[dict]:
 def list_epic_children(
     epic_id: str,
     mode: DiscoverMode = "ids",
+    rig_path: Path | str | None = None,
 ) -> list[dict]:
     """Return graph-shape children of an epic; discovery driven by `mode`.
 
@@ -419,12 +493,13 @@ def list_epic_children(
             f"unknown discover mode {mode!r}; valid: {list(VALID_DISCOVER_MODES)}"
         )
     if mode == "ids":
-        return _dot_suffix_children(epic_id)
+        return _dot_suffix_children(epic_id, rig_path=rig_path)
     deps_nodes = list_subgraph(
         epic_id,
         traverse=("parent-child", "blocks"),
         include_closed=False,
         include_root=False,
+        rig_path=rig_path,
     )
     if mode == "deps":
         return deps_nodes
@@ -433,7 +508,7 @@ def list_epic_children(
     # Both sources already restrict block_deps to their own in-set, and
     # the merged set is a superset of each — so per-node union is enough
     # without a final merged-set re-restriction.
-    ids_nodes = _dot_suffix_children(epic_id)
+    ids_nodes = _dot_suffix_children(epic_id, rig_path=rig_path)
     if not deps_nodes:
         return ids_nodes
     if not ids_nodes:
@@ -455,7 +530,10 @@ def list_epic_children(
     return [by_id[i] for i in order]
 
 
-def collect_explicit_children(child_ids: Iterable[str]) -> list[dict]:
+def collect_explicit_children(
+    child_ids: Iterable[str],
+    rig_path: Path | str | None = None,
+) -> list[dict]:
     """`--child-ids` override: build graph nodes for an explicit id list.
 
     Bypasses discovery entirely. For each id:
@@ -487,7 +565,7 @@ def collect_explicit_children(child_ids: Iterable[str]) -> list[dict]:
     missing: list[str] = []
     closed: list[str] = []
     for cid in ids:
-        row = _bd_show(cid)
+        row = _bd_show(cid, rig_path=rig_path)
         if row is None:
             missing.append(cid)
             continue
@@ -508,7 +586,9 @@ def collect_explicit_children(child_ids: Iterable[str]) -> list[dict]:
 
     in_set = set(rows)
     for cid, node in rows.items():
-        deps = _bd_dep_list(cid, direction="down", edge_type="blocks")
+        deps = _bd_dep_list(
+            cid, direction="down", edge_type="blocks", rig_path=rig_path
+        )
         node["block_deps"] = [r["id"] for r in deps if r.get("id") in in_set]
 
     # Preserve the caller's input order (deterministic; topo-sort then

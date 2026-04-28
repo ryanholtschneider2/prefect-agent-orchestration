@@ -164,6 +164,7 @@ def _resolve_pack_path(
             capture_output=True,
             text=True,
             check=False,
+            cwd=str(rig_path_p),
         )
         if proc.returncode == 0 and proc.stdout.strip():
             try:
@@ -291,9 +292,10 @@ def build_registry(
                 f"po.pack_path={pack_path_p}",
             ],
             check=False,
+            cwd=str(rig_path_p),
         )
 
-    store = auto_store(parent_bead, run_dir)
+    store = auto_store(parent_bead, run_dir, rig_path=rig_path_p)
     backend_factory = _select_backend_factory(dry_run)
     fr_id = flow_run.get_id() or "local"
     tmux_scope = _resolve_tmux_scope(rig, issue_id, parent_bead, rig_path_p, dry_run)
@@ -326,10 +328,10 @@ def build_registry(
             pass
 
     reg._refresh_handles()
-    stamp_run_url_on_bead(issue_id, fr_id, dry_run=dry_run)
+    stamp_run_url_on_bead(issue_id, fr_id, dry_run=dry_run, rig_path=rig_path_p)
 
     if claim and not dry_run:
-        claim_issue(issue_id, assignee=f"po-{fr_id[:8]}")
+        claim_issue(issue_id, assignee=f"po-{fr_id[:8]}", rig_path=rig_path_p)
 
     base_ctx: dict[str, Any] = {
         "issue_id": issue_id,
