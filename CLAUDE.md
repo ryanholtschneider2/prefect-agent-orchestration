@@ -654,6 +654,18 @@ change — entry-point metadata is written at install time, not on
 code reload, and `po packs update` refreshes it for every installed pack.
 `po packs list` lists what's installed and what each contributes.
 
+**Warning — `uv pip install -e <core>` evicts other editable packs.** Running
+`uv pip install -e .` directly (instead of `po packs install --editable`)
+will uninstall any other editable installs in the venv (e.g.
+`po-formulas-software-dev`), causing `ModuleNotFoundError` on unrelated tests.
+Always use `po packs install --editable <path>` for multi-pack dev setups, or
+reinstall all editable packs after any direct `uv pip install -e` invocation.
+
+**After editing `pyproject.toml`**: verify that `[project.optional-dependencies]`
+extras and `[project.entry-points]` stanzas are still intact — linter/editor
+auto-format passes have been observed to drop these blocks silently. Run
+`po packs update` and confirm EP tests pass before declaring the change done.
+
 ### Pack-contributed `po doctor` checks (`po.doctor_checks`)
 
 Packs can ship their own health checks for `po doctor` via the
