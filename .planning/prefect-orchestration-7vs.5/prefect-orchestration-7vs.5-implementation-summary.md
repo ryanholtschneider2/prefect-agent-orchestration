@@ -79,14 +79,33 @@ explicit `parent_bead` kwarg), parses the role from the iter bead id
 | `test_per_role_step.py` | 6 parametrized role-id parse cases (covering hyphenated compound names like `tester-baseline`, `releaser-deploy-smoke`, and iter-suffixed variants); negative case for non-role bead ids; mocked `ROLE_TASKS` dispatch; unknown-role raises `ValueError`. |
 | `test_software_dev_graph_mode.py` | Dispatcher branches correctly on `PO_FORMULA_MODE` (default/legacy/graph); LOC count of `_graph_software_dev_full` source < 100; every role suffix in the seed graph has a `ROLE_TASKS` entry; signature preservation for legacy callers. |
 
-## Acceptance Criteria Status
+## Acceptance Criteria Status (post review-iter-2)
 
 | Criterion | Status | Notes |
 |-----------|--------|-------|
 | (a) `PO_FORMULA_MODE=graph` runs `software_dev_full` end-to-end on a real issue | DEFERRED to verification | Code path is implemented and unit-tested; the actual end-to-end Claude run is the verifier role's job per plan §"Verification Strategy" row (a). |
-| (b) `PO_FORMULA_MODE=legacy` (default) byte-for-byte equivalent | DONE | `_legacy_software_dev_full` is the renamed-only legacy body; signature preserved on the dispatcher; pack unit suite went from 63 → 79 (16 new tests, 0 regressions). |
-| (c) Graph-mode body <100 LOC | DONE | `_graph_software_dev_full` body is 78 lines; `test_graph_loc_under_100` enforces this in CI. |
+| (b) `PO_FORMULA_MODE=legacy` (default) byte-for-byte equivalent | DONE | Pack unit suite: 87 passing (was 79; +8 new tests, 0 regressions). Legacy body unchanged except for adding `role_step_close_block=""` to base_ctx so prompts can reference the new template var unconditionally. |
+| (c) Graph-mode body <100 LOC | DONE | `_graph_software_dev_full` body is 96 lines; `test_graph_loc_under_100` enforces <100 in CI. |
 | (d) Documented | DONE | `engdocs/formula-modes.md` (110 lines) + `CLAUDE.md` `PO_FORMULA_MODE` subsection. |
+
+### BLOCKING fixes (review iter 2)
+
+| # | Issue | Fix |
+|---|---|---|
+| 1 | per_role_step auto-closed beads (wrong) | `per_role_step` no longer closes as primary path; agent closes via `{{role_step_close_block}}`. Defensive force-close only when agent forgets, with sentinel notes. `role_step_bead_id` exposed via ctx. |
+| 2 | critique_plan / review / lint duplicated iter beads | Detect graph mode via `ctx["role_step_bead_id"]`; reuse orchestrator-seeded bead instead of `create_child_bead`. Legacy unchanged. |
+| 3 | `_MAX_PASSES` exhaustion silently closed seed | Returns `{"status": "max_passes_exhausted"}` and leaves seed open for human triage. Logs an error. |
+| 7 | cap-exhaustion did not propagate to downstream subtree | New `_close_subtree_blocks_down` BFSs the blocks-edge subtree and closes every open descendant with the same `cap-exhausted` reason. |
+
+### IMPORTANT fixes
+
+| # | Issue | Fix |
+|---|---|---|
+| 4 | `releaser-demo-video` ungated when `has_ui=false` | New `_skip_if_metadata` helper closes role-step bead with `skipped: no ui` and short-circuits the @task. Same mechanism handles docs-only short-circuit for non-docs roles. |
+| 5 | `force_full_regression` / `pack_path` not propagated | `_graph_software_dev_full` stamps these on seed metadata at fan-out; `per_role_step` reads them back and stuffs into ctx. |
+| 6 | Critic ctx had no rebuilt iter description | `_rebuild_critic_iter_context` reads prior critique markdown + seed title; rebuilds via `_build_critic_iter_description`. Restores 7vs.4 iter-self-sufficiency. |
+| 8 | Critic prompts referenced literal `<seed>` | `seed_id` now in ctx; prompts can substitute via `{{seed_id}}` (next prompt iteration). |
+| 9 | `tester-playwright` reachability undefined | Removed from `ROLE_TASKS` + `_CAP_ROLE_MAP`; seed graph already doesn't dispatch it. has_ui-aware seed extension deferred to 7vs.7. |
 
 ## How to Demo
 

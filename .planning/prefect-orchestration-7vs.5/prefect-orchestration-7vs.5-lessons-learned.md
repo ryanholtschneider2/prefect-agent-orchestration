@@ -76,3 +76,87 @@
   **Recommendation.** When parallelism scope changes, sanity-check
   what the existing legacy already does in parallel — usually you're
   not actually expanding the contention surface.
+
+## Code-Review Notes (2026-04-28)
+
+- **Issue** — Reviewer needed to trace the contract between
+  `per_role_step` and the legacy `@task` callables it dispatches.
+  This crosses two repos and ~10 files; the implementation summary
+  did not call out the role-step-bead-closure semantics, and the
+  decision log did not address it. The CRITICAL gap (legacy tasks
+  close `<seed>.lint.<n>` etc., not the role-step bead `<seed>.
+  role.linter.iter<n>` that graph_run is awaiting) only surfaces by
+  reading both per_role_step.py and the bodies of `lint`,
+  `critique_plan`, etc.
+- **Resolution** — Returned MAJOR_REVISION with explicit BLOCKING
+  finding on the closure gap and on the silent `_MAX_PASSES`
+  success-close behaviour.
+- **Recommendation** — Future graph-mode work should require an
+  integration-style test that drives at least one role-step
+  through `per_role_step` against a temp `bd init` rig and
+  asserts the role-step bead is closed. The StubBackend test
+  deferral in this issue is exactly what allowed the contract gap
+  to ship.
+
+## Code-Review iter 2 fixes (2026-04-28)
+
+- **Issue** — Iter 1 had `per_role_step` auto-closing the role-step
+  bead AFTER the @task returned. This was wrong: graph-mode design
+  is "agent closes its own bead" so verdict-decoding (clean/failed,
+  approved/rejected, passed/failed) flows from the closure reason
+  the AGENT writes. Auto-closing erased that signal.
+  **Resolution** — Reverted to agent-driven closure. Added a
+  defensive force-close belt that fires only when the bead is still
+  open after the @task returns, with a sentinel `notes="agent did
+  not close role-step bead"`. Each prompt now carries a
+  `{{role_step_close_block}}` injection with role-specific reason
+  guidance (centralised in `_ROLE_CLOSE_GUIDANCE`).
+  **Recommendation** — When migrating role tasks to bead-mediated
+  handoff, ALWAYS read the existing 7vs.3 lint + 7vs.4 critic
+  patterns first. Both already use agent-driven closure with
+  keyword-decoded verdicts. The first-iter mistake was treating
+  per_role_step as if it owned the close; it doesn't — it owns
+  the dispatch + force-close defense, nothing else.
+
+- **Issue** — Iter 1 had `critique_plan` / `review` / `lint` calling
+  `create_child_bead` even in graph mode, minting a duplicate iter
+  bead alongside the orchestrator-seeded role-step bead. The agent
+  then closed one of them and graph_run waited on the other.
+  **Resolution** — Detect graph mode via `ctx.get("role_step_bead_id")`;
+  reuse the seeded bead instead of creating a new one. Legacy
+  mode (no role_step_bead_id) keeps the original behavior.
+  **Recommendation** — When two layers can author beads with similar
+  shapes, the contract for "who creates" must be unambiguous. Here
+  the seed graph creates iter beads in graph mode; the legacy task
+  creates them in legacy mode. Adding a single sentinel ctx flag
+  (`role_step_bead_id`) was the cleanest discriminator.
+
+- **Issue** — `_MAX_PASSES` exhaustion silently `bd close`d the seed
+  bead with the same `complete` notes as a successful run, masking
+  runaway loops as success.
+  **Resolution** — Return a distinct status; leave the seed open so
+  `bd ready` keeps surfacing it.
+  **Recommendation** — Failure paths must NEVER share their close
+  semantics with success paths. Idempotent `bd close` is a footgun
+  here: closing on failure looks identical to closing on success
+  unless the `notes` differ. Better: don't close on failure at all.
+
+- **Issue** — Cap-exhaustion closed the over-cap iter bead but left
+  its downstream blocks-edge subtree open, so `_MAX_PASSES` was
+  always invoked at least once even when caps fired correctly.
+  **Resolution** — `_close_subtree_blocks_down` BFSs and propagates
+  `cap-exhausted: …` down the subtree.
+  **Recommendation** — When a node's failure invalidates its
+  descendants, model that explicitly. The graph_run frontier
+  semantics ("close it and dependants drop") works by closing
+  EVERYTHING that's blocked, not just the proximate cause.
+
+- **Issue** — Critic ctx had no rebuilt iter description in graph
+  mode, regressing the 7vs.4 iter-self-sufficiency contract.
+  **Resolution** — `_rebuild_critic_iter_context` reconstructs from
+  prior critique markdown + seed-bead title.
+  **Recommendation** — Cross-task state in graph-mode must be
+  reconstructed from durable artifacts (run_dir files, bead
+  metadata) — Python scope doesn't exist across Prefect task
+  boundaries. Audit every `ctx[...]` consumer in legacy code and
+  ensure graph mode produces the same value from disk.

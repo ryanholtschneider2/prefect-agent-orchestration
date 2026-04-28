@@ -82,3 +82,70 @@ DEVIATIONS from the plan and decisions on points the plan did not fix.
   **Why**: Acceptance (b) requires legacy parity; epic_run / graph_run
   callers pass through every kwarg today, and the dispatcher branches
   on env var, not on a new param.
+
+## Review iter 2 (post-MAJOR_REVISION)
+
+- **Decision**: Agent closes its own role-step bead at end of turn;
+  `per_role_step` no longer closes as primary path. Defensive belt
+  force-closes only on agent failure with a sentinel `notes`.
+  **Why**: User design directive — "agents in steps close the beads."
+  Mirrors the established 7vs.3 lint and 7vs.4 critic patterns.
+  Reviewer finding #1.
+
+- **Decision**: Closure-keyword guidance lives in
+  `per_role_step._ROLE_CLOSE_GUIDANCE` (one entry per role) and is
+  rendered into prompts as `{{role_step_close_block}}` — single
+  template var per prompt, centralised content.
+  **Why**: Avoids 19 hand-edited prompts diverging on closure-reason
+  syntax. Future role rename = one-line code edit. Honors
+  principles.md "duplication preferred over Jinja" by not using
+  cross-prompt includes; the var IS substituted, but the value comes
+  from one Python source.
+
+- **Decision**: `critique_plan` / `review` / `lint` detect graph mode
+  via `ctx.get("role_step_bead_id")` and reuse the orchestrator-seeded
+  bead instead of minting a duplicate iter bead. Legacy mode (no
+  role_step_bead_id) is unchanged.
+  **Why**: Reviewer finding #2 — the seed graph already creates the
+  iter bead; minting a second one fragmented the verdict-reading
+  contract and broke iter-bead closure causality.
+
+- **Decision**: `_MAX_PASSES` exhaustion returns
+  `{"status": "max_passes_exhausted"}` and does NOT close the seed.
+  **Why**: Reviewer finding #3 — silently closing on runaway loops
+  masks the failure mode. Leaving the seed open keeps `bd ready`
+  surfacing it for human triage.
+
+- **Decision**: New `_close_subtree_blocks_down` BFSs the blocks-edge
+  subtree of an over-cap iter bead and closes every open descendant
+  with the same `cap-exhausted` reason.
+  **Why**: Reviewer finding #7 — without subtree propagation,
+  downstream beads waited on a hopeless cap-closed iter until
+  `_MAX_PASSES` fired.
+
+- **Decision**: `_skip_if_metadata` short-circuits the @task and
+  closes the role-step bead with `skipped: …` when seed metadata
+  signals docs-only or no-ui.
+  **Why**: Reviewer findings #4 (demo-video gating) and the
+  docs-only branch parity. Smaller change than skipping seed
+  emission; lets triager set the flag late and have downstream
+  role-steps respect it.
+
+- **Decision**: `_rebuild_critic_iter_context` restores 7vs.4
+  iter-self-sufficiency for critic role steps in graph mode.
+  **Why**: Reviewer finding #6 — without it, plan-critic /
+  build-critic prompts received empty `plan_iter_description` /
+  `build_iter_description`, regressing the contract that the iter
+  bead's `bd show` carries the prior critique inline.
+
+- **Decision**: `tester-playwright` removed from `ROLE_TASKS` and
+  `_CAP_ROLE_MAP`. has_ui-aware seed extension deferred to 7vs.7.
+  **Why**: Reviewer finding #9 — the role was unreachable from
+  the seed graph but still resolvable via a hand-crafted bead,
+  inviting accidental dispatch.
+
+- **Decision**: Deferred to follow-up beads — heredoc for bd-create
+  descriptions in critic prompts, `po extend-build-loop` helper
+  command, registry caching across role steps in the same flow.
+  **Why**: Reviewer explicitly marked these as DEFER; not in the
+  BLOCKING / IMPORTANT scope of this revision.
