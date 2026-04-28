@@ -114,6 +114,23 @@ charge = stripe.PaymentIntent.create(
 https://docs.stripe.com/api
 ```
 
+### Skill evals (optional)
+
+Packs can ship an `evals/` sibling next to `SKILL.md` so the core
+`skill-evals` formula can run a regression suite against the skill:
+
+```
+skills/<skill-name>/
+  SKILL.md
+  evals/
+    cases.yaml
+    rubrics.yaml
+  reports/        # generated; latest.{json,md}
+```
+
+Run with `po run skill-evals --pack <distribution-name> --skill <name>`.
+See `engdocs/skill-evals.md` for the full schema and CLI reference.
+
 ## Overlay — what it is, what belongs in it
 
 The overlay is for files the agent's working directory should contain

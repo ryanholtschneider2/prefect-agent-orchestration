@@ -298,6 +298,27 @@ po run epic --epic-id prefect-orchestration-h5s --rig <name> --rig-path <path> \
             --child-ids prefect-orchestration-5i9,prefect-orchestration-1ij,prefect-orchestration-dmy
 ```
 
+### Running skill evals
+
+Pack-shipped skills can include an `evals/` sibling next to `SKILL.md`
+(per `engdocs/pack-convention.md`). The core `skill-evals` formula
+runs that suite, judges every (case × criterion) pair via
+`pydantic_evals.evaluators.LLMJudge`, and writes
+`reports/latest.{md,json}` next to the skill.
+
+```bash
+# Real run (requires the [evals] extra and a judge-model API key):
+po run skill-evals --pack po-stripe --skill stripe --tier smoke
+
+# CI-safe smoke (StubBackend + deterministic stub scores; no API keys,
+# no [evals] extra required):
+po run skill-evals --pack po-stripe --skill stripe --dry-run
+```
+
+`--pack` is the **distribution name** (`po-stripe`), not the importable
+module (`po_stripe`). Schema, CLI flags, telemetry attrs, and verdict
+shape are documented in [`engdocs/skill-evals.md`](engdocs/skill-evals.md).
+
 ### Running an arbitrary sub-graph
 
 `po run graph --root-id <id>` generalises the epic case: any bead can

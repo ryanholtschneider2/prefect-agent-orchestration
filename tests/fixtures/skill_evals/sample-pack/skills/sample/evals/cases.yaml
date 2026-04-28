@@ -1,0 +1,13 @@
+cases:
+  - name: simple-smoke
+    tier: smoke
+    prompt: |
+      Say hello and explain that you are a test.
+    evaluators: [correctness]
+    metadata:
+      regression_id: sample-smoke
+  - name: deeper-regression
+    tier: regression
+    prompt: |
+      Demonstrate proper use of the sample skill.
+    pass_threshold: 0.6
