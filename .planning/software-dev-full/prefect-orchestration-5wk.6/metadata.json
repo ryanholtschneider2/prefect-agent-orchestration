@@ -1,0 +1,10 @@
+{
+  "session_triager": "bf5636fd-144e-446f-913b-62e479ea4f1b",
+  "has_ui": "false",
+  "is_docs_only": "false",
+  "session_tester": "ab21a728-91ed-44bc-9a2d-984ce7b05076",
+  "session_builder": "765fe8b3-9dc5-4ace-ac63-bc0b405d8531",
+  "session_critic": "439c1e8e-73ae-4ede-a9c4-4b3ec4287599",
+  "plan_iter_final": "1",
+  "session_linter": "6e89ae81-0e14-4817-bea6-a8f464541f3f"
+}
