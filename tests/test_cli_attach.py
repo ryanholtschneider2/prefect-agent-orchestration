@@ -49,9 +49,7 @@ def test_attach_prints_argv_kubectl(tmp_path, runner, monkeypatch):
             attach.META_K8S_CONTEXT: "prod-east",
         },
     )
-    monkeypatch.setattr(
-        cli._attach, "probe_pod", lambda _t: ("running", "Running")
-    )
+    monkeypatch.setattr(cli._attach, "probe_pod", lambda _t: ("running", "Running"))
 
     result = runner.invoke(cli.app, ["attach", "issue", "--print-argv"])
     assert result.exit_code == 0, result.stderr
@@ -125,9 +123,7 @@ def test_attach_pod_gone(tmp_path, runner, monkeypatch):
             attach.META_K8S_CONTEXT: "ctx",
         },
     )
-    monkeypatch.setattr(
-        cli._attach, "probe_pod", lambda _t: ("gone", "pod NotFound")
-    )
+    monkeypatch.setattr(cli._attach, "probe_pod", lambda _t: ("gone", "pod NotFound"))
 
     result = runner.invoke(cli.app, ["attach", "issue", "--print-argv"])
     assert result.exit_code == 6
@@ -168,9 +164,7 @@ def test_attach_warns_when_context_missing(tmp_path, runner, monkeypatch):
             # no context
         },
     )
-    monkeypatch.setattr(
-        cli._attach, "probe_pod", lambda _t: ("running", "Running")
-    )
+    monkeypatch.setattr(cli._attach, "probe_pod", lambda _t: ("running", "Running"))
 
     result = runner.invoke(cli.app, ["attach", "issue", "--print-argv"])
     assert result.exit_code == 0, result.stderr

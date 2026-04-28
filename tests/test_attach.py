@@ -9,7 +9,6 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
 
 from prefect_orchestration import agent_session, attach
 
@@ -132,9 +131,7 @@ def test_probe_pod_not_running_phase():
 
 def test_probe_pod_not_found():
     target = attach.K8sTarget(context=None, namespace="ns", pod="p", session="s")
-    runner = _fake_runner(
-        1, stderr='Error from server (NotFound): pods "p" not found'
-    )
+    runner = _fake_runner(1, stderr='Error from server (NotFound): pods "p" not found')
     status, _ = attach.probe_pod(target, runner=runner)
     assert status == "gone"
 
