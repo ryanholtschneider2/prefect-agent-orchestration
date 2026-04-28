@@ -248,9 +248,7 @@ def test_list_subgraph_threads_cwd_to_every_shellout(
     assert bd_cwds == {str(tmp_path)}
 
 
-def test_list_epic_children_deps_threads_cwd(
-    fake_bd: _FakeBd, tmp_path: Path
-) -> None:
+def test_list_epic_children_deps_threads_cwd(fake_bd: _FakeBd, tmp_path: Path) -> None:
     fake_bd.edges = {
         ("E", "up", "parent-child"): [
             {"id": "C1", "status": "open", "title": "c1"},

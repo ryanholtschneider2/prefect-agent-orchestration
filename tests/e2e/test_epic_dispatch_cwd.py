@@ -194,8 +194,7 @@ def test_epic_run_dispatches_three_children_from_outside_rig_cwd(
     assert result.get("submitted") == 3, result
     results = result.get("results") or {}
     assert set(results.keys()) == set(child_ids), (
-        f"expected results for {sorted(child_ids)}, "
-        f"got {sorted(results.keys())}"
+        f"expected results for {sorted(child_ids)}, got {sorted(results.keys())}"
     )
     for cid, child_result in results.items():
         assert isinstance(child_result, dict), (cid, child_result)

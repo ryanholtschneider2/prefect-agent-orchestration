@@ -142,15 +142,9 @@ def test_build_registry_threads_rig_path_through_every_bd_shellout(
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     # Patch every module that issues bd shellouts during build_registry.
-    monkeypatch.setattr(
-        "prefect_orchestration.role_registry.subprocess.run", _record
-    )
-    monkeypatch.setattr(
-        "prefect_orchestration.beads_meta.subprocess.run", _record
-    )
-    monkeypatch.setattr(
-        "prefect_orchestration.run_handles.subprocess.run", _record
-    )
+    monkeypatch.setattr("prefect_orchestration.role_registry.subprocess.run", _record)
+    monkeypatch.setattr("prefect_orchestration.beads_meta.subprocess.run", _record)
+    monkeypatch.setattr("prefect_orchestration.run_handles.subprocess.run", _record)
 
     reg, _ctx = build_registry(
         issue_id="i-1",
@@ -166,35 +160,28 @@ def test_build_registry_threads_rig_path_through_every_bd_shellout(
     assert bd_only, "expected at least one bd shellout from build_registry"
     # subprocess accepts both `str` and `Path` for `cwd`; normalise via str().
     bad = [
-        (cmd, cwd)
-        for cmd, cwd in bd_only
-        if cwd is None or str(cwd) != str(rig_path)
+        (cmd, cwd) for cmd, cwd in bd_only if cwd is None or str(cwd) != str(rig_path)
     ]
     assert not bad, (
-        f"every bd shellout must carry cwd={str(rig_path)!r}; "
-        f"these did not: {bad}"
+        f"every bd shellout must carry cwd={str(rig_path)!r}; these did not: {bad}"
     )
 
     # Each of the four expected shellout sites should have fired at least
     # once. Match by the leading verb + a distinguishing flag.
     cmds = [cmd for cmd, _ in bd_only]
     # _resolve_pack_path: `bd show <issue> --json`
-    assert any(
-        c[:2] == ["bd", "show"] and "--json" in c for c in cmds
-    ), "expected _resolve_pack_path bd show shellout"
+    assert any(c[:2] == ["bd", "show"] and "--json" in c for c in cmds), (
+        "expected _resolve_pack_path bd show shellout"
+    )
     # inline run-location stamp: `bd update <issue> --set-metadata po.rig_path=...`
     assert any(
         c[:2] == ["bd", "update"]
-        and any(
-            isinstance(a, str) and a.startswith("po.rig_path=") for a in c
-        )
+        and any(isinstance(a, str) and a.startswith("po.rig_path=") for a in c)
         for c in cmds
     ), "expected inline run-location-stamp bd update shellout"
     # claim_issue: `bd update <issue> --status in_progress --assignee ...`
     assert any(
-        c[:2] == ["bd", "update"]
-        and "--status" in c
-        and "in_progress" in c
+        c[:2] == ["bd", "update"] and "--status" in c and "in_progress" in c
         for c in cmds
     ), "expected claim_issue bd update shellout"
 
@@ -224,9 +211,7 @@ def test_stamp_run_url_on_bead_passes_cwd(
         calls.append((list(cmd), kw.get("cwd")))
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(
-        "prefect_orchestration.run_handles.subprocess.run", _record
-    )
+    monkeypatch.setattr("prefect_orchestration.run_handles.subprocess.run", _record)
 
     stamp_run_url_on_bead("i-1", "abc12345-stable", rig_path=tmp_path)
     assert calls, "expected one bd update shellout"

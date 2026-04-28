@@ -132,42 +132,34 @@ def test_beadsstore_all_passes_cwd(fake_bd: _FakeBd, tmp_path: Path) -> None:
 # ─────────────────────── BeadsStore: list-vs-dict shape ──────────────
 
 
-def test_beadsstore_get_handles_list_shape(
-    fake_bd: _FakeBd, tmp_path: Path
-) -> None:
+def test_beadsstore_get_handles_list_shape(fake_bd: _FakeBd, tmp_path: Path) -> None:
     """Some bd versions return a single-row JSON list, not a dict."""
     fake_bd.shows = {"E": [{"id": "E", "metadata": {"k": "v"}}]}
     assert BeadsStore(parent_id="E", rig_path=tmp_path).get("k") == "v"
 
 
-def test_beadsstore_get_handles_dict_shape(
-    fake_bd: _FakeBd, tmp_path: Path
-) -> None:
+def test_beadsstore_get_handles_dict_shape(fake_bd: _FakeBd, tmp_path: Path) -> None:
     """Other bd versions return a bare dict."""
     fake_bd.shows = {"E": {"id": "E", "metadata": {"k": "v"}}}
     assert BeadsStore(parent_id="E", rig_path=tmp_path).get("k") == "v"
 
 
-def test_beadsstore_all_handles_list_shape(
-    fake_bd: _FakeBd, tmp_path: Path
-) -> None:
+def test_beadsstore_all_handles_list_shape(fake_bd: _FakeBd, tmp_path: Path) -> None:
     fake_bd.shows = {"E": [{"id": "E", "metadata": {"a": "1"}}]}
     assert BeadsStore(parent_id="E", rig_path=tmp_path).all() == {"a": "1"}
 
 
-def test_beadsstore_all_handles_dict_shape(
-    fake_bd: _FakeBd, tmp_path: Path
-) -> None:
+def test_beadsstore_all_handles_dict_shape(fake_bd: _FakeBd, tmp_path: Path) -> None:
     fake_bd.shows = {"E": {"id": "E", "metadata": {"a": "1"}}}
     assert BeadsStore(parent_id="E", rig_path=tmp_path).all() == {"a": "1"}
 
 
-def test_beadsstore_get_handles_empty_list(
-    fake_bd: _FakeBd, tmp_path: Path
-) -> None:
+def test_beadsstore_get_handles_empty_list(fake_bd: _FakeBd, tmp_path: Path) -> None:
     """Empty list (bd show emitted []) returns the default sentinel."""
     fake_bd.shows = {"E": []}
-    assert BeadsStore(parent_id="E", rig_path=tmp_path).get("k", "fallback") == "fallback"
+    assert (
+        BeadsStore(parent_id="E", rig_path=tmp_path).get("k", "fallback") == "fallback"
+    )
 
 
 def test_beadsstore_get_handles_missing_metadata_key(
@@ -233,7 +225,9 @@ def test_bd_show_no_cwd_when_rig_path_none(fake_bd: _FakeBd) -> None:
 
 def test_bd_dep_list_passes_cwd(fake_bd: _FakeBd, tmp_path: Path) -> None:
     fake_bd.deps = {("E", "up", "blocks"): [{"id": "C", "status": "open"}]}
-    rows = beads_meta._bd_dep_list("E", direction="up", edge_type="blocks", rig_path=tmp_path)
+    rows = beads_meta._bd_dep_list(
+        "E", direction="up", edge_type="blocks", rig_path=tmp_path
+    )
     assert rows == [{"id": "C", "status": "open"}]
     assert any(
         cmd[:4] == ["bd", "dep", "list", "E"] and cwd == str(tmp_path)
