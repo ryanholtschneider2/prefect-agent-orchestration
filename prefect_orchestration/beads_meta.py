@@ -15,8 +15,10 @@ import graphlib
 import json
 import shutil
 import subprocess
+import threading
+import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Literal, Protocol
 
@@ -594,3 +596,232 @@ def collect_explicit_children(
     # Preserve the caller's input order (deterministic; topo-sort then
     # picks up any blocking constraints).
     return [rows[i] for i in ids]
+
+
+# ─────────────────────── watch primitive ────────────────────────────
+#
+# `watch()` blocks until any bead in a watched set transitions state.
+# Underpins the "bd close = turn-end signal" design from
+# prefect-orchestration-7vs (formulas-as-bead-graphs): instead of
+# parsing tmux scrollback for an LLM "I'm done" sentinel, the
+# orchestrator polls the bead store for a status flip.
+#
+# Implementation is poll-based (1.5s default) against whatever backend
+# `bd` is configured for — embedded-dolt or dolt-server alike. To
+# upgrade to push-based delivery later, swap the inner `_snapshot()`
+# loop for a dolt change-feed subscription (DOLT 1.x exposes
+# `dolt_log` + `dolt_diff` system tables; a long-poll on
+# `SELECT * FROM dolt_log WHERE commit_hash > ?` against the bd
+# database delivers the same BeadEvent stream without per-poll
+# `bd show` shellouts).
+
+DEFAULT_WATCH_POLL_INTERVAL: float = 1.5
+
+WatchEvent = Literal["close", "status", "any"]
+VALID_WATCH_EVENTS: tuple[str, ...] = ("close", "status", "any")
+
+
+@dataclass(frozen=True)
+class BeadEvent:
+    """A single observed transition on a watched bead.
+
+    `kind` is one of:
+
+    - ``"close"``  — status transitioned to ``"closed"``.
+    - ``"status"`` — status changed (and not to ``"closed"``).
+    - ``"mutate"`` — `updated_at` advanced with no status change
+      (notes / description / metadata edit). Only emitted for
+      ``event="any"`` watches.
+    """
+
+    bead_id: str
+    kind: Literal["close", "status", "mutate"]
+    old_status: str | None
+    new_status: str | None
+    updated_at: str | None
+    timestamp: float = field(default_factory=time.time)
+
+
+def _snapshot(
+    bead_ids: Iterable[str],
+    rig_path: Path | str | None = None,
+) -> dict[str, dict[str, str]]:
+    """Return `{id: {"status": ..., "updated_at": ...}}` for each bead.
+
+    Missing beads are dropped (consistent with how `_bd_show` returns
+    None on bd errors). Caller treats "missing on first snapshot" as
+    `ValueError`; "missing on a later poll" as a no-op.
+    """
+    out: dict[str, dict[str, str]] = {}
+    for bid in bead_ids:
+        row = _bd_show(bid, rig_path=rig_path)
+        if row is None:
+            continue
+        out[bid] = {
+            "status": row.get("status", "open"),
+            "updated_at": row.get("updated_at", "") or "",
+        }
+    return out
+
+
+def watch(
+    bead_ids: Iterable[str],
+    event: WatchEvent = "close",
+    timeout: float | None = None,
+    *,
+    poll_interval: float = DEFAULT_WATCH_POLL_INTERVAL,
+    rig_path: Path | str | None = None,
+    cancel: threading.Event | None = None,
+) -> list[BeadEvent]:
+    """Block until at least one watched bead matches `event`, then return.
+
+    Parameters
+    ----------
+    bead_ids
+        Set/iterable of bead ids to watch. Must be non-empty. Each id
+        must resolve via `bd show` on entry; unknown ids raise
+        ``ValueError``.
+    event
+        - ``"close"``  (default) — return when any bead transitions to
+          status ``"closed"``.
+        - ``"status"`` — return on any status change (including close).
+        - ``"any"``    — return on any status change OR `updated_at`
+          advance (notes/description/metadata edit).
+    timeout
+        Wall-clock seconds to wait. ``None`` means wait forever.
+        Returns ``[]`` on timeout (NOT raises) so callers can
+        distinguish "nothing happened" from cancellation.
+    poll_interval
+        Seconds between `bd show` polls. Default 1.5s. Lower values
+        burn bd shellouts; higher values delay wake-up.
+    rig_path
+        Directory the bd binary should resolve `.beads/` from. Required
+        when the Python process cwd is not the rig.
+    cancel
+        Optional `threading.Event`. If set during a poll, `watch`
+        returns ``[]`` immediately. Lets a parent flow tear down a
+        watcher without waiting for `timeout`.
+
+    Returns
+    -------
+    list[BeadEvent]
+        All transitions observed in the poll cycle that produced the
+        first match. Multiple beads racing on the same poll yield
+        multiple events (deterministic order: input order preserved).
+        Empty list on timeout or cancellation.
+
+    Raises
+    ------
+    NotImplementedError
+        If `bd` is not on `PATH`. The FileStore (no-bd) backend has no
+        change feed; mtime polling on `metadata.json` is a follow-up.
+    ValueError
+        Empty `bead_ids`, unknown event, unknown bead id on entry, or
+        non-positive `poll_interval`.
+
+    Notes
+    -----
+    Polling interval defaults to 1.5s (`DEFAULT_WATCH_POLL_INTERVAL`).
+    To upgrade to push-based delivery, replace `_snapshot()` with a
+    dolt change-feed subscription: long-poll
+    ``SELECT id, status, updated_at FROM beads WHERE updated_at > ?``
+    against the bd database (or `dolt_log`/`dolt_diff` for full
+    history) and emit `BeadEvent`s on each row delta. Same return
+    shape — keeps callers identical.
+    """
+    if event not in VALID_WATCH_EVENTS:
+        raise ValueError(
+            f"unknown watch event {event!r}; valid: {list(VALID_WATCH_EVENTS)}"
+        )
+    if poll_interval <= 0:
+        raise ValueError(f"poll_interval must be > 0, got {poll_interval!r}")
+    ids = [bid.strip() for bid in bead_ids if bid and bid.strip()]
+    if not ids:
+        raise ValueError("bead_ids must be non-empty")
+    # De-dupe while preserving input order.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for bid in ids:
+        if bid not in seen:
+            seen.add(bid)
+            ordered.append(bid)
+
+    if not _bd_available():
+        raise NotImplementedError(
+            "beads_meta.watch() requires the `bd` CLI on PATH (FileStore "
+            "fallback has no change feed; mtime polling on "
+            "metadata.json is a follow-up)."
+        )
+
+    initial = _snapshot(ordered, rig_path=rig_path)
+    missing = [bid for bid in ordered if bid not in initial]
+    if missing:
+        raise ValueError(f"unknown bead id(s): {missing}")
+
+    deadline = (time.monotonic() + timeout) if timeout is not None else None
+    prev = initial
+
+    while True:
+        if cancel is not None and cancel.is_set():
+            return []
+        if deadline is not None and time.monotonic() >= deadline:
+            return []
+
+        # Sleep first so we don't spin on the snapshot we already took.
+        # Honour cancel/deadline mid-sleep via short slices.
+        slept = 0.0
+        slice_s = min(0.25, poll_interval)
+        while slept < poll_interval:
+            if cancel is not None and cancel.is_set():
+                return []
+            if deadline is not None and time.monotonic() >= deadline:
+                return []
+            time.sleep(min(slice_s, poll_interval - slept))
+            slept += slice_s
+
+        cur = _snapshot(ordered, rig_path=rig_path)
+        events: list[BeadEvent] = []
+        for bid in ordered:
+            before = prev.get(bid)
+            after = cur.get(bid)
+            if before is None or after is None:
+                # Disappeared mid-watch (race with `bd` server) — skip
+                # this poll for that bead; will reappear next cycle.
+                continue
+            old_s = before["status"]
+            new_s = after["status"]
+            if new_s == "closed" and old_s != "closed":
+                events.append(
+                    BeadEvent(
+                        bead_id=bid,
+                        kind="close",
+                        old_status=old_s,
+                        new_status=new_s,
+                        updated_at=after["updated_at"] or None,
+                    )
+                )
+                continue
+            if event in ("status", "any") and new_s != old_s:
+                events.append(
+                    BeadEvent(
+                        bead_id=bid,
+                        kind="status",
+                        old_status=old_s,
+                        new_status=new_s,
+                        updated_at=after["updated_at"] or None,
+                    )
+                )
+                continue
+            if event == "any" and after["updated_at"] != before["updated_at"]:
+                events.append(
+                    BeadEvent(
+                        bead_id=bid,
+                        kind="mutate",
+                        old_status=old_s,
+                        new_status=new_s,
+                        updated_at=after["updated_at"] or None,
+                    )
+                )
+        prev = cur
+        if events:
+            return events
