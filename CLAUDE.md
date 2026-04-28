@@ -498,6 +498,31 @@ in-process. Refuses when a `Running` flow-run for the issue already exists
 `--rig NAME` overrides the default rig (rig_path basename); `--formula NAME`
 picks a non-default entry-point.
 
+### `PO_FORMULA_MODE` — legacy vs graph dispatch (7vs.5)
+
+`software_dev_full` ships two implementations behind one entry point.
+`PO_FORMULA_MODE=legacy` (default) runs the 305-line nested-loop body
+unchanged. `PO_FORMULA_MODE=graph` runs a thin seed-bead author + a
+bounded watcher loop around `graph_run`; loop bodies move into the
+bead graph itself, with critic agents creating iter+1 beads on
+rejection.
+
+```bash
+# Default: legacy nested-loop body.
+po run software-dev-full --issue-id <id> --rig <name> --rig-path <path>
+
+# Graph mode: 19-node seed sub-graph, reactive critic-driven extension.
+PO_FORMULA_MODE=graph po run software-dev-full \
+  --issue-id <id> --rig <name> --rig-path <path>
+
+# Per-rig opt-in via .po-env:
+echo "PO_FORMULA_MODE=graph" >> <rig>/.po-env
+```
+
+Background and rationale: `engdocs/formula-modes.md`. Migration plan
+(7vs.5 ships the flag; a follow-up issue flips the default to graph;
+7vs.6 deletes the legacy body).
+
 ## When to use `po` vs `prefect`
 
 | Task | Use |
