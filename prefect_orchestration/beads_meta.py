@@ -18,7 +18,10 @@ import subprocess
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Protocol
+from typing import Iterable, Literal, Protocol
+
+DiscoverMode = Literal["ids", "deps", "both"]
+VALID_DISCOVER_MODES: tuple[str, ...] = ("ids", "deps", "both")
 
 
 class MetadataStore(Protocol):
@@ -331,18 +334,17 @@ def topo_sort_blocks(nodes: list[dict]) -> list[dict]:
     return [by_id[i] for i in order]
 
 
-def list_epic_children(epic_id: str) -> list[dict]:
-    """Return [{'id', 'status', 'dependencies': [id,...]}, ...] for an epic's children.
+def _dot_suffix_children(epic_id: str) -> list[dict]:
+    """Probe `<epic>.1`, `<epic>.2`, … until 3 consecutive misses.
 
-    Beads epic→child link is by **ID prefix convention** (`<epic>.<N>`), not
-    a `parent_id` field — `bd list --parent` returns empty for most epics.
-    We probe `<epic>.1`, `<epic>.2`, ... sequentially until we hit a gap.
-
-    Only returns open/in_progress children; closed ones are already done.
+    Returns rows shaped `{id, status, title, dependencies}` (raw bd
+    `dependencies` field, not yet restricted to the in-set). Skips closed
+    children. Internal helper for `list_epic_children(mode="ids")`; kept
+    as a separate function so the historical probe loop is grep-able.
     """
     if not _bd_available():
         return []
-    children = []
+    rows: list[dict] = []
     consecutive_missing = 0
     n = 0
     while consecutive_missing < 3:
@@ -359,8 +361,8 @@ def list_epic_children(epic_id: str) -> list[dict]:
             continue
         consecutive_missing = 0
         try:
-            rows = json.loads(proc.stdout)
-            row = rows[0] if isinstance(rows, list) else rows
+            parsed = json.loads(proc.stdout)
+            row = parsed[0] if isinstance(parsed, list) else parsed
         except (json.JSONDecodeError, IndexError):
             continue
         if row.get("status") in ("open", "in_progress"):
@@ -368,12 +370,175 @@ def list_epic_children(epic_id: str) -> list[dict]:
                 d["id"] if isinstance(d, dict) else d
                 for d in row.get("dependencies") or []
             ]
-            children.append(
+            rows.append(
                 {
                     "id": row["id"],
                     "status": row["status"],
-                    "dependencies": deps,
                     "title": row.get("title", ""),
+                    "dependencies": deps,
                 }
             )
-    return children
+    return rows
+
+
+def _ids_mode_nodes(epic_id: str) -> list[dict]:
+    """`mode="ids"`: dot-suffix probe → graph-shape nodes.
+
+    Adapts the raw probe rows to `{id, status, title, block_deps}` with
+    `block_deps` restricted to ids that are also in the dot-suffix set.
+    """
+    rows = _dot_suffix_children(epic_id)
+    if not rows:
+        return []
+    in_set = {r["id"] for r in rows}
+    return [
+        {
+            "id": r["id"],
+            "status": r["status"],
+            "title": r.get("title", ""),
+            "block_deps": [d for d in r.get("dependencies", []) if d in in_set],
+        }
+        for r in rows
+    ]
+
+
+def list_epic_children(
+    epic_id: str,
+    mode: DiscoverMode = "ids",
+) -> list[dict]:
+    """Return graph-shape children of an epic; discovery driven by `mode`.
+
+    Each returned node is `{id, status, title, block_deps}`, matching
+    the shape `list_subgraph` produces — so callers can topo-sort the
+    result with `topo_sort_blocks` directly.
+
+    `mode` selects the discovery strategy (default `"ids"`, which preserves
+    the historical dot-suffix probe behaviour for back-compat):
+
+    - ``"ids"``  — probe `<epic>.1`, `<epic>.2`, … (gas-city convention).
+      Fast, no `bd dep` graph required.
+    - ``"deps"`` — walk the `bd dep` graph (parent-child + blocks edges)
+      via `list_subgraph`. Works for any connected sub-graph; no naming
+      convention required.
+    - ``"both"`` — union of `deps` and `ids` with stable de-dup. `deps`
+      order first (BFS from `list_subgraph`), then any dot-suffix-only
+      ids appended. `block_deps` for shared ids unions both sources,
+      then re-restricts to the merged in-set.
+
+    Closed beads are filtered out in every mode (matches the original
+    `list_epic_children` semantics + `list_subgraph(include_closed=False)`).
+    """
+    if mode not in VALID_DISCOVER_MODES:
+        raise ValueError(
+            f"unknown discover mode {mode!r}; valid: {list(VALID_DISCOVER_MODES)}"
+        )
+    if mode == "ids":
+        return _ids_mode_nodes(epic_id)
+    if mode == "deps":
+        return list_subgraph(
+            epic_id,
+            traverse=("parent-child", "blocks"),
+            include_closed=False,
+            include_root=False,
+        )
+
+    # mode == "both": deps order first, then dot-suffix-only ids appended.
+    deps_nodes = list_subgraph(
+        epic_id,
+        traverse=("parent-child", "blocks"),
+        include_closed=False,
+        include_root=False,
+    )
+    ids_nodes = _ids_mode_nodes(epic_id)
+    if not deps_nodes:
+        return ids_nodes
+    if not ids_nodes:
+        return deps_nodes
+
+    by_id: dict[str, dict] = {}
+    order: list[str] = []
+    for node in deps_nodes:
+        by_id[node["id"]] = dict(node)
+        order.append(node["id"])
+    for node in ids_nodes:
+        if node["id"] in by_id:
+            # Union block_deps from both sources (de-dup, preserve order).
+            seen = set(by_id[node["id"]].get("block_deps", []))
+            merged = list(by_id[node["id"]].get("block_deps", []))
+            for dep in node.get("block_deps", []):
+                if dep not in seen:
+                    merged.append(dep)
+                    seen.add(dep)
+            by_id[node["id"]]["block_deps"] = merged
+        else:
+            by_id[node["id"]] = dict(node)
+            order.append(node["id"])
+
+    # Re-restrict block_deps to the merged in-set so dropped ids don't
+    # leak through (e.g. a deps-only id whose blocker only existed in
+    # the ids set, or vice versa).
+    in_set = set(by_id)
+    for node in by_id.values():
+        node["block_deps"] = [d for d in node.get("block_deps", []) if d in in_set]
+    return [by_id[i] for i in order]
+
+
+def collect_explicit_children(child_ids: Iterable[str]) -> list[dict]:
+    """`--child-ids` override: build graph nodes for an explicit id list.
+
+    Bypasses discovery entirely. For each id:
+
+    - `bd show <id> --json` to confirm existence + capture status/title;
+      missing ids raise `ValueError`.
+    - Refuse closed ids (consistent with `list_epic_children`'s
+      `include_closed=False`); caller must reopen first.
+    - Build `block_deps` from `bd dep list <id> --direction=down --type=blocks`,
+      restricted to the explicit set.
+
+    Returns `{id, status, title, block_deps}` shape, ready for
+    `topo_sort_blocks`.
+    """
+    ids = [cid.strip() for cid in child_ids if cid and cid.strip()]
+    if not ids:
+        raise ValueError("child_ids must be non-empty")
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for cid in ids:
+        if cid in seen:
+            duplicates.append(cid)
+        else:
+            seen.add(cid)
+    if duplicates:
+        raise ValueError(f"duplicate child id(s): {sorted(set(duplicates))}")
+
+    rows: dict[str, dict] = {}
+    missing: list[str] = []
+    closed: list[str] = []
+    for cid in ids:
+        row = _bd_show(cid)
+        if row is None:
+            missing.append(cid)
+            continue
+        if row.get("status") == "closed":
+            closed.append(cid)
+            continue
+        rows[cid] = {
+            "id": cid,
+            "status": row.get("status", "open"),
+            "title": row.get("title", ""),
+        }
+    if missing:
+        raise ValueError(f"unknown child id(s): {missing}")
+    if closed:
+        raise ValueError(
+            f"closed child id(s): {closed}; reopen with `bd update <id> --status open`"
+        )
+
+    in_set = set(rows)
+    for cid, node in rows.items():
+        deps = _bd_dep_list(cid, direction="down", edge_type="blocks")
+        node["block_deps"] = [r["id"] for r in deps if r.get("id") in in_set]
+
+    # Preserve the caller's input order (deterministic; topo-sort then
+    # picks up any blocking constraints).
+    return [rows[i] for i in ids]

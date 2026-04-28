@@ -262,15 +262,36 @@ po run epic \
   --rig <name> \
   --rig-path <path>
 
-# Optional: --max-issues N  to process only the first N topo-sorted children
-# Optional: --dry-run       to exercise the DAG without spawning Claude
+# Knobs:
+#   --max-issues N                       # process only the first N topo-sorted children
+#   --dry-run                            # exercise the DAG without spawning Claude
+#   --discover {ids,deps,both}           # discovery mode (default: both)
+#   --child-ids id1,id2,id3              # explicit override; bypass discovery
 ```
 
-`epic_run` is now a thin wrapper over `graph_run` (see next section). It
-prefers `bd dep` edges (parent-child + blocks) for child discovery and
-falls back to the legacy dot-suffix probe (`<epic>.1`, `<epic>.2`, …)
-when no edges are populated, so historical dot-suffix epics keep
-working.
+`epic_run` is now a thin wrapper over `graph_run` (see next section).
+Discovery is controlled by two flags (prefect-orchestration-h5s):
+
+- `--discover` chooses how children are found:
+  - `ids`  — probe `<epic>.1`, `<epic>.2`, … (gas-city legacy convention).
+  - `deps` — walk the `bd dep` graph (parent-child + blocks edges).
+  - `both` — union of the two with stable de-dup (default). Picks up
+    both dot-suffix-named children and ones linked only via `bd dep`.
+- `--child-ids a,b,c` bypasses discovery entirely and dispatches exactly
+  those ids in topo order built from their `bd dep --type=blocks`
+  edges. Each id must exist and be open; closed ids raise (reopen
+  with `bd update <id> --status open` first).
+
+```bash
+# Force the legacy dot-suffix probe (e.g. on a real legacy epic that
+# never had bd-dep edges populated):
+po run epic --epic-id prefect-orchestration-3cu --rig <name> --rig-path <path> \
+            --discover ids
+
+# Dispatch a hand-picked set of beads as a graph (no epic naming needed):
+po run epic --epic-id prefect-orchestration-h5s --rig <name> --rig-path <path> \
+            --child-ids prefect-orchestration-5i9,prefect-orchestration-1ij,prefect-orchestration-dmy
+```
 
 ### Running an arbitrary sub-graph
 

@@ -154,6 +154,19 @@ Worktree-per-run isolation is a separate concern (deferred).
 software-dev pipeline (16 steps, 5 loops) + `epic` fan-out. Read that
 if you want a concrete template to copy.
 
+The `epic` formula's child discovery is controlled by two flags
+(prefect-orchestration-h5s):
+
+- `--discover {ids,deps,both}` — `ids` probes `<epic>.1`, `<epic>.2`, …
+  (gas-city legacy convention); `deps` walks the `bd dep` graph
+  (parent-child + blocks edges); `both` (default) unions the two with
+  stable de-dup so dot-suffix-named *and* graph-linked children both
+  fan out.
+- `--child-ids a,b,c` — bypass discovery and dispatch exactly those
+  ids in topo order from their `bd dep --type=blocks` edges. Useful
+  when an epic root doesn't exist yet but you want to fan out a
+  hand-picked set.
+
 ## Prerequisites
 
 Install these before `uv sync` / `uv tool install`:
