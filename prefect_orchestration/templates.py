@@ -50,6 +50,13 @@ def render_template(
     ``<self>...</self>`` block is prepended and identity fields are
     available as ``{{agent_name}}`` etc. Caller-passed ``**vars`` win
     over identity-derived vars.
+
+    When a per-role ``memory/MEMORY.md`` exists (pack default
+    ``<agents_dir>/<role>/memory/MEMORY.md`` or rig overlay
+    ``<rig_path>/.claude/agents/<role>/memory/MEMORY.md`` — rig wins),
+    its raw contents are wrapped in a ``<memory>...</memory>`` block and
+    prepended *outside* the ``<self>`` block. No ``{{var}}`` substitution
+    is applied inside memory.
     """
     prompt_path = Path(agents_dir) / role / "prompt.md"
     try:
@@ -61,6 +68,7 @@ def render_template(
 
     identity = load_identity(agents_dir, role, rig_path=rig_path)
     self_block = format_self_block(identity) if identity is not None else ""
+    memory_block = _load_memory(Path(agents_dir), role, rig_path)
     composed = self_block + template
 
     # Identity-derived vars merge BEHIND caller-supplied vars (caller wins).
@@ -82,4 +90,29 @@ def render_template(
             )
         return str(merged_vars[key])
 
-    return re.sub(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}", sub, composed)
+    rendered = re.sub(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}", sub, composed)
+    return memory_block + rendered
+
+
+def _load_memory(agents_dir: Path, role: str, rig_path: Path | None) -> str:
+    """Return a `<memory>...</memory>` block if a per-role MEMORY.md exists.
+
+    Resolution: rig overlay (`<rig>/.claude/agents/<role>/memory/MEMORY.md`)
+    wins over pack default (`<agents_dir>/<role>/memory/MEMORY.md`). Empty
+    or whitespace-only files render no block. Content is verbatim — no
+    `{{var}}` substitution applies inside, so agent-authored memory may
+    safely contain literal `{{...}}` text.
+    """
+    candidates: list[Path] = []
+    if rig_path is not None:
+        candidates.append(
+            Path(rig_path) / ".claude" / "agents" / role / "memory" / "MEMORY.md"
+        )
+    candidates.append(agents_dir / role / "memory" / "MEMORY.md")
+    for path in candidates:
+        if path.is_file():
+            body = path.read_text()
+            if body.strip():
+                return f"<memory>\n{body.rstrip()}\n</memory>\n\n"
+            return ""
+    return ""

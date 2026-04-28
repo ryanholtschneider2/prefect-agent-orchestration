@@ -175,3 +175,86 @@ def test_smoke_overlay_precedence_in_rendered_prompt(tmp_path: Path) -> None:
     assert 'mail_agent_name="Y-bot"' in out
     # email comes from pack (per-field merge)
     assert "email: x@nanocorp.example" in out
+
+
+# ── per-role memory loader (prefect-orchestration-4xo) ──
+
+
+def test_memory_block_prepended_when_present(tmp_path: Path) -> None:
+    _write(tmp_path / "triager" / "prompt.md", "body")
+    _write(tmp_path / "triager" / "memory" / "MEMORY.md", "remember: foo")
+    out = render_template(tmp_path, "triager")
+    assert out.startswith("<memory>\nremember: foo\n</memory>\n\n")
+    assert out.endswith("body")
+
+
+def test_no_memory_dir_renders_unchanged(tmp_path: Path) -> None:
+    _write(tmp_path / "triager" / "prompt.md", "body {{x}}")
+    out = render_template(tmp_path, "triager", x="z")
+    assert out == "body z"
+    assert "<memory>" not in out
+
+
+def test_empty_memory_file_renders_no_block(tmp_path: Path) -> None:
+    _write(tmp_path / "triager" / "prompt.md", "body")
+    _write(tmp_path / "triager" / "memory" / "MEMORY.md", "   \n\n")
+    out = render_template(tmp_path, "triager")
+    assert out == "body"
+    assert "<memory>" not in out
+
+
+def test_memory_block_precedes_self_block(tmp_path: Path) -> None:
+    _write(tmp_path / "triager" / "prompt.md", "body")
+    _write(
+        tmp_path / "triager" / "identity.toml",
+        '[identity]\nname = "tri"\nemail = "t@x"\nslack = "@tri"\n',
+    )
+    _write(tmp_path / "triager" / "memory" / "MEMORY.md", "memo")
+    out = render_template(tmp_path, "triager")
+    assert out.startswith("<memory>\nmemo\n</memory>\n\n")
+    assert out.index("<memory>") < out.index("<self>") < out.index("body")
+
+
+def test_rig_overlay_memory_overrides_pack_memory(tmp_path: Path) -> None:
+    pack = tmp_path / "pack"
+    rig = tmp_path / "rig"
+    _write(pack / "triager" / "prompt.md", "body")
+    _write(pack / "triager" / "memory" / "MEMORY.md", "PACK-MEMORY")
+    _write(
+        rig / ".claude" / "agents" / "triager" / "memory" / "MEMORY.md",
+        "RIG-MEMORY",
+    )
+    out = render_template(pack, "triager", rig_path=rig)
+    assert "RIG-MEMORY" in out
+    assert "PACK-MEMORY" not in out
+
+
+def test_memory_content_is_not_substituted(tmp_path: Path) -> None:
+    """Verbatim: literal `{{...}}` in MEMORY.md must not raise KeyError."""
+    _write(tmp_path / "triager" / "prompt.md", "body")
+    _write(
+        tmp_path / "triager" / "memory" / "MEMORY.md",
+        "note: do not substitute {{notavar}} here",
+    )
+    out = render_template(tmp_path, "triager")
+    assert "{{notavar}}" in out
+
+
+def test_smoke_second_turn_sees_first_turn_memory(tmp_path: Path) -> None:
+    """AC #4: agent writes memory on turn 1, sees it on turn 2."""
+    _write(tmp_path / "triager" / "prompt.md", "body")
+
+    # Turn 1: no memory yet.
+    first = render_template(tmp_path, "triager")
+    assert "<memory>" not in first
+
+    # Agent writes its own MEMORY.md (simulated).
+    _write(
+        tmp_path / "triager" / "memory" / "MEMORY.md",
+        "learned-on-turn-1: the pack ships X",
+    )
+
+    # Turn 2: prompt now carries the memory block.
+    second = render_template(tmp_path, "triager")
+    assert "<memory>" in second
+    assert "learned-on-turn-1: the pack ships X" in second

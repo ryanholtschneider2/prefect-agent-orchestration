@@ -35,7 +35,8 @@ deployments + agent prompts.
 │   ├── cli.py                         if the pack ships a sub-CLI
 │   └── agents/<role>/
 │       ├── prompt.md                  per-role prompts for flow steps (4ja.3)
-│       └── identity.toml              optional per-role identity (o2r)
+│       ├── identity.toml              optional per-role identity (o2r)
+│       └── memory/MEMORY.md           optional per-role persistent memory (4xo)
 ├── skills/                            Claude Code skills
 │   └── <skill-name>/
 │       └── SKILL.md                   YAML frontmatter + markdown body
@@ -250,6 +251,69 @@ same role in the same rig.
 - Unknown keys in `[identity]` are ignored (forward-compat).
 - Don't hand-roll a `<self>` block in your `prompt.md` once
   `identity.toml` is present — you'd get two.
+
+## Per-role memory (4xo)
+
+Each role can carry persistent memory across runs without rebuilding
+context every turn. Convention mirrors Claude Code's auto-memory at
+`~/.claude/projects/<slug>/memory/`:
+
+```
+<pack>/po_<module>/agents/<role>/memory/MEMORY.md   pack default (optional)
+<rig>/.claude/agents/<role>/memory/MEMORY.md        rig overlay (optional)
+```
+
+`render_template(agents_dir, role, rig_path=...)` checks both paths.
+The **rig overlay wins** when present (file-level precedence — MEMORY.md
+is unstructured prose, not a config we can per-line merge); the pack
+default is the fallback. Rig overlay is the natural place for
+**agent-written** memory because the rig is the writable, run-local
+location; the pack default is for **shipped baseline knowledge** the
+pack author wants every consumer to start with.
+
+When found, the file's raw contents are wrapped as:
+
+```
+<memory>
+...file contents verbatim...
+</memory>
+```
+
+…and **prepended outside** the `<self>` block. Final ordering of a
+rendered prompt:
+
+```
+<memory>            (if any)
+<self>              (if identity.toml present)
+…prompt body…
+```
+
+`AgentSession.prompt()` later prepends `<mail-inbox>` per turn, so the
+delivered prompt becomes `<mail-inbox>` → `<memory>` → `<self>` →
+body. Mail is the most time-sensitive context (this turn's news) and
+sits outermost; memory is older, curated context.
+
+### Properties
+
+- **Verbatim**: no `{{var}}` substitution inside the memory block.
+  Agent-authored content may contain literal `{{...}}` text safely.
+- **Empty file is no block**: a whitespace-only `MEMORY.md` renders
+  nothing (no empty `<memory></memory>`).
+- **No size cap (v1)**: matches Claude Code, which has no enforced
+  cap. The agent owns its own memory file and is expected to curate
+  it. A future bead can add soft truncation if context bloat becomes
+  an issue. Mail's `MAX_INBOX_MESSAGES = 20` cap exists because mail
+  is multi-message and grows unboundedly; memory is a single file the
+  agent itself maintains.
+- **No migration**: roles without a `memory/` dir render exactly as
+  before (backwards compatible).
+- **Agent-managed I/O**: PO does not write to `MEMORY.md`. The agent
+  reads and writes via normal file ops; PO just exposes the content
+  on every turn.
+- **Out of scope** (separate beads if they ever land): server-side
+  memory, vector retrieval, cross-role memory sharing, structured
+  per-topic files indexed from `MEMORY.md`. v1 is a single file per
+  role, on disk, like Claude Code.
 
 ## Tool-access preference order
 
