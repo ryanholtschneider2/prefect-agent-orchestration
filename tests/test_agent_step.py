@@ -26,9 +26,12 @@ def _write_prompt(agents_dir: Path, role: str, body: str = "You are {{seed_id}}.
 class _FakeSession:
     """Minimal AgentSession-like stub. Records prompts; returns a canned reply."""
 
-    def __init__(self, replies: list[str] | None = None):
+    def __init__(self, replies: list[str] | None = None,
+                 session_id: str | None = None):
         self.prompts: list[str] = []
         self._replies = list(replies or ["[stub] ack"])
+        # Mimic AgentSession.session_id (None → fresh; str → resumed)
+        self.session_id = session_id
 
     def prompt(self, text: str, **_kw: Any) -> str:
         self.prompts.append(text)
@@ -231,3 +234,53 @@ def test_agent_step_force_closes_when_nudge_fails(
     # Defensive close ran:
     assert fake_bd["bead-f"]["status"] == "closed"
     assert "nudge failed" in fake_bd["bead-f"]["closure_reason"]
+
+
+# ─── resumed-session optimisation ────────────────────────────────────
+
+
+def test_agent_step_uses_short_prompt_on_resumed_session(
+    tmp_path: Path, fake_bd: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When sess.session_id is set (--resume <uuid>), agent_step sends
+    only the task-pointer prompt, not the full identity prompt.md.
+
+    Saves token cost on iter2+ calls (the agent already has the
+    identity from turn 1's conversation).
+    """
+    _write_prompt(
+        tmp_path / "agents", "x",
+        body="You are X — full identity preamble that should NOT be re-sent.",
+    )
+    fake_bd["bead-r"] = {
+        "id": "bead-r", "status": "open", "title": "x",
+        "metadata": {}, "closure_reason": "", "notes": "",
+    }
+    sess = _FakeSession(session_id="prior-uuid-from-turn-1")
+
+    def closing_prompt(text: str, **kw: Any) -> str:
+        sess.prompts.append(text)
+        fake_bd["bead-r"]["status"] = "closed"
+        fake_bd["bead-r"]["closure_reason"] = "complete"
+        return "ack"
+
+    sess.prompt = closing_prompt  # type: ignore[assignment]
+    monkeypatch.setattr(agent_step_mod, "_build_session", lambda **_kw: sess)
+
+    agent_step(
+        agent_dir=tmp_path / "agents" / "x",
+        task="some task",
+        seed_id="bead-r",
+        rig_path=str(tmp_path),
+    )
+
+    assert len(sess.prompts) == 1
+    sent = sess.prompts[0]
+    # Resumed prompt mentions the bead pointer + close-contract reference,
+    # but NOT the full identity preamble:
+    assert "bead-r" in sent
+    assert "bd show" in sent
+    assert "full identity preamble" not in sent
+    # Should be much shorter than the full identity prompt (which is
+    # ~15 lines / 600+ chars in real agent prompt files).
+    assert len(sent) < 500

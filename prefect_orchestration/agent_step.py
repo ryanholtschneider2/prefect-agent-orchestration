@@ -261,7 +261,17 @@ def agent_step(
         agent_dir=agent_dir, run_dir=run_dir_p,
         backend=backend, dry_run=dry_run,
     )
-    rendered_prompt = _render_agent_prompt(agent_dir, full_ctx)
+    # Token-efficient resumed-session prompt: when there's a prior
+    # session uuid (--resume), the agent already has the identity
+    # prompt + role contract from turn 1's conversation. Send only
+    # the task-pointer ("your next role-step bead is X — read it,
+    # do the work, close per the contract") instead of re-sending
+    # the full identity prompt.md every turn.
+    is_resumed = bool(sess.session_id)
+    if is_resumed:
+        rendered_prompt = _render_resumed_prompt(target_bead, full_ctx)
+    else:
+        rendered_prompt = _render_agent_prompt(agent_dir, full_ctx)
 
     try:
         reply = sess.prompt(rendered_prompt)
@@ -470,6 +480,30 @@ def _build_session(
     sess._agent_step_sessions = sessions  # type: ignore[attr-defined]
     sess._agent_step_run_dir = run_dir  # type: ignore[attr-defined]
     return sess
+
+
+def _render_resumed_prompt(target_bead: str, ctx: dict[str, Any]) -> str:
+    """Short prompt for `--resume <uuid>` turns: skip the identity preamble.
+
+    The agent already has the identity prompt + close-contract from
+    turn 1's conversation. On resumed turns we only need to point at
+    the new role-step bead and re-affirm the close contract; everything
+    else is inferred from the prior conversation.
+
+    Saves ~15 lines × tokens-per-line on every iter2+ call (e.g.
+    plan-iter-2's planner call resumes plan-iter-1's session). Across
+    a long run with multiple plan / build / verify iters this is
+    meaningful cost reduction.
+    """
+    close_block = ctx.get("role_step_close_block", "")
+    return (
+        f"Your next role-step bead is `{target_bead}`.\n\n"
+        "Read it now:\n\n"
+        f"```bash\nbd show {target_bead}\n```\n\n"
+        "Do the work per the contract you already know from turn 1. "
+        "The bead description is canonical."
+        f"{close_block}"
+    )
 
 
 def _render_agent_prompt(agent_dir: Path, ctx: dict[str, Any]) -> str:
