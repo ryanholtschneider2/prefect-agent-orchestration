@@ -148,6 +148,7 @@ def agent_step(
     task: Path | str | None = None,
     seed_id: str,
     rig_path: str,
+    run_dir: Path | str | None = None,
     ctx: dict[str, Any] | None = None,
     iter_n: int | None = None,
     step: str | None = None,
@@ -217,6 +218,21 @@ def agent_step(
         rig_path=rig_path, role=role,
     )
 
+    # Resolve run_dir: caller-supplied wins; else fall through to
+    # `<rig>/.planning/agent-step/<seed>/`. The caller-supplied path is
+    # the formula's canonical run-dir (e.g.
+    # `<rig>/.planning/software-dev-full/<seed>/`), shared across every
+    # agent_step call in that formula run so role-sessions.json and
+    # verdicts/ all land in one place — and `po artifacts` / `po watch`
+    # find them via the seed bead's `po.run_dir` metadata stamp.
+    rig_path_p = Path(rig_path).expanduser().resolve()
+    if run_dir is not None:
+        run_dir_p = Path(run_dir).expanduser().resolve()
+    else:
+        run_dir_p = rig_path_p / ".planning" / "agent-step" / seed_id
+    run_dir_p.mkdir(parents=True, exist_ok=True)
+    _stamp_run_dir_meta(seed_id, rig_path_p, run_dir_p)
+
     # Resumability: a closed bead is the answer. Don't pay to re-run.
     closed_state = _read_bead_status(target_bead, rig_path)
     if closed_state and closed_state["status"] == "closed":
@@ -229,6 +245,7 @@ def agent_step(
     full_ctx: dict[str, Any] = {
         "seed_id": seed_id,
         "rig_path": rig_path,
+        "run_dir": str(run_dir_p),
         "role_step_bead_id": target_bead,
         "iter": iter_n if iter_n is not None else "",
         "step": step or "",
@@ -241,7 +258,8 @@ def agent_step(
     # Resolve session and run the agent's turn.
     sess = _build_session(
         seed_id=seed_id, role=role, rig_path=rig_path,
-        agent_dir=agent_dir, backend=backend, dry_run=dry_run,
+        agent_dir=agent_dir, run_dir=run_dir_p,
+        backend=backend, dry_run=dry_run,
     )
     rendered_prompt = _render_agent_prompt(agent_dir, full_ctx)
 
@@ -393,26 +411,40 @@ def _stamp_description(bead_id: str, description: str, rig_path: str) -> None:
     )
 
 
+def _stamp_run_dir_meta(seed_id: str, rig_path: Path, run_dir: Path) -> None:
+    """Stamp `po.run_dir` + `po.rig_path` on the seed bead so the TUI
+    (`po artifacts`, `po watch`, `po sessions`, `po retry`) can find the
+    formula's canonical run-dir without knowing the formula name.
+
+    Idempotent: re-stamps on every call so a re-run with a different
+    run_dir overrides the prior value. Best-effort; bd metadata write
+    failures are logged but don't fail the agent step.
+    """
+    if not _bd_available():
+        return
+    for key, val in (("po.run_dir", str(run_dir)), ("po.rig_path", str(rig_path))):
+        subprocess.run(
+            ["bd", "update", seed_id, "--set-metadata", f"{key}={val}"],
+            check=False, capture_output=True, text=True, cwd=str(rig_path),
+        )
+
+
 def _build_session(
     *, seed_id: str, role: str, rig_path: str,
-    agent_dir: Path, backend: Any, dry_run: bool,
+    agent_dir: Path, run_dir: Path, backend: Any, dry_run: bool,
 ) -> AgentSession:
     """Build an `AgentSession` with `--resume <uuid>` from RoleSessionStore.
 
     The store is keyed on `seed_id`, so successive `agent_step` calls for
     the same role on the same issue resume the same Claude conversation.
-    Run-dir is derived from the rig: `<rig>/.planning/agent-step/<seed>/`
-    — packs that prefer their own layout pass an explicit run_dir via
-    a future kwarg.
+    `run_dir` is whatever the caller passed to `agent_step` (or the
+    `<rig>/.planning/agent-step/<seed>/` default).
     """
     backend_factory = backend
     if backend_factory is None:
         backend_factory = StubBackend if dry_run else select_default_backend()
 
     rig_path_p = Path(rig_path).expanduser().resolve()
-    run_dir = rig_path_p / ".planning" / "agent-step" / seed_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-
     sessions = RoleSessionStore(seed_id=seed_id, seed_run_dir=run_dir, rig_path=rig_path_p)
     prior_uuid = sessions.get(role)
 
