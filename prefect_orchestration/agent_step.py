@@ -213,11 +213,28 @@ def agent_step(
     """
     ctx = dict(ctx or {})
     role = session_role or Path(agent_dir).name
-    target_bead = _resolve_target_bead(
-        seed_id=seed_id, step=step, iter_n=iter_n,
-        rig_path=rig_path, role=role,
-    )
 
+    # FAST PATH: compute target bead id from naming convention (zero
+    # shellouts) and check status FIRST. If the bead is already closed,
+    # return cached verdict — skip every other side effect (run-dir
+    # mkdir, metadata stamping, child-bead probe). This collapses 4
+    # bd shellouts per cached call to 1, taking cache-hit time from
+    # ~10s/step down to ~0.5s/step.
+    if iter_n is None:
+        target_bead = seed_id
+    elif step:
+        target_bead = f"{seed_id}.{step}.iter{iter_n}"
+    else:
+        raise ValueError(f"agent_step: iter_n={iter_n} requires step= (role={role!r})")
+
+    closed_state = _read_bead_status(target_bead, rig_path)
+    if closed_state and closed_state["status"] == "closed":
+        return _result_from_closed_bead(
+            target_bead, closed_state, verdict_keywords, closed_by="cache",
+            from_cache=True,
+        )
+
+    # SLOW PATH: bead is open or missing — do full setup.
     # Resolve run_dir: caller-supplied wins; else fall through to
     # `<rig>/.planning/agent-step/<seed>/`. The caller-supplied path is
     # the formula's canonical run-dir (e.g.
@@ -233,12 +250,15 @@ def agent_step(
     run_dir_p.mkdir(parents=True, exist_ok=True)
     _stamp_run_dir_meta(seed_id, rig_path_p, run_dir_p)
 
-    # Resumability: a closed bead is the answer. Don't pay to re-run.
-    closed_state = _read_bead_status(target_bead, rig_path)
-    if closed_state and closed_state["status"] == "closed":
-        return _result_from_closed_bead(
-            target_bead, closed_state, verdict_keywords, closed_by="cache",
-            from_cache=True,
+    # Ensure the iter bead exists (create if absent). Probe-then-create
+    # avoids the bd 1.0 resurrection footgun where `bd create --id=<closed>`
+    # re-opens the bead.
+    if iter_n is not None and closed_state is None and _bd_available():
+        create_child_bead(
+            seed_id, target_bead,
+            title=f"{step} iter {iter_n} for {seed_id}",
+            description=f"Auto-created by agent_step ({role}, iter {iter_n}).",
+            rig_path=rig_path,
         )
 
     # Stamp the task spec onto the bead description (canonical task source).
@@ -327,42 +347,6 @@ def agent_step(
 
 
 # ─────────────────────── helpers ────────────────────────────────────
-
-
-def _resolve_target_bead(
-    *, seed_id: str, step: str | None, iter_n: int | None,
-    rig_path: str, role: str,
-) -> str:
-    """When `iter_n` is set, return `<seed>.<step>.iter<N>`. Create it if
-    absent; **do NOT** re-create when present (preserves closed status).
-
-    bd 1.0 surprise: ``bd create --id=<existing-closed-bead> ...`` does not
-    fail with "already exists" — it RESURRECTS the closed bead as
-    ``status=open``. That defeats agent_step's resumability cache (every
-    re-dispatch resurrects every prior iter bead and re-runs the agent).
-    Probe-then-create avoids the resurrection.
-
-    Otherwise return the seed itself.
-    """
-    if iter_n is None:
-        return seed_id
-    if not step:
-        raise ValueError(f"agent_step: iter_n={iter_n} requires step= (role={role!r})")
-    child_id = f"{seed_id}.{step}.iter{iter_n}"
-    if not _bd_available():
-        return child_id
-    # Probe first — if the bead already exists (open OR closed), don't
-    # re-create (would resurrect a closed bead). Only create when absent.
-    existing = _bd_show(child_id, rig_path=rig_path)
-    if existing is not None:
-        return child_id
-    create_child_bead(
-        seed_id, child_id,
-        title=f"{step} iter {iter_n} for {seed_id}",
-        description=f"Auto-created by agent_step ({role}, iter {iter_n}).",
-        rig_path=rig_path,
-    )
-    return child_id
 
 
 def _read_bead_status(bead_id: str, rig_path: str) -> dict[str, Any] | None:
