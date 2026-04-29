@@ -344,6 +344,169 @@ def _selected_criteria(case: CaseSpec, judges: dict[str, LLMJudge]) -> list[str]
 
 
 # ---------------------------------------------------------------------------
+# Claude Code judge (default; OAuth via Claude.ai subscription)
+# ---------------------------------------------------------------------------
+#
+# Pattern adopted from rocks_project/data-agent's `ClaudeCodeJudge`
+# (polymer-dev/polymer/core-services/data-agent/evals/evaluators.py:621).
+# Subscription-based, no API keys; the SDK shells the local Claude CLI
+# (~/.claude/.credentials.json). One judge call per (case × criterion).
+
+
+_CLAUDE_JUDGE_PROMPT = """You are evaluating an AI skill's response against a single rubric criterion.
+
+## User's prompt to the skill
+{case_prompt}
+
+## Skill's response
+{response}
+
+## Criterion: `{criterion_name}`
+{rubric_text}
+
+## Output
+
+Return ONLY a JSON object on the last line — no prose after.
+
+{{"score": <float 0.0-1.0>, "reason": "<one sentence stating why>"}}"""
+
+
+async def _claude_judge_one_pair(
+    criterion: str,
+    rubric_text: str,
+    case_prompt: str,
+    response: str,
+    *,
+    max_turns: int = 1,
+) -> CriterionResult:
+    """One Claude Code judge call for one (criterion, case) pair.
+
+    Uses the Claude Agent SDK over OAuth — no `ANTHROPIC_API_KEY` is
+    required (and is unset to force OAuth even if it leaks into env).
+    Default `max_turns=1` keeps latency bounded (~5-10s/criterion);
+    bump it if the criterion needs tool-aided investigation.
+    """
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+
+    try:
+        from claude_agent_sdk import ClaudeAgentOptions, query
+    except ImportError as e:
+        raise RuntimeError(
+            "install `claude-agent-sdk` to run skill-evals with the "
+            "claude-code judge backend (default), or pass "
+            "`judge_backend=\"pydantic-evals\"` to use the API-key path."
+        ) from e
+
+    judge_prompt = _CLAUDE_JUDGE_PROMPT.format(
+        case_prompt=case_prompt,
+        response=response,
+        criterion_name=criterion,
+        rubric_text=rubric_text,
+    )
+
+    options = ClaudeAgentOptions(max_turns=max_turns)
+
+    result_text = ""
+    last_assistant_text = ""
+    try:
+        async for message in query(prompt=judge_prompt, options=options):
+            if hasattr(message, "result") and message.result:
+                result_text = (
+                    message.result if isinstance(message.result, str)
+                    else str(message.result)
+                )
+            content = getattr(message, "content", None)
+            if content and isinstance(content, list):
+                for block in content:
+                    text = getattr(block, "text", None)
+                    if text:
+                        last_assistant_text = text
+    except Exception as e:
+        return CriterionResult(
+            criterion=criterion,
+            score=0.5,
+            reason=f"claude-code judge call failed: {type(e).__name__}: {e}",
+        )
+
+    text = result_text or last_assistant_text
+    if not text:
+        return CriterionResult(
+            criterion=criterion, score=0.5, reason="claude-code judge: empty result"
+        )
+
+    payload = _extract_judge_json(text)
+    if payload is None:
+        return CriterionResult(
+            criterion=criterion,
+            score=0.5,
+            reason=f"claude-code judge: no JSON in result ({text[:120]!r})",
+        )
+
+    try:
+        score = float(payload.get("score", 0.5))
+    except (TypeError, ValueError):
+        score = 0.5
+    score = max(0.0, min(1.0, score))
+    reason = str(payload.get("reason", "")) or None
+    return CriterionResult(criterion=criterion, score=round(score, 4), reason=reason)
+
+
+def _extract_judge_json(text: str) -> dict[str, Any] | None:
+    """Pull the trailing JSON object from a Claude Code judge response.
+
+    Prefers the last line (per our prompt), falls back to a regex scan
+    for `{... "score": ... }` anywhere in the text.
+    """
+    for candidate in reversed(text.strip().splitlines()):
+        s = candidate.strip().strip("`")
+        if s.startswith("{") and s.endswith("}"):
+            try:
+                return json.loads(s)
+            except json.JSONDecodeError:
+                continue
+    m = re.search(r"\{[^{}]*\"score\"\s*:\s*[\d.]+[^{}]*\}", text)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+async def _claude_judge_all_cases(
+    rubrics: RubricsFile,
+    case_io_pairs: list[tuple[CaseSpec, str]],
+    *,
+    max_turns: int = 1,
+) -> list[list[CriterionResult]]:
+    """Fan out (case × selected criterion) judge calls via `asyncio.gather`.
+
+    Mirrors `_judge_all_cases` (the pydantic-evals path) — single
+    `asyncio.run` entry from the sync flow body; the inner gather
+    parallelizes I/O across criteria and across cases.
+    """
+    rubric_by_name = {c.name: c for c in rubrics.criteria}
+    available = list(rubric_by_name.keys())
+
+    per_case_tasks: list[asyncio.Task[list[CriterionResult]]] = []
+    for case_spec, output in case_io_pairs:
+        selected = case_spec.evaluators or available
+        coros = [
+            _claude_judge_one_pair(
+                name,
+                _compose_rubric_text(rubric_by_name[name]),
+                case_spec.prompt,
+                output,
+                max_turns=max_turns,
+            )
+            for name in selected
+            if name in rubric_by_name
+        ]
+        per_case_tasks.append(asyncio.create_task(_gather_list(coros)))
+    return await asyncio.gather(*per_case_tasks)
+
+
+# ---------------------------------------------------------------------------
 # Stub judging (--dry-run) — does NOT import pydantic_evals
 # ---------------------------------------------------------------------------
 
@@ -578,6 +741,8 @@ def skill_evals(
     tier: str | None = None,
     case: str | None = None,
     judge_model: str | None = None,
+    judge_backend: str = "claude-code",
+    judge_max_turns: int = 1,
     pass_threshold: float | None = None,
     dry_run: bool = False,
     issue_id: str | None = None,
@@ -648,11 +813,27 @@ def skill_evals(
                 case_io_pairs.append((case_spec, output))
 
             # Phase 2: judge — single asyncio.run for the whole batch.
+            #
+            # Backend selection:
+            #   dry-run         → deterministic stub scores (no model calls)
+            #   claude-code     → Claude Agent SDK over OAuth (default; no API key)
+            #   pydantic-evals  → pydantic-evals' built-in LLMJudge (API-key path)
             if dry_run:
                 all_criteria = _stub_judge_all_cases(case_io_pairs, rubrics)
-            else:
+            elif judge_backend == "claude-code":
+                all_criteria = asyncio.run(
+                    _claude_judge_all_cases(
+                        rubrics, case_io_pairs, max_turns=judge_max_turns
+                    )
+                )
+            elif judge_backend == "pydantic-evals":
                 judges = build_judges(rubrics, default_model=effective_judge_model)
                 all_criteria = asyncio.run(_judge_all_cases(judges, case_io_pairs))
+            else:
+                raise ValueError(
+                    f"unknown judge_backend={judge_backend!r}; "
+                    "expected 'claude-code', 'pydantic-evals', or use --dry-run"
+                )
 
             # Phase 3: fold per-case results, emit per-case spans.
             case_results: list[CaseResult] = []

@@ -413,12 +413,84 @@ def test_skill_evals_flow_real_judges_mocked(
         dry_run=False,
         tier="smoke",
         pass_threshold=0.5,
+        judge_backend="pydantic-evals",
     )
     verdict = out["verdict"]
     assert verdict["n_cases"] == 1
     case = verdict["cases"][0]
     assert case["pass"] is True
     assert case["criteria"][0]["score"] == pytest.approx(0.91)
+
+
+def test_skill_evals_flow_claude_judge_mocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise the default claude-code judge path with the SDK mocked.
+
+    Asserts the SDK query is invoked, the JSON-on-last-line output is
+    parsed, and scores + reasons propagate into the verdict.
+    """
+    dst = _stage_pack(tmp_path)
+    _patch_distribution_to(dst, monkeypatch)
+
+    # Mock the claude_agent_sdk.query async generator. The judge reads
+    # `message.result` (final-line text) — emulate that with a stub.
+    class _ResultMessage:
+        def __init__(self, result: str) -> None:
+            self.result = result
+
+    async def fake_query(*, prompt: str, options):  # noqa: ANN001 — match SDK signature
+        # Return one ResultMessage carrying valid judge JSON.
+        yield _ResultMessage(
+            'Looks good.\n{"score": 0.88, "reason": "matches the rubric"}'
+        )
+
+    import claude_agent_sdk
+
+    monkeypatch.setattr(claude_agent_sdk, "query", fake_query, raising=True)
+    monkeypatch.setenv("PO_BACKEND", "stub")
+
+    out = se.skill_evals(
+        pack="sample-pack",
+        skill="sample",
+        dry_run=False,
+        tier="smoke",
+        pass_threshold=0.5,
+        judge_backend="claude-code",
+    )
+    verdict = out["verdict"]
+    assert verdict["n_cases"] == 1
+    case = verdict["cases"][0]
+    assert case["pass"] is True
+    assert case["criteria"][0]["score"] == pytest.approx(0.88)
+    assert "matches the rubric" in (case["criteria"][0]["reason"] or "")
+
+
+def test_extract_judge_json_handles_fenced_and_inline() -> None:
+    """JSON extractor recovers from markdown fences and prose-wrapped JSON."""
+    fenced = 'reasoning here\n```\n{"score": 0.7, "reason": "ok"}\n```'
+    inline = 'prose {"score": 0.42, "reason": "x"} more prose'
+    bare = '{"score": 1.0, "reason": "great"}'
+    assert se._extract_judge_json(fenced) == {"score": 0.7, "reason": "ok"}
+    assert se._extract_judge_json(inline) == {"score": 0.42, "reason": "x"}
+    assert se._extract_judge_json(bare) == {"score": 1.0, "reason": "great"}
+    assert se._extract_judge_json("no json here") is None
+
+
+def test_skill_evals_unknown_judge_backend_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dst = _stage_pack(tmp_path)
+    _patch_distribution_to(dst, monkeypatch)
+    monkeypatch.setenv("PO_BACKEND", "stub")
+    with pytest.raises(ValueError, match="unknown judge_backend"):
+        se.skill_evals(
+            pack="sample-pack",
+            skill="sample",
+            dry_run=False,
+            tier="smoke",
+            judge_backend="bogus",
+        )
 
 
 # ---------------------------------------------------------------------------

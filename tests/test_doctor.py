@@ -372,6 +372,10 @@ def test_cli_doctor_runs_and_renders(monkeypatch):
         "ALL_CHECKS",
         [lambda: _ok("a"), lambda: _warn("b")],
     )
+    # Suppress pack-contributed checks so the test isn't sensitive to which
+    # packs happen to be installed in the dev venv (e.g. po-stripe ships
+    # checks that fail on a system without the stripe CLI).
+    monkeypatch.setattr(doctor_mod, "_iter_doctor_check_eps", lambda: [])
     runner = CliRunner()
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
@@ -383,6 +387,7 @@ def test_cli_doctor_exits_one_on_failure(monkeypatch):
     monkeypatch.setattr(
         doctor_mod, "ALL_CHECKS", [lambda: _ok("a"), lambda: _fail("b")]
     )
+    monkeypatch.setattr(doctor_mod, "_iter_doctor_check_eps", lambda: [])
     runner = CliRunner()
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1

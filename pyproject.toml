@@ -23,10 +23,12 @@ dev = [
     "opentelemetry-api>=1.25",
     "opentelemetry-sdk>=1.25",
 ]
-# Pulls in pydantic-evals (and pydantic-ai transitively) for the skill-evals
-# formula. Optional so the core install stays lean — soft-imported in
-# prefect_orchestration/skill_evals.py with a friendly install hint.
-evals = ["pydantic-evals>=0.1"]
+# Skill-evals judge backends:
+#   - claude-code (default): uses claude-agent-sdk over OAuth (Claude.ai sub).
+#   - pydantic-evals (opt-in): pydantic-evals.LLMJudge over a provider API key.
+# Both are optional so the core install stays lean — soft-imported in
+# prefect_orchestration/skill_evals.py with friendly install hints.
+evals = ["claude-agent-sdk>=0.1", "pydantic-evals>=0.1"]
 
 [project.scripts]
 po = "prefect_orchestration.cli:main"
