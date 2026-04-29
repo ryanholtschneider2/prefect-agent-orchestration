@@ -796,6 +796,42 @@ assignee logic AND creates the run_dir and stamps metadata in one call.
 Calling `claim_issue(issue_id, rig_path=...)` bare omits the assignee
 param that bd 1.x requires and misses the metadata stamp.
 
+### Phantom-rejection loop: diagnose, don't churn
+
+The dispatcher will sometimes spawn a follow-on iter (`plan.iter2`,
+`build.iter3`, `review.iterN+1`) even after the prior iter closed
+`approved:`. Symptom: the new iter bead's `{{revision_note}}`
+template renders as `(no summary captured)` (or empty), and there's
+no actual rejection signal in the prior critic's verdict to act on.
+89e hit this three times on one issue (plan iter 2; build iters 2 + 3).
+
+When dispatched on a phantom rejection, the role agent should:
+
+1. **Diagnose** — confirm the prior `<role>.iterN-1` (or
+   `<role>-critic.iterN-1`) closed with `approved:` AND that
+   `revision_note` is empty / `(no summary captured)`. A real
+   rejection without a captured summary is rare but possible; don't
+   skip the check.
+2. **Don't churn** — DO NOT manufacture cosmetic edits (whitespace,
+   ruff-format reflows, no-op refactors, comment tweaks) just to
+   produce an artifact. That re-triggers lint+test, burns tokens,
+   and corrupts the diff history.
+3. **Document** — write a decision-log entry naming the diagnosis
+   and the alternatives considered (no-op edit / `bd human` / clean
+   close). Re-save the cumulative diff to the iter's expected
+   artifact path (`build-iter-N.diff`, etc.) byte-identical to the
+   prior iter so downstream verifiers see the right state.
+4. **Escalate on recurrence** — if a third consecutive phantom iter
+   spawns on the same role, `bd human` to the operator. The
+   dispatcher loop is the bug; agents can't fix it from inside the
+   loop, and a fourth no-op critique is wasted spend.
+
+The next critic in the chain should approve a phantom-rejection
+no-op build with reasoning that explicitly references the prior
+approval and the byte-identical diff (89e iter-2 + iter-3 critiques
+are the canonical examples). This keeps the loop closeable instead
+of inventing fake findings.
+
 ## agent_step adoption patterns (non-bead-driven flows)
 
 Lessons from migrating `po-formulas-retro` (a *scheduled* cron flow,
