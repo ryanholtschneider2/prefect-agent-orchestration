@@ -333,8 +333,16 @@ def _resolve_target_bead(
     *, seed_id: str, step: str | None, iter_n: int | None,
     rig_path: str, role: str,
 ) -> str:
-    """When `iter_n` is set, return `<seed>.<step>.iter<N>` (creating it if
-    absent, idempotent). Otherwise return the seed itself.
+    """When `iter_n` is set, return `<seed>.<step>.iter<N>`. Create it if
+    absent; **do NOT** re-create when present (preserves closed status).
+
+    bd 1.0 surprise: ``bd create --id=<existing-closed-bead> ...`` does not
+    fail with "already exists" — it RESURRECTS the closed bead as
+    ``status=open``. That defeats agent_step's resumability cache (every
+    re-dispatch resurrects every prior iter bead and re-runs the agent).
+    Probe-then-create avoids the resurrection.
+
+    Otherwise return the seed itself.
     """
     if iter_n is None:
         return seed_id
@@ -343,7 +351,11 @@ def _resolve_target_bead(
     child_id = f"{seed_id}.{step}.iter{iter_n}"
     if not _bd_available():
         return child_id
-    # create_child_bead is idempotent on existence (returns child_id either way).
+    # Probe first — if the bead already exists (open OR closed), don't
+    # re-create (would resurrect a closed bead). Only create when absent.
+    existing = _bd_show(child_id, rig_path=rig_path)
+    if existing is not None:
+        return child_id
     create_child_bead(
         seed_id, child_id,
         title=f"{step} iter {iter_n} for {seed_id}",
