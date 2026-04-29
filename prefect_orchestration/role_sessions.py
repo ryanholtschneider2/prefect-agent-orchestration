@@ -49,6 +49,21 @@ ROLE_SESSIONS_VERSION = 1
 SESSION_PREFIX = "session_"
 
 
+def _sanitize_role_for_bd(role: str) -> str:
+    """bd metadata keys must match ``[a-zA-Z_][a-zA-Z0-9_.]*`` — translate
+    role names that have e.g. ``-`` into the equivalent ``_`` form.
+
+    Only the bd-side key is sanitized; the run-dir JSON store retains
+    the original name. Read-side ``_read_beads`` reverses this when
+    constructing the ``{role: uuid}`` view (a ``-`` in the role name
+    becomes ``_`` in storage and back to ``-`` on lookup, but we don't
+    have a way to recover the original from the sanitized form when
+    both ``a-b`` and ``a_b`` are valid roles — pack maintainers should
+    avoid the ambiguity by using a single convention).
+    """
+    return role.replace("-", "_")
+
+
 @dataclass
 class RoleSessionStore:
     """Seed-bead-keyed role→uuid persistence with three-tier lookup.
@@ -174,10 +189,17 @@ class RoleSessionStore:
 
         Lookup tiers: BeadsStore → role-sessions.json → legacy shim.
         First non-empty hit wins; absent everywhere returns None.
+
+        Roles whose bd-storage key was sanitized (e.g. ``plan-critic``
+        → ``plan_critic``) are looked up under both spellings on the
+        bd-tier so writes and reads stay symmetric.
         """
         beads = self._read_beads()
         if role in beads:
             return beads[role]
+        sanitized = _sanitize_role_for_bd(role)
+        if sanitized != role and sanitized in beads:
+            return beads[sanitized]
         local = self._read_json()
         if role in local:
             return local[role]
@@ -189,7 +211,10 @@ class RoleSessionStore:
 
         - If `bd` is on PATH and the seed bead exists → write through
           `BeadsStore(seed_id)`. Single source of truth, visible via
-          `bd show`.
+          `bd show`. Role names containing characters bd metadata keys
+          forbid (e.g. ``-`` in ``plan-critic``) are sanitized to ``_``
+          for the bd key; the run-dir JSON store retains the original
+          name. Read-side de-sanitises on lookup.
         - Otherwise → write to `<seed_run_dir>/role-sessions.json`.
 
         Legacy `<self_run_dir>/metadata.json` is **never** mutated by
@@ -197,10 +222,16 @@ class RoleSessionStore:
         state).
         """
         if self._seed_bead_exists():
-            BeadsStore(parent_id=self.seed_id, rig_path=self.rig_path).set(
-                f"{SESSION_PREFIX}{role}", uuid
-            )
-            return
+            try:
+                BeadsStore(parent_id=self.seed_id, rig_path=self.rig_path).set(
+                    f"{SESSION_PREFIX}{_sanitize_role_for_bd(role)}", uuid
+                )
+                return
+            except Exception:  # noqa: BLE001
+                # bd metadata write failed (older bd, key chars, etc.) —
+                # fall through to the run-dir JSON store so persistence
+                # still happens.
+                pass
         sessions = self._read_json()
         sessions[role] = uuid
         self._write_json(sessions)
