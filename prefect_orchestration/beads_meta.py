@@ -327,8 +327,9 @@ def _bd_dep_list(
     edge_type: str | None = None,
     rig_path: Path | str | None = None,
 ) -> list[dict]:
-    """Run `bd dep list <id> --direction=<dir> [--type=<t>] --json`.
+    """Return the dep-graph rows for *issue_id* as a list of dicts (empty on failure).
 
+    Shells out to `bd dep list <id> --direction=<dir> [--type=<t>] --json`.
     Returns [] on any non-zero exit or empty body — bd has been observed
     to print "No issues depend on …" to stdout while exiting 0 with no
     JSON, so we tolerate `JSONDecodeError` too.
