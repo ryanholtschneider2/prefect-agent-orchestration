@@ -1,4 +1,11 @@
-"""Prefect orchestration over Claude Code CLI — port of Gas City software-dev-pack."""
+"""Prefect orchestration over Claude Code CLI — port of Gas City software-dev-pack.
+
+The simplified single-turn primitive lives at ``prefect_orchestration.agent_step``;
+import as ``from prefect_orchestration.agent_step import agent_step``. We don't
+re-export it on the package root because the submodule and the function share
+a name (binding the function on the package would shadow the submodule for
+testing).
+"""
 
 from prefect_orchestration.identity import (
     Identity,
