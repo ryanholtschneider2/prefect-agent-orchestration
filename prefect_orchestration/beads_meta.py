@@ -247,7 +247,7 @@ def read_iter_cap(
     rig_path: Path | str | None = None,
     metadata_key: str = "po.iter_cap",
 ) -> int:
-    """Return the iter cap for a parent bead, falling back to `default`.
+    """Return the positive-int iter cap for *parent_id*, or *default* when unset/invalid.
 
     Looks up `metadata_key` (default `"po.iter_cap"`) in the parent's
     bd metadata. Falls back to `default` when:
