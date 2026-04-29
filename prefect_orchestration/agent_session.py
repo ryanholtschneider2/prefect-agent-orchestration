@@ -280,6 +280,16 @@ class ClaudeCliBackend:
             env=_clean_env(extra_env),
         )
         if proc.returncode != 0:
+            # Distinguish rate-limit (typed RateLimitError) from generic
+            # failure (RuntimeError) so callers can defer the bead vs
+            # crash + retry.
+            combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            reset = _detect_rate_limit_in_pane(combined)
+            if reset is not None or '"api_error_status":429' in combined:
+                raise RateLimitError(
+                    reset_time=reset or None,
+                    message=combined[-1000:],
+                )
             raise RuntimeError(
                 f"claude CLI exited {proc.returncode}\n"
                 f"argv: {cmd}\n"
@@ -688,6 +698,18 @@ class TmuxClaudeBackend:
             rc = int(rc_path.read_text().strip() or "-1")
             stdout = out_path.read_text() if out_path.exists() else ""
             if rc != 0:
+                # Claude CLI returns rc=1 with an api_error_status:429 +
+                # "You've hit your limit · resets <time>" payload when the
+                # account hits its rate cap. Detect that and raise a
+                # typed RateLimitError so callers (agent_step, retry
+                # logic) can handle it specifically rather than treat
+                # it as a generic failure.
+                reset = _detect_rate_limit_in_pane(stdout)
+                if reset is not None or '"api_error_status":429' in stdout:
+                    raise RateLimitError(
+                        reset_time=reset or None,
+                        message=stdout[-1000:],
+                    )
                 raise RuntimeError(
                     f"claude CLI exited {rc}\nstdout tail: {stdout[-2000:]}"
                 )
