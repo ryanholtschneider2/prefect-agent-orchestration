@@ -252,6 +252,11 @@ def agent_step(
         # force-close the bead here — let the caller decide. Re-raise
         # so Prefect captures the failure state.
         raise
+    finally:
+        # Persist the session UUID after the turn (whether it succeeded
+        # or failed) so the next agent_step call for this role resumes
+        # the same Claude conversation.
+        _persist_session(sess, role)
 
     # Convergence ladder: agent close → nudge → force-close.
     state = _read_bead_status(target_bead, rig_path)
@@ -268,6 +273,8 @@ def agent_step(
     except Exception:
         # Nudge failed → fall through to defensive force-close.
         pass
+    finally:
+        _persist_session(sess, role)
 
     state = _read_bead_status(target_bead, rig_path)
     if state and state["status"] == "closed":
@@ -409,16 +416,27 @@ def _build_session(
     sessions = RoleSessionStore(seed_id=seed_id, seed_run_dir=run_dir, rig_path=rig_path_p)
     prior_uuid = sessions.get(role)
 
-    backend_inst = backend_factory()
+    # Different backends have different __init__ shapes:
+    #   * ClaudeCliBackend / StubBackend → no required args
+    #   * TmuxClaudeBackend → requires issue + role
+    # Try the issue+role shape first (works for tmux); fall through to
+    # zero-arg construction (works for cli / stub).
+    try:
+        backend_inst = backend_factory(issue=seed_id, role=role)
+    except TypeError:
+        backend_inst = backend_factory()
     sess = AgentSession(
         backend=backend_inst,
         repo_path=rig_path_p,
         session_id=prior_uuid,
         role=role,
         issue_id=seed_id,
-        sessions=sessions,
-        run_dir=run_dir,
     )
+    # Stash the session store + run_dir on the session for any callers
+    # that want to persist the post-turn UUID externally. AgentSession
+    # itself doesn't manage persistence — that's the caller's job.
+    sess._agent_step_sessions = sessions  # type: ignore[attr-defined]
+    sess._agent_step_run_dir = run_dir  # type: ignore[attr-defined]
     return sess
 
 
@@ -481,6 +499,22 @@ def _build_nudge_prompt(
         "with the same `bd close ...` shape as (1).\n\n"
         "Do not reply with prose only — the dispatcher reads bead state, not your response."
     )
+
+
+def _persist_session(sess: AgentSession, role: str) -> None:
+    """Save sess.session_id back to the RoleSessionStore stashed on sess.
+
+    Best-effort; called from finally blocks so a failure here mustn't
+    mask the original exception. Stores the post-turn UUID under `role`
+    so the next `agent_step` call for the same (seed, role) resumes
+    this Claude conversation.
+    """
+    try:
+        sessions = getattr(sess, "_agent_step_sessions", None)
+        if sessions is not None and sess.session_id:
+            sessions.set(role, sess.session_id)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 __all__ = ["agent_step", "AgentStepResult"]
