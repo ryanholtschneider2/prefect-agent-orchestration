@@ -353,22 +353,16 @@ def _selected_criteria(case: CaseSpec, judges: dict[str, LLMJudge]) -> list[str]
 # (~/.claude/.credentials.json). One judge call per (case × criterion).
 
 
-_CLAUDE_JUDGE_PROMPT = """You are evaluating an AI skill's response against a single rubric criterion.
+# Default judge turn budget. The rocks_project ClaudeCodeJudge used
+# max_turns=12; we go higher because skill rubrics often involve checking
+# whether CLI commands / file paths / API surfaces actually exist, and
+# a generous budget lets the judge actually investigate. Per-call latency
+# is bounded mostly by tool-call I/O, not by the cap. Override with the
+# `judge_max_turns` kwarg when you need a different ceiling.
+_DEFAULT_JUDGE_MAX_TURNS = 50
 
-## User's prompt to the skill
-{case_prompt}
-
-## Skill's response
-{response}
-
-## Criterion: `{criterion_name}`
-{rubric_text}
-
-## Output
-
-Return ONLY a JSON object on the last line — no prose after.
-
-{{"score": <float 0.0-1.0>, "reason": "<one sentence stating why>"}}"""
+_AGENTS_DIR = Path(__file__).parent / "agents"
+_JUDGE_ROLE = "skill-evals-judge"
 
 
 async def _claude_judge_one_pair(
@@ -377,14 +371,16 @@ async def _claude_judge_one_pair(
     case_prompt: str,
     response: str,
     *,
-    max_turns: int = 1,
+    max_turns: int = _DEFAULT_JUDGE_MAX_TURNS,
 ) -> CriterionResult:
     """One Claude Code judge call for one (criterion, case) pair.
 
     Uses the Claude Agent SDK over OAuth — no `ANTHROPIC_API_KEY` is
     required (and is unset to force OAuth even if it leaks into env).
-    Default `max_turns=1` keeps latency bounded (~5-10s/criterion);
-    bump it if the criterion needs tool-aided investigation.
+    The judge has full Claude Code tool access (Read, Bash, Grep,
+    WebSearch, …) and a generous turn budget so it can actually verify
+    load-bearing claims (e.g., that a CLI command exists) rather than
+    just pattern-matching the text.
     """
     os.environ.pop("ANTHROPIC_API_KEY", None)
 
@@ -397,7 +393,11 @@ async def _claude_judge_one_pair(
             "`judge_backend=\"pydantic-evals\"` to use the API-key path."
         ) from e
 
-    judge_prompt = _CLAUDE_JUDGE_PROMPT.format(
+    from prefect_orchestration.templates import render_template
+
+    judge_prompt = render_template(
+        _AGENTS_DIR,
+        _JUDGE_ROLE,
         case_prompt=case_prompt,
         response=response,
         criterion_name=criterion,
@@ -477,7 +477,7 @@ async def _claude_judge_all_cases(
     rubrics: RubricsFile,
     case_io_pairs: list[tuple[CaseSpec, str]],
     *,
-    max_turns: int = 1,
+    max_turns: int = _DEFAULT_JUDGE_MAX_TURNS,
 ) -> list[list[CriterionResult]]:
     """Fan out (case × selected criterion) judge calls via `asyncio.gather`.
 
@@ -742,7 +742,7 @@ def skill_evals(
     case: str | None = None,
     judge_model: str | None = None,
     judge_backend: str = "claude-code",
-    judge_max_turns: int = 1,
+    judge_max_turns: int = _DEFAULT_JUDGE_MAX_TURNS,
     pass_threshold: float | None = None,
     dry_run: bool = False,
     issue_id: str | None = None,

@@ -50,6 +50,10 @@ po-skill-evals-fresh = "prefect_orchestration.skill_evals_doctor:po_skill_evals_
 # editable installs) resolve `--pack prefect-orchestration --skill po`.
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "skills"
+# Ensure non-.py prompt files under prefect_orchestration/agents/ ship in
+# the wheel. Hatchling's package-discovery is .py-centric; force-include
+# guarantees `render_template(_AGENTS_DIR, ...)` works after a wheel install.
+"prefect_orchestration/agents" = "prefect_orchestration/agents"
 
 [build-system]
 requires = ["hatchling"]

@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from prefect_orchestration import doctor as doctor_mod
@@ -19,6 +20,16 @@ from prefect_orchestration.doctor import (
     render_table,
     run_doctor,
 )
+
+
+@pytest.fixture
+def hide_pack_doctor_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide pack-contributed `po.doctor_checks` so CLI tests aren't sensitive
+    to which packs happen to be installed in the dev venv (e.g. po-stripe
+    ships checks that report red when the stripe CLI isn't installed).
+    Opt-in — request the fixture in tests that exercise `po doctor` end-to-end.
+    """
+    monkeypatch.setattr(doctor_mod, "_iter_doctor_check_eps", lambda: [])
 
 
 @dataclass
@@ -365,17 +376,13 @@ def test_run_doctor_writes_nothing_to_disk(tmp_path, monkeypatch):
 # -- CLI integration ---------------------------------------------------
 
 
-def test_cli_doctor_runs_and_renders(monkeypatch):
+def test_cli_doctor_runs_and_renders(monkeypatch, hide_pack_doctor_checks):
     """`po doctor` prints the table and exits 0 when no FAILs."""
     monkeypatch.setattr(
         doctor_mod,
         "ALL_CHECKS",
         [lambda: _ok("a"), lambda: _warn("b")],
     )
-    # Suppress pack-contributed checks so the test isn't sensitive to which
-    # packs happen to be installed in the dev venv (e.g. po-stripe ships
-    # checks that fail on a system without the stripe CLI).
-    monkeypatch.setattr(doctor_mod, "_iter_doctor_check_eps", lambda: [])
     runner = CliRunner()
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
@@ -383,11 +390,10 @@ def test_cli_doctor_runs_and_renders(monkeypatch):
     assert "a" in result.stdout and "b" in result.stdout
 
 
-def test_cli_doctor_exits_one_on_failure(monkeypatch):
+def test_cli_doctor_exits_one_on_failure(monkeypatch, hide_pack_doctor_checks):
     monkeypatch.setattr(
         doctor_mod, "ALL_CHECKS", [lambda: _ok("a"), lambda: _fail("b")]
     )
-    monkeypatch.setattr(doctor_mod, "_iter_doctor_check_eps", lambda: [])
     runner = CliRunner()
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
