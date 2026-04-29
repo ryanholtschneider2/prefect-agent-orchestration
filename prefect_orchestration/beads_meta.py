@@ -433,9 +433,7 @@ def resolve_seed_bead(
             raise ValueError(f"parent-child cycle through {cur}->{nxt}")
         seen.add(nxt)
         cur = nxt
-    raise ValueError(
-        f"parent-child chain exceeds {max_hops} hops from {issue_id}"
-    )
+    raise ValueError(f"parent-child chain exceeds {max_hops} hops from {issue_id}")
 
 
 def list_subgraph(
