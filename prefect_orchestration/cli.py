@@ -38,6 +38,7 @@ from prefect_orchestration import scheduling as _scheduling
 from prefect_orchestration import scratch_loader as _scratch_loader
 from prefect_orchestration import serve as _serve
 from prefect_orchestration import sessions as _sessions
+from prefect_orchestration import spend as _spend
 from prefect_orchestration import status as _status
 from prefect_orchestration import watch as _watch
 
@@ -1447,7 +1448,9 @@ def watch(
 @app.command()
 def spend(
     issue_id: str | None = typer.Option(
-        None, "--issue-id", help="Limit to one issue's run_dir (resolved via bd metadata)."
+        None,
+        "--issue-id",
+        help="Limit to one issue's run_dir (resolved via bd metadata).",
     ),
     since: str | None = typer.Option(
         None,
@@ -1464,7 +1467,9 @@ def spend(
         "--rig-path",
         help="Root of the rig (contains .planning/). Defaults to cwd.",
     ),
-    output_json: bool = typer.Option(False, "--json", help="Output raw records as JSON array."),
+    output_json: bool = typer.Option(
+        False, "--json", help="Output raw records as JSON array."
+    ),
 ) -> None:
     """Estimate USD spend for PO runs by reading JSONL token traces.
 
