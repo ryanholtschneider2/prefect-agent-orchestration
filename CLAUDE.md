@@ -414,13 +414,15 @@ takes `issue_id` and writes a run_dir. Runs arbitrary Python in-process
 # 1. Ship a register() in your pack's po_formulas/deployments.py
 #    (declare the Prefect deployment Pythonically, no YAML)
 
-# 2. Apply to the Prefect server
-po deploy --apply
-
-# 3. Start a worker so scheduled runs execute
+# 2. Start a worker so scheduled runs execute
 prefect worker start --pool po        # create with --type process/k8s/docker
 
-# 4. Trigger manual runs with a delay (Prefect-native)
+# 3. Trigger a manual scheduled run (auto-applies the deployment if absent)
+po run <formula> --at 2h --issue-id <id> --rig <name> --rig-path <path>
+# or via po retry:
+po retry <issue-id> --at 2h
+
+# Low-level Prefect-native form (requires po deploy --apply first):
 prefect deployment run <flow>/<deployment-name> \
   --param issue_id=<id> --param rig=<rig> --param rig_path=<path> \
   --start-in 2h
