@@ -29,6 +29,12 @@ describe("getFlowOverview()", () => {
     );
   });
 
+  it("graph_run returns the fan-out blurb", () => {
+    expect(getFlowOverview("graph_run")).toBe(
+      "graph fan-out: parallel children dispatched as subflows",
+    );
+  });
+
   it("unknown flow returns null (component falls back to bare flow name)", () => {
     expect(getFlowOverview("not_a_real_flow")).toBeNull();
   });

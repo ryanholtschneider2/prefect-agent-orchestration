@@ -10,6 +10,7 @@ export const FLOW_OVERVIEWS: Record<string, string> = {
   software_dev_full:
     "triage → plan ⟲ → build → lint+test → regression → review ⟲ → deploy-smoke → verification ⟲ → ralph ⟲ → docs → learn",
   epic: "epic fan-out: DAG-ordered parallel children",
+  graph_run: "graph fan-out: parallel children dispatched as subflows",
 };
 
 /** Pure helper — testable without rendering. Returns null for unknown flows. */
