@@ -26,6 +26,7 @@ import typer
 
 from prefect_orchestration import artifacts as _artifacts
 from prefect_orchestration import attach as _attach
+from prefect_orchestration import trace as _trace
 from prefect_orchestration import commands as _commands
 from prefect_orchestration import deployments as _deployments
 from prefect_orchestration import doctor as _doctor
@@ -693,6 +694,116 @@ def artifacts(
 
     sections = _artifacts.collect_sections(loc.run_dir, verdicts_only=verdicts)
     typer.echo(_artifacts.render(sections))
+    typer.echo(f"\nfor full trace: po trace {issue_id}")
+
+
+@app.command()
+def trace(
+    issue_id: str = typer.Argument(..., help="Beads issue id"),
+    role: str | None = typer.Option(None, "--role", help="Full transcript for one role"),
+    tools: bool = typer.Option(False, "--tools", help="Chronological tool-call timeline"),
+    tokens: bool = typer.Option(False, "--tokens", help="Token + cache breakdown table"),
+    turn: int | None = typer.Option(None, "--turn", help="Show one specific turn (requires --role)"),
+    slow: float | None = typer.Option(None, "--slow", help="Show turns slower than N seconds"),
+    output_json: bool = typer.Option(False, "--json", help="Raw JSON output for piping"),
+) -> None:
+    """Inspect agent traces for an issue's PO run.
+
+    Default: per-role summary table (ROLE/MODEL/TURNS/TOOLS/IN_TOK/OUT_TOK/CACHE_R/THINK/WALL).
+    --role <r>: full per-turn transcript.
+    --tools: chronological tool-call timeline across all roles.
+    --tokens: token + cache breakdown table.
+    --turn N: single turn detail (requires --role).
+    --slow N: turns that took longer than N seconds.
+    --json: machine-readable JSON array.
+    """
+    try:
+        loc = _run_lookup.resolve_run_dir(issue_id)
+    except _run_lookup.RunDirNotFound as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+
+    from prefect_orchestration import beads_meta as _beads_meta
+
+    try:
+        seed_id = _beads_meta.resolve_seed_bead(issue_id, rig_path=loc.rig_path)
+    except ValueError:
+        seed_id = issue_id
+    seed_run_dir = loc.run_dir
+    if seed_id != issue_id:
+        formula_dir = loc.run_dir.parent
+        candidate = formula_dir / seed_id
+        if candidate.is_dir():
+            seed_run_dir = candidate
+
+    metadata = _sessions.load_role_sessions(
+        loc.run_dir,
+        seed_id=seed_id,
+        seed_run_dir=seed_run_dir,
+        rig_path=loc.rig_path,
+    )
+
+    if not metadata:
+        typer.echo(
+            f"no session metadata recorded for {issue_id}. "
+            "The flow may not have completed the session-stamping step yet.",
+            err=True,
+        )
+        raise typer.Exit(3)
+
+    traces: list[_trace.RoleTrace] = []
+    missing: list[str] = []
+    for key, uuid in sorted(metadata.items()):
+        if not key.startswith("session_"):
+            continue
+        role_name = key[len("session_"):]
+        jsonl_path = _trace.find_jsonl(uuid, loc.rig_path)
+        if jsonl_path is None:
+            missing.append(f"  {role_name}: JSONL not found (uuid={uuid})")
+            turns: list[_trace.TurnRecord] = []
+        else:
+            turns = _trace.parse_jsonl(jsonl_path)
+        traces.append(_trace.RoleTrace(role=role_name, uuid=uuid, turns=turns, jsonl_path=jsonl_path))
+
+    for warn_line in missing:
+        typer.echo(warn_line, err=True)
+
+    if not traces:
+        typer.echo("no roles found in session metadata.", err=True)
+        raise typer.Exit(4)
+
+    import json as _json
+
+    if output_json:
+        typer.echo(_json.dumps(_trace.to_json_list(traces), indent=2))
+        return
+
+    if turn is not None:
+        if role is None:
+            typer.echo("--turn requires --role", err=True)
+            raise typer.Exit(2)
+        typer.echo(_trace.format_turn_detail(traces, role, turn))
+        return
+
+    if slow is not None:
+        typer.echo(_trace.format_slow_turns(traces, slow))
+        return
+
+    if tools:
+        typer.echo(_trace.format_tools_timeline(traces))
+        return
+
+    if tokens:
+        summaries = _trace.summarize(traces)
+        typer.echo(_trace.format_tokens_table(summaries))
+        return
+
+    if role is not None:
+        typer.echo(_trace.format_transcript(traces, role))
+        return
+
+    summaries = _trace.summarize(traces)
+    typer.echo(_trace.format_summary_table(summaries))
 
 
 @app.command()
