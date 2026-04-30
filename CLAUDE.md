@@ -270,6 +270,33 @@ actor-critic loop would burn tokens, use `po run minimal-task` instead
 — `triage → plan → build → lint → close`, fails out with no ralph
 fallback when lint fails twice. See `engdocs/minimal-task.md`.
 
+For one-shot small features / focused fixes where the full critic +
+verifier + ralph + deploy-smoke loop is overkill, use **`software-dev-fast`**:
+
+```bash
+po run software-dev-fast \
+  --issue-id <issue-id> \
+  --rig <name> \
+  --rig-path <path>
+```
+
+Pipeline: `plan → build → lint → test-unit → docs → close`. Single
+iteration per role, no critics, no triage / baseline / regression /
+verify / ralph / deploy-smoke / demo-video. Linter and tester auto-fix
+during their work; closes the seed regardless of verdict (the agents
+already did their best). Wall: 4–15 min depending on scope vs 30–60+
+for full.
+
+**Per-role defaults** (overridable per `Controlling the agent` in README):
+- planner / builder: sonnet + medium effort (fast-flow stamps `PO_MODEL=sonnet` + `PO_EFFORT=medium` at flow entry)
+- linter / tester: sonnet + low effort (per-role config.toml in `agents/linter/` and `agents/tester/`)
+
+**Use full when:** multi-file architecture change, schema migration,
+public API change, anything where you'd want a critic to read the plan
+before code lands. **Use fast when:** static-text changes, registry
+entries, single-component features, doc-only changes, focused bug fixes.
+When in doubt, full.
+
 ### Running an epic (DAG fan-out)
 
 ```bash
@@ -512,6 +539,36 @@ aborts. `--verdicts` prints only JSON verdicts; `--open` launches `$EDITOR`
 `role | uuid | last-iter | last-updated` table. `--resume <role>` emits a
 ready-to-run `claude --print --resume <uuid> --fork-session` one-liner so
 you can pick up a role's session outside the flow.
+
+`po trace <issue-id>` parses the per-role JSONL transcripts at
+`~/.claude/projects/<slug>/<uuid>.jsonl` and prints a structured view
+of agent activity for that issue:
+
+```bash
+po trace <id>                 # default summary table per role
+po trace <id> --role builder  # full transcript for one role
+po trace <id> --tools         # chronological tool-call timeline
+po trace <id> --tokens        # token + cache breakdown
+po trace <id> --turn 12       # one specific turn (input + output + tools)
+po trace <id> --slow          # turns > N seconds (latency outliers)
+po trace <id> --json          # raw structured data for jq
+```
+
+The default summary shows `ROLE | MODEL | TURNS | TOOLS | IN_TOK | OUT_TOK | CACHE_R | THINK | WALL`
+which is the canonical first-pass tool for "why was this run slow / what
+was the agent doing." Works on in-flight runs too (JSONL is appended live).
+For self-improvement passes (e.g. tracking down redundant `cat` round-trips
+or wasted thinking budget), pipe `po trace <id> --json` to a Python script
+or another agent and have it propose optimizations.
+
+**Run-dir context bundle.** Every `_agent_step_task` call writes
+`<run_dir>/CONTEXT.md` before the agent starts. The bundle concatenates
+the issue's bd-show, the iter bead's task spec, plan.md, triage flags,
+the latest build diff, decision-log, and pack-side CLAUDE.md excerpts —
+all sectioned with `## <name>` headers. Every role's task.md tells the
+agent: *first action: cat CONTEXT.md, that's everything.* Saves 4-6
+round-trips per role vs the agent reading each artifact separately.
+Implementation in `prefect_orchestration/context_bundle.py`.
 
 `po watch <issue-id>` merges two live streams into one terminal: Prefect
 flow-run state transitions (polled via the client) and new/modified files

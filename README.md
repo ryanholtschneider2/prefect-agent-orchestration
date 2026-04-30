@@ -18,6 +18,9 @@ registers itself via entry points.
 | `parsing.read_verdict` | Reads `$RUN_DIR/verdicts/<name>.json` — the artifact convention for agent → orchestrator signals. |
 | `templates.render_template` | `{{var}}` substitution over a caller-supplied prompts directory. |
 | `cli.app` (`po`) | Discovers formulas via the `po.formulas` entry-point group; `po list` / `po show <name>` / `po run <name> --args`. |
+| `context_bundle.build_context_md` | Per-role-step writes a single `<run_dir>/CONTEXT.md` concatenating bd-show + plan + triage + latest build diff + decision-log + pack CLAUDE.md excerpts. Role task.md tells the agent: *first action — `cat CONTEXT.md`, that's everything.* Saves 4–6 tool round-trips per role. |
+| `trace.parse_jsonl` + `cli` `po trace <id>` | Structured view of agent activity: per-role token/turn/wall summary, tool-call timeline, transcript navigator, slow-turn finder, JSON output for piping. Reads `~/.claude/projects/<slug>/<uuid>.jsonl`. Works on in-flight runs. |
+| `role_config.RoleRuntime` | Per-role `agents/<role>/config.toml` knobs: `model`, `effort`, `start_command`. Resolution: per-role config > CLI flag (`--model`/`--effort`/`--start-command`) > env (`PO_MODEL`/`PO_EFFORT`/`PO_START_COMMAND`) > AgentSession default. |
 
 ## Writing a pack
 
@@ -153,6 +156,23 @@ Worktree-per-run isolation is a separate concern (deferred).
 [`../software-dev/po-formulas/`](../software-dev/po-formulas/) — actor-critic
 software-dev pipeline (16 steps, 5 loops) + `epic` fan-out. Read that
 if you want a concrete template to copy.
+
+The pack ships **two software-dev flows** at different rigor levels:
+
+- **`software-dev-full`** — full actor-critic pipeline. Triage → plan ⟲
+  → build → lint+test → regression → review ⟲ → deploy-smoke →
+  verification ⟲ → ralph ⟲ → docs → learn. 30–60+ min wall. Use for
+  multi-file architecture changes, schema migrations, public API
+  changes — anywhere a critic should read the plan before code lands.
+- **`software-dev-fast`** — linear, no critics, no iters. Plan → build
+  → lint → test-unit → docs → close. 4–15 min wall. Use for static-text
+  changes, registry entries, single-component features, focused bug
+  fixes. Per-role defaults: planner/builder on sonnet+medium; linter/tester
+  on sonnet+low (overridable per `Controlling the agent` below).
+  Linter/tester auto-fix during their work; the seed closes regardless
+  of verdict.
+
+When in doubt, full.
 
 The `epic` formula's child discovery is controlled by two flags
 (prefect-orchestration-h5s):
