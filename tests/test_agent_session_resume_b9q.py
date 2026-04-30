@@ -286,7 +286,7 @@ def test_agent_session_persists_new_sid_after_resume(tmp_path):
         def __init__(self):
             self._counter = 0
 
-        def run(self, prompt, *, session_id, cwd, fork=False, model="opus", extra_env=None):
+        def run(self, prompt, *, session_id, cwd, fork=False, model="opus", effort=None, extra_env=None):
             seen_session_ids.append(session_id)
             self._counter += 1
             return f"turn-{self._counter}-result", f"new-sid-{self._counter}"

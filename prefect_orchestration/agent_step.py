@@ -102,6 +102,7 @@ from prefect_orchestration.beads_meta import (
     close_issue,
     create_child_bead,
 )
+from prefect_orchestration.role_config import resolve_role_runtime
 from prefect_orchestration.role_sessions import RoleSessionStore
 from prefect_orchestration.templates import render_template
 
@@ -454,22 +455,40 @@ def _build_session(
     sessions = RoleSessionStore(seed_id=seed_id, seed_run_dir=run_dir, rig_path=rig_path_p)
     prior_uuid = sessions.get(role)
 
+    # Resolve the per-role runtime knobs: per-role config.toml > CLI flag
+    # (PO_*_CLI env) > shell env (PO_*) > None. Backends fall back to their
+    # hardcoded defaults when a knob is None.
+    runtime = resolve_role_runtime(agent_dir)
+    backend_kwargs: dict[str, Any] = {}
+    if runtime.start_command is not None:
+        backend_kwargs["start_command"] = runtime.start_command
+
     # Different backends have different __init__ shapes:
     #   * ClaudeCliBackend / StubBackend → no required args
     #   * TmuxClaudeBackend → requires issue + role
     # Try the issue+role shape first (works for tmux); fall through to
     # zero-arg construction (works for cli / stub).
     try:
-        backend_inst = backend_factory(issue=seed_id, role=role)
+        backend_inst = backend_factory(issue=seed_id, role=role, **backend_kwargs)
     except TypeError:
-        backend_inst = backend_factory()
-    sess = AgentSession(
-        backend=backend_inst,
-        repo_path=rig_path_p,
-        session_id=prior_uuid,
-        role=role,
-        issue_id=seed_id,
-    )
+        try:
+            backend_inst = backend_factory(**backend_kwargs)
+        except TypeError:
+            # Backend doesn't accept start_command (e.g. some stubs); ignore the
+            # override rather than crashing the whole step.
+            backend_inst = backend_factory()
+    session_kwargs: dict[str, Any] = {
+        "backend": backend_inst,
+        "repo_path": rig_path_p,
+        "session_id": prior_uuid,
+        "role": role,
+        "issue_id": seed_id,
+    }
+    if runtime.model is not None:
+        session_kwargs["model"] = runtime.model
+    if runtime.effort is not None:
+        session_kwargs["effort"] = runtime.effort
+    sess = AgentSession(**session_kwargs)
     # Stash the session store + run_dir on the session for any callers
     # that want to persist the post-turn UUID externally. AgentSession
     # itself doesn't manage persistence — that's the caller's job.

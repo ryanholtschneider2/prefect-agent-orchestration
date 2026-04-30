@@ -33,6 +33,7 @@ class _OmitThenWriteBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         self.calls.append(

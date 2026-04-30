@@ -403,6 +403,41 @@ Conventions:
 - Escalation: if you need threads, read receipts, or file reservations,
   switch to `mcp-agent-mail`.
 
+## Controlling the agent (model · effort · start command)
+
+Three knobs control the underlying `claude` invocation, each with three
+override layers. Most-specific wins:
+
+```
+per-role config.toml  >  CLI flag  >  env var  >  hardcoded default
+```
+
+| Knob | Per-role file | CLI flag | Env var | Default |
+|---|---|---|---|---|
+| model | `agents/<role>/config.toml: model = "..."` | `--model sonnet` | `PO_MODEL=sonnet` | `opus` |
+| effort | `agents/<role>/config.toml: effort = "..."` | `--effort low` | `PO_EFFORT=low` | unset (claude picks) |
+| start_command | `agents/<role>/config.toml: start_command = "..."` | `--start-command "claude --foo"` | `PO_START_COMMAND="claude --foo"` | `claude --dangerously-skip-permissions` |
+
+```bash
+# One-off run with a cheaper model:
+po run software-dev-full --issue-id <id> --rig <r> --rig-path <p> --model sonnet
+
+# Pin shell-wide:
+PO_MODEL=sonnet PO_EFFORT=low po run software-dev-full ...
+
+# Per-role override (pack-author): linter on haiku, builder on opus.
+# po_formulas/agents/linter/config.toml:
+#   model = "haiku"
+# po_formulas/agents/builder/config.toml:
+#   model = "opus"
+#   effort = "high"
+```
+
+`identity.toml` (persona name/email/slack/model-as-prompt-var) is
+disjoint from `config.toml` (runtime knobs). Setting
+`identity.toml: model = "..."` only affects the rendered prompt's
+`<self>` block; use `config.toml` for runtime control.
+
 ## Telemetry / Observability
 
 `AgentSession.prompt()` can emit one OpenTelemetry span per Claude

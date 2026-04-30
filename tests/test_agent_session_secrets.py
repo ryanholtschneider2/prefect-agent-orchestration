@@ -28,6 +28,7 @@ class _CapturingBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         self.captured.append(dict(extra_env) if extra_env is not None else None)

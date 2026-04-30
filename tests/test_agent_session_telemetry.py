@@ -45,6 +45,7 @@ class _OkBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         return "ok", "sid-after"
@@ -59,6 +60,7 @@ class _BoomBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         raise RuntimeError("claude CLI exited 1")

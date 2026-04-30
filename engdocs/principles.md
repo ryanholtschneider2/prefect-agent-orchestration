@@ -337,8 +337,11 @@ predictable. Agents (roles) live as folders:
   ...
 ```
 
-Optional future: `agents/<role>/config.toml` for model choice /
-option defaults, when that need appears. Keep the default simple
-until it doesn't work.
+Optional sibling: `agents/<role>/config.toml` for runtime knobs
+(`model`, `effort`, `start_command`). Resolved by
+`prefect_orchestration.role_config.resolve_role_runtime` with
+precedence per-role-config > `PO_*_CLI` (CLI flag) > `PO_*` (shell
+env) > None. Disjoint from `identity.toml`, which carries the
+persona shown in the `<self>` block.
 
 ---

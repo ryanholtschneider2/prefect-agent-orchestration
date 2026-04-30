@@ -132,6 +132,7 @@ before declaring a release ready: `uv run python -m pytest tests/e2e/`.
 | `beads_meta.py` | `MetadataStore` Protocol; `BeadsStore` (shells `bd`) + `FileStore` (JSON fallback); `claim_issue`/`close_issue`/`list_epic_children`. |
 | `parsing.py` | `read_verdict()` — reads `$RUN_DIR/verdicts/<step>.json`. |
 | `templates.py` | `{{var}}` substitution over a caller-supplied agents dir (`<dir>/<role>/prompt.md`). |
+| `role_config.py` | Per-role runtime config (`agents/<role>/config.toml`): `model` / `effort` / `start_command`. `resolve_role_runtime` precedence: per-role config > CLI flag (`PO_*_CLI` env stamped by `po run`) > shell env (`PO_*`) > None. Disjoint from `identity.toml` (persona). |
 | `artifacts.py`, `sessions.py`, `watch.py`, `retry.py`, `status.py`, `run_lookup.py`, `doctor.py`, `deployments.py` | Back the matching `po` subcommand. |
 
 ## What PO is

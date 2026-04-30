@@ -246,6 +246,24 @@ def run(
         "`po deploy --apply` for <formula>-manual first; CLI prints a "
         "worker-startup reminder.",
     ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="Claude model alias or full id (sonnet|opus|haiku|<full id>). "
+        "Stamps PO_MODEL_CLI; per-role agents/<role>/config.toml beats this.",
+    ),
+    effort: str | None = typer.Option(
+        None,
+        "--effort",
+        help="Claude effort level (low|medium|high|xhigh|max). "
+        "Stamps PO_EFFORT_CLI; per-role config.toml beats this.",
+    ),
+    start_command: str | None = typer.Option(
+        None,
+        "--start-command",
+        help="Override the claude CLI invocation prefix (default: "
+        "'claude --dangerously-skip-permissions'). Stamps PO_START_COMMAND_CLI.",
+    ),
 ) -> None:
     """Run a registered formula or an ad-hoc scratch flow.
 
@@ -269,7 +287,10 @@ def run(
         raise typer.Exit(2)
 
     if when is not None:
-        _run_scheduled(name=name, from_file=from_file, when=when, extras=extras)
+        _run_scheduled(
+            name=name, from_file=from_file, when=when, extras=extras,
+            model=model, effort=effort, start_command=start_command,
+        )
         return
 
     if from_file is not None:
@@ -294,6 +315,10 @@ def run(
         label = name
 
     kwargs = _parse_kwargs(extras)
+    _apply_runtime_overrides(
+        flow_obj, kwargs,
+        model=model, effort=effort, start_command=start_command,
+    )
 
     # SIGINT / SIGTERM cleanup: when the user Ctrl-Cs `po run` (or the
     # process is killed), the spawned tmux sessions are detached so they
@@ -329,12 +354,53 @@ def run(
     typer.echo(result)
 
 
+_RUNTIME_KNOBS: tuple[tuple[str, str], ...] = (
+    ("model", "PO_MODEL_CLI"),
+    ("effort", "PO_EFFORT_CLI"),
+    ("start_command", "PO_START_COMMAND_CLI"),
+)
+
+
+def _apply_runtime_overrides(
+    flow_obj: Any,
+    kwargs: dict[str, Any],
+    *,
+    model: str | None,
+    effort: str | None,
+    start_command: str | None,
+) -> None:
+    """Stamp `PO_*_CLI` env vars and pass through to flow kwargs when accepted.
+
+    Per-role config.toml > CLI flag (this layer) > shell env > default.
+    Distinct env-var name (`PO_MODEL_CLI` vs `PO_MODEL`) preserves the
+    flag-vs-shell precedence in `role_config.resolve_role_runtime`.
+    """
+    values = {"model": model, "effort": effort, "start_command": start_command}
+    flow_params: set[str] = set()
+    if flow_obj is not None:
+        flow_fn = getattr(flow_obj, "fn", flow_obj)
+        try:
+            flow_params = set(inspect.signature(flow_fn).parameters.keys())
+        except (TypeError, ValueError):
+            flow_params = set()
+    for arg_name, env_name in _RUNTIME_KNOBS:
+        val = values[arg_name]
+        if val is None:
+            continue
+        os.environ[env_name] = val
+        if arg_name in flow_params:
+            kwargs.setdefault(arg_name, val)
+
+
 def _run_scheduled(
     *,
     name: str | None,
     from_file: Path | None,
     when: str,
     extras: list[str],
+    model: str | None = None,
+    effort: str | None = None,
+    start_command: str | None = None,
 ) -> None:
     """Implementation of `po run <formula> --time <when>`.
 
@@ -370,6 +436,10 @@ def _run_scheduled(
         raise typer.Exit(2) from exc
 
     kwargs = _parse_kwargs(extras)
+    _apply_runtime_overrides(
+        formulas[name], kwargs,
+        model=model, effort=effort, start_command=start_command,
+    )
     issue_id = kwargs.get("issue_id")
 
     import asyncio
@@ -647,6 +717,12 @@ def status(
     limit: int = typer.Option(
         200, "--limit", help="Max flow runs to fetch from server."
     ),
+    include_zombies: bool = typer.Option(
+        False, "--include-zombies",
+        help="Show 'Running' flows whose rig_path no longer exists on disk "
+        "(usually pytest fixtures whose process died before reaching a "
+        "terminal state). Hidden by default.",
+    ),
 ) -> None:
     """List active / recent flow runs grouped by beads `issue_id` tag.
 
@@ -654,6 +730,14 @@ def status(
     from the Prefect server, groups by the `issue_id:<id>` tag PO stamps
     onto each run, and prints one row per issue. Always exits 0 — an
     observation command, not a check.
+
+    Zombie filter: a flow whose state is `Running` but whose `rig_path`
+    parameter points at a directory that no longer exists is presumed
+    dead (the parent process — usually pytest — exited without
+    transitioning the flow to a terminal state). These are hidden by
+    default to avoid drowning real runs; pass `--include-zombies` to
+    show them. Cancelled / Completed / Failed runs are always shown
+    regardless of rig_path existence.
     """
     import anyio
 
@@ -690,7 +774,16 @@ def status(
                 err=True,
             )
             return
-        typer.echo(_status.render_table(groups))
+        if not include_zombies:
+            groups, hidden = _status.partition_zombies(groups)
+            typer.echo(_status.render_table(groups))
+            if hidden:
+                typer.echo(
+                    f"\n  ({hidden} zombie row(s) hidden — "
+                    f"`po status --include-zombies` to show)"
+                )
+        else:
+            typer.echo(_status.render_table(groups))
 
     anyio.run(_main)
 

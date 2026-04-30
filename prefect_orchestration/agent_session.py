@@ -166,6 +166,7 @@ class SessionBackend(Protocol):
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]: ...
 
@@ -175,6 +176,7 @@ def _build_claude_argv(
     session_id: str | None,
     fork: bool,
     model: str,
+    effort: str | None = None,
 ) -> list[str]:
     """Construct the `claude --print ...` argv shared by all backends.
 
@@ -201,6 +203,8 @@ def _build_claude_argv(
         "--setting-sources",
         "project,local",
     ]
+    if effort:
+        argv += ["--effort", effort]
     if session_id and _UUID_RE.match(session_id):
         argv += ["--resume", session_id]
         if fork:
@@ -266,9 +270,10 @@ class ClaudeCliBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
-        cmd = _build_claude_argv(self.start_command, session_id, fork, model)
+        cmd = _build_claude_argv(self.start_command, session_id, fork, model, effort)
 
         proc = subprocess.run(
             cmd,
@@ -339,6 +344,7 @@ class StubBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         import re as _re
@@ -625,6 +631,7 @@ class TmuxClaudeBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         if shutil.which("tmux") is None:
@@ -653,7 +660,7 @@ class TmuxClaudeBackend:
             p.unlink(missing_ok=True)
         prompt_path.write_text(prompt)
 
-        argv = _build_claude_argv(self.start_command, session_id, fork, model)
+        argv = _build_claude_argv(self.start_command, session_id, fork, model, effort)
         # Pipeline: claude → tee (raw JSON to .out for the parser) →
         # stream_format (pretty terminal view in the tmux pane). The
         # `.out` file stays parseable; the human attaching to the pane
@@ -1212,6 +1219,7 @@ class TmuxInteractiveClaudeBackend:
         cwd: Path,
         fork: bool = False,
         model: str = "opus",
+        effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         if shutil.which("tmux") is None:
@@ -1284,6 +1292,8 @@ class TmuxInteractiveClaudeBackend:
             + session_args
             + ["--model", model, "--setting-sources", "project,local"]
         )
+        if effort:
+            argv += ["--effort", effort]
 
         # Keep the tmux pane alive only when claude exits *abnormally*
         # (rate limit, bad arg, missing UUID, etc.) so an operator can
@@ -1591,6 +1601,7 @@ class AgentSession:
     backend: SessionBackend = field(default_factory=ClaudeCliBackend)
     session_id: str | None = None
     model: str = "opus"
+    effort: str | None = None
     # Optional pack-supplied hooks for auto-injecting unread mail.
     # `mail_fetcher(role) -> list[Mail-like]`; objects need .id/.subject/.body
     # and may have .from_agent and .created_at. `mail_marker(mail_id)` closes.
@@ -1681,6 +1692,7 @@ class AgentSession:
             "turn_index": self._turn_index,
             "fork_session": fork,
             "model": self.model,
+            "effort": self.effort,
         }
         tmux_name = self._tmux_session_name(fork=fork)
         if tmux_name:
@@ -1694,6 +1706,7 @@ class AgentSession:
                     cwd=self.repo_path,
                     fork=fork,
                     model=self.model,
+                    effort=self.effort,
                     extra_env=extra_env,
                 )
             except BaseException as e:
@@ -1738,6 +1751,7 @@ class AgentSession:
             "turn_index": self._turn_index,
             "fork_session": False,
             "model": self.model,
+            "effort": self.effort,
             "nudge": True,
             "verdict_path": str(verdict_path),
         }
@@ -1749,6 +1763,7 @@ class AgentSession:
                     cwd=self.repo_path,
                     fork=False,
                     model=self.model,
+                    effort=self.effort,
                     extra_env=extra_env,
                 )
             except BaseException as e:
@@ -1820,6 +1835,7 @@ class AgentSession:
             backend=self.backend,
             session_id=self.session_id,
             model=self.model,
+            effort=self.effort,
             secret_provider=self.secret_provider,
             issue_id=self.issue_id,
         )
