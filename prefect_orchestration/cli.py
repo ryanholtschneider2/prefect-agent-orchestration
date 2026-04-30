@@ -288,8 +288,13 @@ def run(
 
     if when is not None:
         _run_scheduled(
-            name=name, from_file=from_file, when=when, extras=extras,
-            model=model, effort=effort, start_command=start_command,
+            name=name,
+            from_file=from_file,
+            when=when,
+            extras=extras,
+            model=model,
+            effort=effort,
+            start_command=start_command,
         )
         return
 
@@ -316,8 +321,11 @@ def run(
 
     kwargs = _parse_kwargs(extras)
     _apply_runtime_overrides(
-        flow_obj, kwargs,
-        model=model, effort=effort, start_command=start_command,
+        flow_obj,
+        kwargs,
+        model=model,
+        effort=effort,
+        start_command=start_command,
     )
 
     # SIGINT / SIGTERM cleanup: when the user Ctrl-Cs `po run` (or the
@@ -437,8 +445,11 @@ def _run_scheduled(
 
     kwargs = _parse_kwargs(extras)
     _apply_runtime_overrides(
-        formulas[name], kwargs,
-        model=model, effort=effort, start_command=start_command,
+        formulas[name],
+        kwargs,
+        model=model,
+        effort=effort,
+        start_command=start_command,
     )
     issue_id = kwargs.get("issue_id")
 
@@ -718,7 +729,8 @@ def status(
         200, "--limit", help="Max flow runs to fetch from server."
     ),
     include_zombies: bool = typer.Option(
-        False, "--include-zombies",
+        False,
+        "--include-zombies",
         help="Show 'Running' flows whose rig_path no longer exists on disk "
         "(usually pytest fixtures whose process died before reaching a "
         "terminal state). Hidden by default.",
@@ -794,19 +806,26 @@ def wait(
         ..., help="One or more beads issue ids to wait for."
     ),
     any_: bool = typer.Option(
-        False, "--any",
+        False,
+        "--any",
         help="Exit when ANY of the given issues closes (default: wait for ALL).",
     ),
     timeout: int = typer.Option(
-        3600, "--timeout", "-t",
+        3600,
+        "--timeout",
+        "-t",
         help="Maximum seconds to wait before giving up (default: 3600 = 1h).",
     ),
     poll: int = typer.Option(
-        30, "--poll", "-p",
+        30,
+        "--poll",
+        "-p",
         help="Seconds between bd-show polls (default: 30).",
     ),
     quiet: bool = typer.Option(
-        False, "--quiet", "-q",
+        False,
+        "--quiet",
+        "-q",
         help="Suppress per-poll status lines; only print the final summary.",
     ),
 ) -> None:
@@ -872,8 +891,12 @@ def wait(
     # `failed: …`, `regression: …` for failure). Match on prefix to
     # avoid false-positives like "no regression:" containing "regression:".
     failure_prefixes = (
-        "failed:", "cap-exhausted", "nudge failed", "force-closed",
-        "regression:", "rejected:",
+        "failed:",
+        "cap-exhausted",
+        "nudge failed",
+        "force-closed",
+        "regression:",
+        "rejected:",
     )
 
     def _looks_failed(reason: str) -> bool:
@@ -914,13 +937,16 @@ def wait(
         if _time.monotonic() >= deadline:
             still_open = [i for i in issue_ids if i not in seen_closed]
             typer.echo(
-                f"timeout after {timeout}s; still open: {still_open}", err=True,
+                f"timeout after {timeout}s; still open: {still_open}",
+                err=True,
             )
             raise typer.Exit(2)
 
         if not quiet:
             still_open = [i for i in issue_ids if i not in seen_closed]
-            typer.echo(f"  waiting on {len(still_open)} of {len(issue_ids)}: {still_open}")
+            typer.echo(
+                f"  waiting on {len(still_open)} of {len(issue_ids)}: {still_open}"
+            )
         _time.sleep(max(poll, 1))
 
     # Summarise + decide exit code.
@@ -1331,7 +1357,7 @@ def _tui_default(ctx: typer.Context) -> None:
     if binary is None:
         typer.echo("po-tui binary not found.\n", err=True)
         typer.echo("Build it first:", err=True)
-        typer.echo(f"  po tui update    # or:", err=True)
+        typer.echo("  po tui update    # or:", err=True)
         typer.echo(f"  cd {here / 'tui'} && bun install && bun run build", err=True)
         typer.echo(
             f"  mkdir -p {here / 'bin'} && cp dist/po-tui {here / 'bin' / 'po-tui'}",
@@ -1345,10 +1371,14 @@ def _tui_default(ctx: typer.Context) -> None:
 @tui_app.command("update")
 def _tui_update(
     skip_install: bool = typer.Option(
-        False, "--skip-install", help="Skip `bun install` (faster on no-dep-change rebuilds)."
+        False,
+        "--skip-install",
+        help="Skip `bun install` (faster on no-dep-change rebuilds).",
     ),
     no_copy: bool = typer.Option(
-        False, "--no-copy", help="Skip the `cp dist/po-tui bin/po-tui` step.",
+        False,
+        "--no-copy",
+        help="Skip the `cp dist/po-tui bin/po-tui` step.",
     ),
 ) -> None:
     """Rebuild the TUI binary from `tui/` source (`bun install` + `bun build`).

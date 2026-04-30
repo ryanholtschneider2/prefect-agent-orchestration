@@ -90,11 +90,11 @@ from __future__ import annotations
 
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from prefect_orchestration.agent_session import AgentSession, ClaudeCliBackend, StubBackend
+from prefect_orchestration.agent_session import AgentSession, StubBackend
 from prefect_orchestration.backend_select import select_default_backend
 from prefect_orchestration.beads_meta import (
     _bd_available,
@@ -231,7 +231,10 @@ def agent_step(
     closed_state = _read_bead_status(target_bead, rig_path)
     if closed_state and closed_state["status"] == "closed":
         return _result_from_closed_bead(
-            target_bead, closed_state, verdict_keywords, closed_by="cache",
+            target_bead,
+            closed_state,
+            verdict_keywords,
+            closed_by="cache",
             from_cache=True,
         )
 
@@ -256,7 +259,8 @@ def agent_step(
     # re-opens the bead.
     if iter_n is not None and closed_state is None and _bd_available():
         create_child_bead(
-            seed_id, target_bead,
+            seed_id,
+            target_bead,
             title=f"{step} iter {iter_n} for {seed_id}",
             description=f"Auto-created by agent_step ({role}, iter {iter_n}).",
             rig_path=rig_path,
@@ -278,9 +282,13 @@ def agent_step(
 
     # Resolve session and run the agent's turn.
     sess = _build_session(
-        seed_id=seed_id, role=role, rig_path=rig_path,
-        agent_dir=agent_dir, run_dir=run_dir_p,
-        backend=backend, dry_run=dry_run,
+        seed_id=seed_id,
+        role=role,
+        rig_path=rig_path,
+        agent_dir=agent_dir,
+        run_dir=run_dir_p,
+        backend=backend,
+        dry_run=dry_run,
     )
     # Token-efficient resumed-session prompt: when there's a prior
     # session uuid (--resume), the agent already has the identity
@@ -311,8 +319,11 @@ def agent_step(
     state = _read_bead_status(target_bead, rig_path)
     if state and state["status"] == "closed":
         return _result_from_closed_bead(
-            target_bead, state, verdict_keywords,
-            closed_by="agent", reply=reply,
+            target_bead,
+            state,
+            verdict_keywords,
+            closed_by="agent",
+            reply=reply,
         )
 
     # Nudge: ONE more turn via the same --resume session.
@@ -328,8 +339,11 @@ def agent_step(
     state = _read_bead_status(target_bead, rig_path)
     if state and state["status"] == "closed":
         return _result_from_closed_bead(
-            target_bead, state, verdict_keywords,
-            closed_by="nudge", reply=reply,
+            target_bead,
+            state,
+            verdict_keywords,
+            closed_by="nudge",
+            reply=reply,
         )
 
     # Defensive force-close so the caller's loop converges.
@@ -375,7 +389,7 @@ def _result_from_closed_bead(
     """Parse a closed bead's close-reason into a structured verdict."""
     reason = state["closure_reason"]
     notes = state["notes"]
-    summary = (notes.strip() or reason.strip())
+    summary = notes.strip() or reason.strip()
     first_line = next((ln for ln in summary.splitlines() if ln.strip()), summary)
     verdict = ""
     if verdict_keywords:
@@ -414,7 +428,10 @@ def _stamp_description(bead_id: str, description: str, rig_path: str) -> None:
         return
     subprocess.run(
         ["bd", "update", bead_id, "--description", description],
-        check=False, capture_output=True, text=True, cwd=str(rig_path),
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(rig_path),
     )
 
 
@@ -432,13 +449,22 @@ def _stamp_run_dir_meta(seed_id: str, rig_path: Path, run_dir: Path) -> None:
     for key, val in (("po.run_dir", str(run_dir)), ("po.rig_path", str(rig_path))):
         subprocess.run(
             ["bd", "update", seed_id, "--set-metadata", f"{key}={val}"],
-            check=False, capture_output=True, text=True, cwd=str(rig_path),
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(rig_path),
         )
 
 
 def _build_session(
-    *, seed_id: str, role: str, rig_path: str,
-    agent_dir: Path, run_dir: Path, backend: Any, dry_run: bool,
+    *,
+    seed_id: str,
+    role: str,
+    rig_path: str,
+    agent_dir: Path,
+    run_dir: Path,
+    backend: Any,
+    dry_run: bool,
 ) -> AgentSession:
     """Build an `AgentSession` with `--resume <uuid>` from RoleSessionStore.
 
@@ -452,7 +478,9 @@ def _build_session(
         backend_factory = StubBackend if dry_run else select_default_backend()
 
     rig_path_p = Path(rig_path).expanduser().resolve()
-    sessions = RoleSessionStore(seed_id=seed_id, seed_run_dir=run_dir, rig_path=rig_path_p)
+    sessions = RoleSessionStore(
+        seed_id=seed_id, seed_run_dir=run_dir, rig_path=rig_path_p
+    )
     prior_uuid = sessions.get(role)
 
     # Resolve the per-role runtime knobs: per-role config.toml > CLI flag
@@ -547,9 +575,9 @@ def _default_close_block(ctx: dict[str, Any]) -> str:
         "\n\n# REQUIRED FINAL STEP — close your bead\n\n"
         f"Your turn is NOT complete until you close `{bead}`. "
         "Last action of the turn:\n\n"
-        f"```bash\nbd close {bead} --reason \"<keyword>: <one-line summary>\"\n```\n\n"
+        f'```bash\nbd close {bead} --reason "<keyword>: <one-line summary>"\n```\n\n'
         "**Stuck or need a human decision?** Don't leave the bead open silently — "
-        f"flag it: `bd human {bead} --question=\"<one-line question>\"`. "
+        f'flag it: `bd human {bead} --question="<one-line question>"`. '
         "The orchestrator routes the question to the user and the loop continues. "
         "Leaving the bead open without closing OR flagging means the dispatcher "
         "will nudge you with a follow-up turn, then force-close defensively if "
@@ -557,24 +585,20 @@ def _default_close_block(ctx: dict[str, Any]) -> str:
     )
 
 
-def _build_nudge_prompt(
-    bead_id: str, verdict_keywords: tuple[str, ...]
-) -> str:
+def _build_nudge_prompt(bead_id: str, verdict_keywords: tuple[str, ...]) -> str:
     """One-shot nudge: prompt the agent to close, escalate, or finish + close."""
     keyword_hint = ""
     if verdict_keywords:
         kws = " | ".join(verdict_keywords)
-        keyword_hint = (
-            f"\n\nUse one of these keywords in the close reason: `{kws}`."
-        )
+        keyword_hint = f"\n\nUse one of these keywords in the close reason: `{kws}`."
     return (
         f"Your bead `{bead_id}` is still OPEN — the dispatcher is waiting on it.\n\n"
         "Pick EXACTLY one of these next actions and execute it now:\n\n"
         "1. **Done already?** If your work is complete and you just forgot to "
-        f"close, run:\n   `bd close {bead_id} --reason \"<keyword>: <one-line>\"`"
+        f'close, run:\n   `bd close {bead_id} --reason "<keyword>: <one-line>"`'
         f"{keyword_hint}\n\n"
         "2. **Stuck / need a human decision?** Run:\n   "
-        f"`bd human {bead_id} --question=\"<one-line question for the user>\"`\n   "
+        f'`bd human {bead_id} --question="<one-line question for the user>"`\n   '
         "The orchestrator will leave the bead open and route the question to the user.\n\n"
         "3. **Still working?** Finish the remaining work, then close the bead "
         "with the same `bd close ...` shape as (1).\n\n"

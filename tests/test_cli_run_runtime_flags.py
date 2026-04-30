@@ -14,9 +14,12 @@ from prefect_orchestration.cli import app
 @pytest.fixture(autouse=True)
 def _scrub_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for var in (
-        "PO_MODEL", "PO_MODEL_CLI",
-        "PO_EFFORT", "PO_EFFORT_CLI",
-        "PO_START_COMMAND", "PO_START_COMMAND_CLI",
+        "PO_MODEL",
+        "PO_MODEL_CLI",
+        "PO_EFFORT",
+        "PO_EFFORT_CLI",
+        "PO_START_COMMAND",
+        "PO_START_COMMAND_CLI",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -31,8 +34,12 @@ def _patch_flow(
         captured["env_at_run"] = {
             k: os.environ.get(k)
             for k in (
-                "PO_MODEL_CLI", "PO_EFFORT_CLI", "PO_START_COMMAND_CLI",
-                "PO_MODEL", "PO_EFFORT", "PO_START_COMMAND",
+                "PO_MODEL_CLI",
+                "PO_EFFORT_CLI",
+                "PO_START_COMMAND_CLI",
+                "PO_MODEL",
+                "PO_EFFORT",
+                "PO_START_COMMAND",
             )
         }
         return fn(**kwargs)
@@ -80,9 +87,7 @@ def test_start_command_flag_stamps_po_start_command_cli(
 
     captured = _patch_flow(monkeypatch, _flow)
     runner = CliRunner()
-    result = runner.invoke(
-        app, ["run", "my-flow", "--start-command", "claude --foo"]
-    )
+    result = runner.invoke(app, ["run", "my-flow", "--start-command", "claude --foo"])
     assert result.exit_code == 0, result.output
     assert captured["env_at_run"]["PO_START_COMMAND_CLI"] == "claude --foo"
 
@@ -96,10 +101,14 @@ def test_all_three_together(monkeypatch: pytest.MonkeyPatch) -> None:
     result = runner.invoke(
         app,
         [
-            "run", "my-flow",
-            "--model", "haiku",
-            "--effort", "max",
-            "--start-command", "claude --foo",
+            "run",
+            "my-flow",
+            "--model",
+            "haiku",
+            "--effort",
+            "max",
+            "--start-command",
+            "claude --foo",
         ],
     )
     assert result.exit_code == 0, result.output

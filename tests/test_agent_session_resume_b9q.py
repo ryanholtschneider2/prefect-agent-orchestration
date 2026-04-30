@@ -85,9 +85,7 @@ def test_discover_resumed_sentinel_finds_new_sid_not_prior(tmp_path, monkeypatch
         "UNIQUE-MARKER-FOR-THIS-SPAWN-XYZ\n"
     )
 
-    transcript = (
-        tmp_path / ".claude" / "projects" / "rig-slug" / f"{NEW}.jsonl"
-    )
+    transcript = tmp_path / ".claude" / "projects" / "rig-slug" / f"{NEW}.jsonl"
     _write_transcript(transcript, PROMPT)
     _write_sentinel(stop_dir, sid=NEW, cwd=cwd, transcript=transcript)
 
@@ -150,9 +148,7 @@ def test_discover_resumed_sentinel_ignores_pre_spawn_sentinels(tmp_path, monkeyp
 
     transcript = tmp_path / "old.jsonl"
     _write_transcript(transcript, PROMPT)
-    sentinel = _write_sentinel(
-        stop_dir, sid=OLD_SID, cwd=cwd, transcript=transcript
-    )
+    sentinel = _write_sentinel(stop_dir, sid=OLD_SID, cwd=cwd, transcript=transcript)
     # Backdate the sentinel.
     old_ts = time.time() - 3600
     import os
@@ -190,9 +186,7 @@ def test_discover_resumed_sentinel_disambiguates_by_prompt(tmp_path, monkeypatch
     _write_transcript(their_transcript, THEIR_PROMPT)
 
     _write_sentinel(stop_dir, sid=OUR_SID, cwd=cwd, transcript=our_transcript)
-    _write_sentinel(
-        stop_dir, sid=THEIR_SID, cwd=cwd, transcript=their_transcript
-    )
+    _write_sentinel(stop_dir, sid=THEIR_SID, cwd=cwd, transcript=their_transcript)
 
     sid, found = _discover_resumed_sentinel(
         stop_dir,
@@ -216,7 +210,9 @@ def test_discover_resumed_sentinel_raises_when_tmux_dies(tmp_path, monkeypatch):
         stderr = b"can't find session"
 
     monkeypatch.setattr(
-        agsess.subprocess, "run", lambda *a, **kw: _Dead()  # noqa: ARG005
+        agsess.subprocess,
+        "run",
+        lambda *a, **kw: _Dead(),  # noqa: ARG005
     )
 
     stop_dir = tmp_path / "po-stops"
@@ -286,7 +282,17 @@ def test_agent_session_persists_new_sid_after_resume(tmp_path):
         def __init__(self):
             self._counter = 0
 
-        def run(self, prompt, *, session_id, cwd, fork=False, model="opus", effort=None, extra_env=None):
+        def run(
+            self,
+            prompt,
+            *,
+            session_id,
+            cwd,
+            fork=False,
+            model="opus",
+            effort=None,
+            extra_env=None,
+        ):
             seen_session_ids.append(session_id)
             self._counter += 1
             return f"turn-{self._counter}-result", f"new-sid-{self._counter}"

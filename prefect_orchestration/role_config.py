@@ -86,14 +86,8 @@ def resolve_role_runtime(
         env = os.environ
     cfg = load_role_config(agent_dir)
     return RoleRuntime(
-        model=cfg.model
-        or env.get("PO_MODEL_CLI")
-        or env.get("PO_MODEL")
-        or None,
-        effort=cfg.effort
-        or env.get("PO_EFFORT_CLI")
-        or env.get("PO_EFFORT")
-        or None,
+        model=cfg.model or env.get("PO_MODEL_CLI") or env.get("PO_MODEL") or None,
+        effort=cfg.effort or env.get("PO_EFFORT_CLI") or env.get("PO_EFFORT") or None,
         start_command=cfg.start_command
         or env.get("PO_START_COMMAND_CLI")
         or env.get("PO_START_COMMAND")

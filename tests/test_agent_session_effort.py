@@ -58,7 +58,9 @@ def test_cli_backend_passes_effort_to_argv(tmp_path: Path) -> None:
             stderr="",
         )
 
-    with patch("prefect_orchestration.agent_session.subprocess.run", side_effect=fake_run):
+    with patch(
+        "prefect_orchestration.agent_session.subprocess.run", side_effect=fake_run
+    ):
         ClaudeCliBackend().run(
             "hi",
             session_id=None,

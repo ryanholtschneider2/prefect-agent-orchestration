@@ -39,14 +39,10 @@ def test_load_role_config_missing_file(tmp_path: Path) -> None:
 def test_load_role_config_happy_path(tmp_path: Path) -> None:
     _write_config(
         tmp_path,
-        'model = "haiku"\n'
-        'effort = "max"\n'
-        'start_command = "claude --foo"\n',
+        'model = "haiku"\neffort = "max"\nstart_command = "claude --foo"\n',
     )
     rt = load_role_config(tmp_path)
-    assert rt == RoleRuntime(
-        model="haiku", effort="max", start_command="claude --foo"
-    )
+    assert rt == RoleRuntime(model="haiku", effort="max", start_command="claude --foo")
 
 
 def test_load_role_config_partial(tmp_path: Path) -> None:
@@ -91,7 +87,9 @@ def test_load_role_config_wrong_value_type(tmp_path: Path) -> None:
         ("start_command", "PO_START_COMMAND"),
     ],
 )
-def test_per_role_config_beats_cli_flag(tmp_path: Path, knob: str, env_var: str) -> None:
+def test_per_role_config_beats_cli_flag(
+    tmp_path: Path, knob: str, env_var: str
+) -> None:
     """config.toml value wins over PO_*_CLI which wins over PO_*."""
     _write_config(tmp_path, f'{knob} = "from-config"\n')
     env = {f"{env_var}_CLI": "from-cli", env_var: "from-shell"}
@@ -208,7 +206,8 @@ def test_build_session_start_command_threads_to_backend(
 ) -> None:
     """`start_command` config flows into the backend constructor kwargs."""
     role_dir = _make_role(
-        tmp_path, "builder",
+        tmp_path,
+        "builder",
         config_body='start_command = "claude --custom"\n',
     )
 
@@ -230,9 +229,12 @@ def test_build_session_no_overrides_uses_defaults(
     """Nothing set anywhere → AgentSession keeps its hardcoded defaults."""
     # Scrub any inherited env vars.
     for var in (
-        "PO_MODEL", "PO_MODEL_CLI",
-        "PO_EFFORT", "PO_EFFORT_CLI",
-        "PO_START_COMMAND", "PO_START_COMMAND_CLI",
+        "PO_MODEL",
+        "PO_MODEL_CLI",
+        "PO_EFFORT",
+        "PO_EFFORT_CLI",
+        "PO_START_COMMAND",
+        "PO_START_COMMAND_CLI",
     ):
         monkeypatch.delenv(var, raising=False)
     role_dir = _make_role(tmp_path, "doer")
