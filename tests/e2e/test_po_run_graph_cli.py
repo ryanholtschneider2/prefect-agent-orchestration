@@ -106,29 +106,95 @@ def test_po_run_graph_discovers_via_bd_dep_edges(
     except Exception:
         pytest.skip(f"Prefect server not reachable at {api_url}")
 
-    result = po_runner(
-        "run",
-        "graph",
-        "--root-id",
-        root_id,
-        "--rig",
-        "uc0-e2e",
-        "--rig-path",
-        str(rig),
-        "--dry-run",
-        "--traverse=blocks",
-        cwd=rig,
-        env_overrides={"PREFECT_API_URL": api_url},
-        timeout=180,
-    )
+    try:
+        result = po_runner(
+            "run",
+            "graph",
+            "--root-id",
+            root_id,
+            "--rig",
+            "uc0-e2e",
+            "--rig-path",
+            str(rig),
+            "--dry-run",
+            "--traverse=blocks",
+            cwd=rig,
+            env_overrides={"PREFECT_API_URL": api_url},
+            timeout=180,
+        )
 
-    # The flow may legitimately exit non-zero if any per-node sub-flow
-    # raises (StubBackend smoke errors etc.); what we care about is
-    # that the BFS-collected nodes line up with what we built.
-    combined = result.stdout + "\n" + result.stderr
-    assert a_id in combined, combined
-    assert b_id in combined, combined
-    assert c_id in combined, combined
+        # The flow may legitimately exit non-zero if any per-node sub-flow
+        # raises (StubBackend smoke errors etc.); what we care about is
+        # that the BFS-collected nodes line up with what we built.
+        combined = result.stdout + "\n" + result.stderr
+        assert a_id in combined, combined
+        assert b_id in combined, combined
+        assert c_id in combined, combined
+    finally:
+        # Clean up any Prefect flow runs created by this test. Without
+        # this, a `po run graph` whose subprocess crashes mid-flight
+        # leaves Running flows that linger in the Prefect DB pointing at
+        # a temp `rig_path` that pytest is about to delete (the leaked-
+        # zombie scenario observed 2026-04-29: `po status` shows
+        # `rig-XYZ` rows for hours after the tests that created them
+        # exited). Identifies our flow runs by the `rig_path` param
+        # starting with this test's tmp `rig` dir — unique per pytest
+        # invocation.
+        _cancel_flow_runs_for_rig(api_url, str(rig))
+
+
+def _cancel_flow_runs_for_rig(api_url: str, rig_path: str) -> None:
+    """Best-effort: cancel any non-terminal Prefect flow runs whose
+    `rig_path` parameter starts with `rig_path`. Swallows all errors —
+    this runs in a finally block, so a failure here must never replace
+    the original test failure (pytest semantics)."""
+    try:
+        import os as _os
+
+        import anyio
+        from prefect.client.orchestration import get_client
+        from prefect.client.schemas.filters import (
+            FlowRunFilter,
+            FlowRunFilterState,
+            FlowRunFilterStateType,
+        )
+        from prefect.client.schemas.objects import StateType
+        from prefect.states import Cancelled
+
+        old_url = _os.environ.get("PREFECT_API_URL")
+        _os.environ["PREFECT_API_URL"] = api_url
+
+        async def _run() -> None:
+            async with get_client() as c:
+                runs = await c.read_flow_runs(
+                    flow_run_filter=FlowRunFilter(
+                        state=FlowRunFilterState(
+                            type=FlowRunFilterStateType(any_=[
+                                StateType.RUNNING, StateType.PENDING,
+                                StateType.SCHEDULED,
+                            ]),
+                        ),
+                    ),
+                    limit=200,
+                )
+                for r in runs:
+                    rp = (r.parameters or {}).get("rig_path", "")
+                    if rp.startswith(rig_path):
+                        await c.set_flow_run_state(
+                            r.id,
+                            Cancelled(message=f"test cleanup: {rig_path} torn down"),
+                        )
+
+        try:
+            anyio.run(_run)
+        finally:
+            if old_url is None:
+                _os.environ.pop("PREFECT_API_URL", None)
+            else:
+                _os.environ["PREFECT_API_URL"] = old_url
+    except Exception:
+        # Best-effort: don't let cleanup hide the test result.
+        pass
 
     # Topo order check: A's submission line must appear before B's
     # which must appear before C's. The `_dispatch_nodes` info-log

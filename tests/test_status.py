@@ -243,6 +243,82 @@ def test_render_table_empty() -> None:
     assert "no flow runs" in _status.render_table([])
 
 
+# ─── partition_zombies ───────────────────────────────────────────────
+
+
+def test_partition_zombies_hides_running_with_missing_rig_path(tmp_path) -> None:
+    """The classic test-leak case: a Running flow whose rig_path is a
+    `/tmp/pytest-of-*` dir that's been cleaned up. Should be filtered."""
+    missing = tmp_path / "deleted-by-pytest"
+    # NOTE: not creating it — that's the whole point.
+    g = _status.IssueGroup(
+        issue_id="rig-zzz",
+        latest=FakeFlowRun(
+            id="x", name="rig-zzz", tags=["issue_id:rig-zzz"],
+            state_name="Running",
+            parameters={"rig_path": str(missing)},
+        ),
+        extras=[],
+        current_step="-",
+    )
+    live, hidden = _status.partition_zombies([g])
+    assert live == []
+    assert hidden == 1
+
+
+def test_partition_zombies_keeps_running_when_rig_path_exists(tmp_path) -> None:
+    g = _status.IssueGroup(
+        issue_id="alive",
+        latest=FakeFlowRun(
+            id="x", name="alive", tags=["issue_id:alive"],
+            state_name="Running",
+            parameters={"rig_path": str(tmp_path)},
+        ),
+        extras=[],
+        current_step="build",
+    )
+    live, hidden = _status.partition_zombies([g])
+    assert len(live) == 1
+    assert hidden == 0
+
+
+def test_partition_zombies_keeps_cancelled_with_missing_rig_path(tmp_path) -> None:
+    """Cancelled / Completed / Failed flows are real history. We don't
+    hide them just because their temp rig got cleaned up — they tell the
+    truth: 'this run finished.'"""
+    g = _status.IssueGroup(
+        issue_id="done",
+        latest=FakeFlowRun(
+            id="x", name="done", tags=["issue_id:done"],
+            state_name="Cancelled",
+            parameters={"rig_path": str(tmp_path / "gone")},
+        ),
+        extras=[],
+        current_step="-",
+    )
+    live, hidden = _status.partition_zombies([g])
+    assert len(live) == 1, "terminal-state rows are kept regardless of rig_path"
+    assert hidden == 0
+
+
+def test_partition_zombies_keeps_runs_with_no_rig_path() -> None:
+    """Ad-hoc / scratch flows have no rig_path parameter — they aren't
+    zombies, they're just parameter-less (and shown with rig=`-`)."""
+    g = _status.IssueGroup(
+        issue_id="ad-hoc",
+        latest=FakeFlowRun(
+            id="x", name="ad-hoc", tags=["issue_id:ad-hoc"],
+            state_name="Running",
+            parameters=None,
+        ),
+        extras=[],
+        current_step="-",
+    )
+    live, hidden = _status.partition_zombies([g])
+    assert len(live) == 1
+    assert hidden == 0
+
+
 # ─── find_runs_by_issue_id ───────────────────────────────────────────
 
 

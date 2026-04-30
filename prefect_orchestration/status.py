@@ -246,6 +246,44 @@ def _flow_run_id_short(fr: Any) -> str:
     return s.split("-", 1)[0] if "-" in s else s[:8]
 
 
+def _is_zombie(fr: Any) -> bool:
+    """A flow is a 'zombie' if it's in a Running state but its rig_path
+    parameter points at a directory that no longer exists on disk.
+
+    Common cause: a pytest fixture spawned a Prefect flow against a
+    `tmp_path`-style rig, then its process died (kill, timeout, etc.)
+    without transitioning the flow to a terminal state. The temp dir
+    got cleaned up, so the flow run is "Running" forever in the DB but
+    can't make progress. Hiding these by default keeps `po status` from
+    drowning real runs.
+    """
+    state = (
+        getattr(fr, "state_name", None)
+        or getattr(getattr(fr, "state", None), "name", None)
+    )
+    if not state or str(state).lower() != "running":
+        return False
+    params = getattr(fr, "parameters", None) or {}
+    rp = params.get("rig_path")
+    if not rp:
+        return False
+    from pathlib import Path as _P
+    return not _P(rp).exists()
+
+
+def partition_zombies(groups: list[IssueGroup]) -> tuple[list[IssueGroup], int]:
+    """Split groups into (live, zombie_count). Zombies are 'Running' rows
+    whose rig_path no longer exists on disk — usually leaked pytest runs."""
+    live: list[IssueGroup] = []
+    hidden = 0
+    for g in groups:
+        if _is_zombie(g.latest):
+            hidden += 1
+        else:
+            live.append(g)
+    return live, hidden
+
+
 def render_table(groups: list[IssueGroup]) -> str:
     """Format grouped runs as a plain-text table.
 
