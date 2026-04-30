@@ -5,6 +5,7 @@ import Gradient from "ink-gradient";
 import TextInput from "ink-text-input";
 
 import { BdShow, buildLines } from "./components/BdShow.js";
+import { FlowOverview } from "./components/FlowOverview.js";
 import { IssueList } from "./components/IssueList.js";
 import { RoleTimeline } from "./components/RoleTimeline.js";
 import { TmuxTail } from "./components/TmuxTail.js";
@@ -349,6 +350,7 @@ export function App(props: AppProps): React.ReactElement {
         />
         {mobile && !drillIntoIssueId ? null : (
           <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor="gray">
+            <FlowOverview flowName={selected?.flowName} />
             <RoleTimeline issue={selected} allIssues={issues} />
             <Box borderStyle="single" borderColor="gray" flexDirection="column">
               {bdShowVisible ? (

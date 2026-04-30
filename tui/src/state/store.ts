@@ -10,6 +10,7 @@ import { create } from "zustand";
 import { bdList, bdShow, type BdIssue } from "../data/beads.js";
 import {
   fetchFlowRuns,
+  fetchFlowsByIds,
   fetchLatestCompletedRunPerFlow,
   fetchTaskRuns,
   fetchTaskRunsByIds,
@@ -59,6 +60,10 @@ export interface IssueRow {
   /** Issue ids of subflow children of this row, computed during tick. */
   childIssueIds: string[];
   startTime?: string | null;
+  /** Prefect-native flow id (UUID). Used for flow-name lookup + future "all runs of this flow" views. */
+  flowId?: string;
+  /** Flow name resolved via /flows/filter cache. Undefined until the cache populates. */
+  flowName?: string;
 }
 
 export interface PoTuiState {
@@ -80,6 +85,8 @@ export interface PoTuiState {
    *  Used as the "future stages" schema for in-progress runs of the same
    *  flow. Populated lazily on each tick. */
   schemaByFlowId: Record<string, string[]>;
+  /** flow_id → flow name. Populated lazily on tick(). Set-and-forget — names are immutable in Prefect. */
+  flowNamesById: Record<string, string>;
   /** issueId → cached `bd show <id> --json` result. Populated by
    *  `refreshBdShow()` only when the bd-show pane is visible. Last-good
    *  wins on transient fetch errors (see `bdShowError`). */
@@ -225,6 +232,7 @@ export const useStore = create<PoTuiState>((set, get) => ({
   paneText: "",
   paneSession: null,
   schemaByFlowId: {},
+  flowNamesById: {},
   bdShowCache: {},
   bdShowError: null,
   bdShowVisible: false,
@@ -347,6 +355,25 @@ export const useStore = create<PoTuiState>((set, get) => ({
       }
       const schemas = get().schemaByFlowId;
 
+      // Lazy-fetch flow names for any flow_id we haven't seen yet. Mirrors
+      // the schemaByFlowId pattern above; cache forever (Prefect flow names
+      // are immutable post-registration).
+      const knownFlowNames = get().flowNamesById;
+      const flowNamesMissing = Array.from(
+        new Set(flowEntries.map(([, fr]) => fr.flow_id)),
+      ).filter((fid) => !(fid in knownFlowNames));
+      if (flowNamesMissing.length > 0) {
+        try {
+          const fetched = await fetchFlowsByIds(flowNamesMissing, prefectUrl);
+          if (Object.keys(fetched).length > 0) {
+            set({ flowNamesById: { ...knownFlowNames, ...fetched } });
+          }
+        } catch {
+          /* flow-name fetch is a polish — don't block the main render */
+        }
+      }
+      const flowNames = get().flowNamesById;
+
       const issues: IssueRow[] = flowEntries.map(([issueId, fr], idx) => {
         const trs = taskRunsPerFlow[idx] ?? [];
         const { roles, active } = deriveRoles(trs, schemas[fr.flow_id]);
@@ -372,6 +399,8 @@ export const useStore = create<PoTuiState>((set, get) => ({
           parentIssueId,
           childIssueIds: [],
           startTime: fr.start_time,
+          flowId: fr.flow_id,
+          flowName: flowNames[fr.flow_id],
         };
       });
 

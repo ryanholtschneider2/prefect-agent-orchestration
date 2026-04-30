@@ -122,6 +122,27 @@ export async function fetchLatestCompletedRunPerFlow(
   return out;
 }
 
+/** Resolve flow_id → name for a set of flow_ids. Missing keys = not found. */
+export interface PrefectFlow {
+  id: string;
+  name: string;
+}
+
+export async function fetchFlowsByIds(
+  flowIds: string[],
+  apiUrl?: string,
+): Promise<Record<string, string>> {
+  if (flowIds.length === 0) return {};
+  const body = {
+    limit: flowIds.length,
+    flows: { id: { any_: flowIds } },
+  };
+  const flows = await postJson<PrefectFlow[]>(`${baseUrl(apiUrl)}/flows/filter`, body);
+  const out: Record<string, string> = {};
+  for (const f of flows) out[f.id] = f.name;
+  return out;
+}
+
 export async function fetchTaskRuns(
   flowRunId: string,
   apiUrl?: string,
