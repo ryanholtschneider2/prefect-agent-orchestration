@@ -197,8 +197,9 @@ async def test_submit_scheduled_run_raises_when_missing(
     from prefect_orchestration import deployments as _deployments
 
     client = _FakeClient(deployments=[], flow=_FakeFlow("x"))
-    # No packs registered → load_deployments returns nothing → ManualDeploymentMissing
+    # Stub both lookup paths so auto-create doesn't fire.
     monkeypatch.setattr(_deployments, "load_deployments", lambda: ([], []))
+    monkeypatch.setattr(scheduling, "_load_formula_flow", lambda f: None)
     with pytest.raises(scheduling.ManualDeploymentMissing) as info:
         await scheduling.submit_scheduled_run(
             client=client,
@@ -393,7 +394,86 @@ async def test_ensure_manual_deployment_no_pack_raises(
 
     client = _FakeClientWithWorkers(deployments=[], flow=_FakeFlow("x"))
     monkeypatch.setattr(_deployments, "load_deployments", lambda: ([], []))
+    # "no-such-formula" won't be in the EP registry, but stub anyway for clarity.
+    monkeypatch.setattr(scheduling, "_load_formula_flow", lambda f: None)
 
     with pytest.raises(scheduling.ManualDeploymentMissing) as info:
         await scheduling.ensure_manual_deployment(client, "no-such-formula")
     assert info.value.formula == "no-such-formula"
+
+
+@pytest.mark.asyncio
+async def test_ensure_manual_deployment_auto_creates_from_flow_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When pack-declared deployments are absent, fall back to flow.to_deployment()."""
+    pytest.importorskip("prefect")
+    from prefect_orchestration import deployments as _deployments
+
+    applied_dep = _FakeApplyableDeployment("myflow-manual")
+
+    class _FakeFlowObj:
+        def to_deployment(self, name: str) -> _FakeApplyableDeployment:
+            applied_dep.name = name
+            return applied_dep
+
+    applied_dep_server = _FakeDeployment(name="myflow-manual", flow_id="xyz")
+
+    # Client returns [] until apply_deployment is called, then returns the server dep.
+    class _ClientAutoCreate(_FakeClientWithWorkers):
+        def __init__(self) -> None:
+            super().__init__(deployments=[], flow=_FakeFlow("myflow"))
+            self._applied = False
+
+        async def read_deployments(self, **kwargs: object) -> list:
+            return [applied_dep_server] if self._applied else []
+
+        async def read_workers(self, work_pool_name: str | None = None) -> list:
+            return []
+
+    client = _ClientAutoCreate()
+
+    def _fake_apply(dep: object) -> None:
+        dep.__setattr__("applied", True)  # type: ignore[attr-defined]
+        client._applied = True
+
+    monkeypatch.setattr(_deployments, "load_deployments", lambda: ([], []))
+    monkeypatch.setattr(scheduling, "_load_formula_flow", lambda f: _FakeFlowObj())
+    monkeypatch.setattr(_deployments, "apply_deployment", _fake_apply)
+
+    result, warn_msg = await scheduling.ensure_manual_deployment(client, "myflow")
+    assert result is applied_dep_server
+    assert applied_dep.applied
+
+
+@pytest.mark.asyncio
+async def test_submit_scheduled_run_passes_job_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """job_variables kwarg is forwarded to arun_deployment."""
+    pytest.importorskip("prefect")
+    dep = _FakeDeployment(name="foo-manual", flow_id="abc")
+    client = _FakeClient(deployments=[dep], flow=_FakeFlow("foo"))
+
+    captured: dict = {}
+
+    async def _fake_arun_deployment(*args: object, **kwargs: object):
+        captured["kwargs"] = kwargs
+
+        class _FR:
+            id = "fr-jv"
+
+        return _FR()
+
+    import prefect.deployments.flow_runs as flow_runs_mod
+
+    monkeypatch.setattr(flow_runs_mod, "arun_deployment", _fake_arun_deployment)
+
+    await scheduling.submit_scheduled_run(
+        client=client,
+        formula="foo",
+        parameters={},
+        scheduled_time=datetime.now(timezone.utc) + timedelta(minutes=1),
+        job_variables={"env": {"PO_RESUME": "1"}},
+    )
+    assert captured["kwargs"]["job_variables"] == {"env": {"PO_RESUME": "1"}}

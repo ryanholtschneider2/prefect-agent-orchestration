@@ -14,8 +14,27 @@ The CLI imports + composes these helpers in `cli.py::run`.
 from __future__ import annotations
 
 import re
+import sys
+import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+
+def _load_formula_flow(formula: str) -> Any | None:
+    """Return the po.formulas flow object for `formula`, or None."""
+    from importlib.metadata import entry_points
+
+    try:
+        eps = entry_points(group="po.formulas")
+    except TypeError:
+        eps = entry_points().get("po.formulas", [])  # type: ignore[union-attr]
+    for ep in eps:
+        if ep.name == formula:
+            try:
+                return ep.load()
+            except Exception:
+                return None
+    return None
 
 _REL_RE = re.compile(r"^\+?(\d+)\s*([smhdw])$", re.IGNORECASE)
 _REL_UNIT = {
@@ -124,16 +143,34 @@ async def ensure_manual_deployment(client: Any, formula: str) -> tuple[Any, str 
 
     deployment = await find_manual_deployment(client, formula)
     if deployment is None:
-        # Auto-apply from pack-declared deployments.
+        # First fallback: auto-apply from pack-declared deployments.
         loaded, _errors = _deployments.load_deployments()
         target_name = f"{formula}-manual"
         matches = [
             d for d in loaded if getattr(d.deployment, "name", None) == target_name
         ]
         if matches:
-            for item in matches:
-                await asyncio.to_thread(_deployments.apply_deployment, item.deployment)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                for item in matches:
+                    await asyncio.to_thread(
+                        _deployments.apply_deployment, item.deployment
+                    )
         deployment = await find_manual_deployment(client, formula)
+
+    if deployment is None:
+        # Second fallback: auto-create from the formula's flow object.
+        flow_obj = _load_formula_flow(formula)
+        if flow_obj is not None:
+            target_name = f"{formula}-manual"
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                runner_dep = await asyncio.to_thread(
+                    lambda: flow_obj.to_deployment(name=target_name)
+                )
+                await asyncio.to_thread(_deployments.apply_deployment, runner_dep)
+            print(f"auto-created deployment: {target_name}", file=sys.stderr)
+            deployment = await find_manual_deployment(client, formula)
         if deployment is None:
             raise ManualDeploymentMissing(formula)
 
@@ -162,6 +199,7 @@ async def submit_scheduled_run(
     parameters: dict[str, Any],
     scheduled_time: datetime,
     issue_id: str | None = None,
+    job_variables: dict[str, Any] | None = None,
 ) -> tuple[Any, str, str | None]:
     """Submit a one-shot scheduled flow-run for `<formula>-manual`.
 
@@ -188,5 +226,6 @@ async def submit_scheduled_run(
         timeout=0,
         as_subflow=False,
         tags=tags,
+        job_variables=job_variables,
     )
     return flow_run, full_name, warn_msg

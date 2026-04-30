@@ -1353,6 +1353,15 @@ def resume(
         "--formula",
         help="Formula entry-point name to relaunch.",
     ),
+    when: str | None = typer.Option(
+        None,
+        "--at",
+        help=(
+            "Schedule the resume as a future Prefect flow-run instead of "
+            "launching in-process. Same format as `po run --at`: relative "
+            "(2h, 30m, 1d) or ISO-8601 with timezone."
+        ),
+    ),
 ) -> None:
     """Resume a failed flow without archiving its run_dir.
 
@@ -1373,6 +1382,7 @@ def resume(
             rig=rig,
             force=force,
             formula=formula,
+            when=when,
         )
     except _run_lookup.RunDirNotFound as exc:
         typer.echo(str(exc), err=True)

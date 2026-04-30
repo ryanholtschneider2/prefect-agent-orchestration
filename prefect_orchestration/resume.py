@@ -46,6 +46,35 @@ from prefect_orchestration.retry import (
 DEFAULT_FORMULA = "software-dev-full"
 
 
+async def _schedule_resume(
+    formula_name: str,
+    rig_name: str,
+    rig_path: Path,
+    issue_id: str,
+    when: str,
+) -> tuple[Any, str, Any]:
+    """Schedule a resume as a future Prefect flow-run (PO_RESUME=1 in env)."""
+    from prefect.client.orchestration import get_client
+
+    from prefect_orchestration import scheduling as _scheduling
+
+    scheduled_time = _scheduling.parse_when(when)
+    async with get_client() as client:
+        flow_run, full_name, _warn = await _scheduling.submit_scheduled_run(
+            client=client,
+            formula=formula_name,
+            parameters={
+                "issue_id": issue_id,
+                "rig": rig_name,
+                "rig_path": str(rig_path),
+            },
+            scheduled_time=scheduled_time,
+            issue_id=issue_id,
+            job_variables={"env": {"PO_RESUME": "1"}},
+        )
+    return flow_run, full_name, scheduled_time
+
+
 class ResumeError(RuntimeError):
     """Resume failed; `exit_code` is what the CLI should return."""
 
@@ -81,6 +110,7 @@ def resume_issue(
     rig: str | None = None,
     force: bool = False,
     formula: str = DEFAULT_FORMULA,
+    when: str | None = None,
     _in_flight_probe: Callable[[str], int] | None = None,
 ) -> ResumeResult:
     """Relaunch `formula` on `issue_id` without archiving the run_dir.
@@ -135,8 +165,35 @@ def resume_issue(
             _bd_reopen(issue_id)
             reopened = True
 
-        flow_obj = _load_formula(formula)
         rig_name = rig or rig_path.name
+
+        if when is not None:
+            import anyio
+
+            try:
+                flow_run, full_name, scheduled_time = anyio.run(
+                    _schedule_resume,
+                    formula,
+                    rig_name,
+                    rig_path,
+                    issue_id,
+                    when,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise ResumeError(
+                    f"failed to schedule resume for {formula!r}: {exc}", exit_code=5
+                ) from exc
+            return ResumeResult(
+                run_dir=run_dir,
+                completed_steps=completed,
+                reopened=reopened,
+                flow_result=(
+                    f"scheduled flow-run {flow_run.id} ({full_name}) "
+                    f"at {scheduled_time.isoformat()}"
+                ),
+            )
+
+        flow_obj = _load_formula(formula)
         prior_env = os.environ.get("PO_RESUME")
         os.environ["PO_RESUME"] = "1"
         try:

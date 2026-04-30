@@ -24,11 +24,15 @@ from prefect_orchestration import parsing, resume, run_lookup
 # ── parsing.prompt_for_verdict short-circuit ────────────────────────
 
 
-def test_prompt_for_verdict_short_circuits_on_resume(tmp_path: Path, monkeypatch) -> None:
+def test_prompt_for_verdict_short_circuits_on_resume(
+    tmp_path: Path, monkeypatch
+) -> None:
     """When PO_RESUME=1 and the verdict file exists, the agent is NOT prompted."""
     vdir = tmp_path / "verdicts"
     vdir.mkdir()
-    (vdir / "triage.json").write_text(json.dumps({"has_ui": True, "is_docs_only": False}))
+    (vdir / "triage.json").write_text(
+        json.dumps({"has_ui": True, "is_docs_only": False})
+    )
 
     sess = mock.Mock()
     monkeypatch.setenv("PO_RESUME", "1")
@@ -39,7 +43,9 @@ def test_prompt_for_verdict_short_circuits_on_resume(tmp_path: Path, monkeypatch
     sess.prompt.assert_not_called()
 
 
-def test_prompt_for_verdict_runs_normally_without_resume_env(tmp_path: Path, monkeypatch) -> None:
+def test_prompt_for_verdict_runs_normally_without_resume_env(
+    tmp_path: Path, monkeypatch
+) -> None:
     """Absent PO_RESUME, the agent is prompted even if a verdict pre-exists."""
     vdir = tmp_path / "verdicts"
     vdir.mkdir()
@@ -139,7 +145,9 @@ def test_resume_does_not_archive_run_dir(tmp_path: Path, monkeypatch) -> None:
     assert res.flow_result == "ok"
 
 
-def test_resume_sets_po_resume_env_during_flow_call(tmp_path: Path, monkeypatch) -> None:
+def test_resume_sets_po_resume_env_during_flow_call(
+    tmp_path: Path, monkeypatch
+) -> None:
     rig = tmp_path / "rig"
     rig.mkdir()
     run_dir = rig / ".planning" / "software-dev-full" / "iss-2"
@@ -235,3 +243,67 @@ def test_resume_refuses_when_in_flight(tmp_path: Path, monkeypatch) -> None:
         resume.resume_issue("iss-5", _in_flight_probe=lambda iid: 1)
     assert exc_info.value.exit_code == 3
     assert "Running" in str(exc_info.value)
+
+
+# ── resume --at (scheduled path) ──────────────────────────────────────
+
+
+def test_resume_with_at_schedules(tmp_path: Path, monkeypatch) -> None:
+    """When `when` is set, resume_issue schedules a flow-run instead of running in-process."""
+    from datetime import datetime, timezone
+
+    rig = tmp_path / "rig"
+    rig.mkdir()
+    run_dir = rig / ".planning" / "software-dev-full" / "iss-6"
+    run_dir.mkdir(parents=True)
+    (run_dir / "verdicts").mkdir()
+    (run_dir / "verdicts" / "triage.json").write_text("{}")
+
+    monkeypatch.setattr(
+        run_lookup, "resolve_run_dir", lambda iid: _stub_run_loc(rig, run_dir)
+    )
+    monkeypatch.setattr(resume, "_bd_show_status", lambda iid: "open")
+
+    scheduled_time = datetime(2099, 1, 1, tzinfo=timezone.utc)
+
+    class _FakeFlowRun:
+        id = "fr-scheduled"
+
+    async def fake_schedule(formula_name, rig_name, rp, iid, when):
+        return _FakeFlowRun(), "myflow/myflow-manual", scheduled_time
+
+    monkeypatch.setattr(resume, "_schedule_resume", fake_schedule)
+
+    import anyio
+
+    # anyio.run can't be monkeypatched cleanly, so we patch _schedule_resume
+    # and let the real anyio.run call it.
+    res = resume.resume_issue("iss-6", force=True, when="2h")
+
+    assert "scheduled" in res.flow_result
+    assert "fr-scheduled" in res.flow_result
+    # Run-dir must NOT be archived (resume preserves it).
+    assert run_dir.exists()
+
+
+def test_resume_with_at_scheduling_fails(tmp_path: Path, monkeypatch) -> None:
+    """When _schedule_resume raises, resume_issue raises ResumeError(exit_code=5)."""
+    rig = tmp_path / "rig"
+    rig.mkdir()
+    run_dir = rig / ".planning" / "software-dev-full" / "iss-7"
+    run_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        run_lookup, "resolve_run_dir", lambda iid: _stub_run_loc(rig, run_dir)
+    )
+    monkeypatch.setattr(resume, "_bd_show_status", lambda iid: "open")
+
+    async def failing_schedule(*args):
+        raise RuntimeError("Prefect server unreachable")
+
+    monkeypatch.setattr(resume, "_schedule_resume", failing_schedule)
+
+    with pytest.raises(resume.ResumeError) as exc_info:
+        resume.resume_issue("iss-7", force=True, when="2h")
+    assert exc_info.value.exit_code == 5
+    assert "failed to schedule resume" in str(exc_info.value)
