@@ -171,10 +171,54 @@ po sessions <issue-id>              # per-role Claude UUIDs (useful to tmux-atta
 po watch <issue-id>                 # live stream of Prefect state transitions + run-dir file changes
 po retry <issue-id>                 # archive run_dir + relaunch fresh
 po status                           # all active / recent PO runs, grouped by issue_id
+po wait <issue-id>...               # block until issue(s) reach `closed` (exit 0/1/2/3)
 ```
 
 Prefect UI at `http://127.0.0.1:4200` shows the DAG + task state.
 Run-dir artifacts are canonical; the UI is a visualization.
+
+### `po wait` vs `po watch` — when to use which
+
+Both observe in-flight runs, but they serve different purposes:
+
+| Use case | Command | Why |
+|---|---|---|
+| **Agent waiting for a flow to finish** | `po wait <id>` | Blocks until terminal, exits 0/1/2/3 — designed for `run_in_background: true` so the harness wakes you on exit |
+| **Human watching live progress** | `po watch <id>` | Streaming UI: Prefect state transitions + run-dir file mtimes, runs until you Ctrl-C |
+| **Snapshot of what's currently running** | `po status` | Tabular, returns immediately |
+| **Forensic trail after a run finishes** | `po artifacts <id>` | Concatenates triage / plan / critiques / verdicts / decision-log / lessons-learned |
+
+**Agent recipe — dispatch + wait + inspect:**
+
+```bash
+# 1. Dispatch (foreground in-process; exits when flow does):
+po run software-dev-full --issue-id <id> --rig <name> --rig-path <path>
+
+# OR — if you launched it elsewhere (`po retry`, another shell, an epic
+# child) and want to be notified when it closes:
+po wait <id> --timeout 1800             # exits when bd closes the issue
+                                        # exit 0 = success-shaped close
+                                        # exit 1 = `failed:` / `cap-exhausted` / `rejected:` / `regression:` / `force-closed`
+                                        # exit 2 = timeout
+                                        # exit 3 = bd unavailable / no such id
+
+# Multiple issues — wait for ALL (default):
+po wait <id1> <id2> <id3>
+
+# Or first-to-close wins:
+po wait <id1> <id2> --any
+```
+
+`po wait` polls `bd show --json` every `--poll` seconds (default 30s).
+Match the verb-first convention agents follow (`approved: ...`,
+`no regression: ...`, `failed: ...`); the failure-prefix matcher is
+strict so `no regression: 763 passed` correctly counts as success.
+
+When dispatching from an agent harness, prefer launching `po run`
+itself with `run_in_background: true` (the harness gets a notification
+on exit). Use `po wait` when the launch and the wait happen in
+different processes — e.g. checking on epic children, or waiting on a
+flow another teammate started.
 
 ## Backend selection
 

@@ -696,6 +696,118 @@ def status(
 
 
 @app.command()
+def wait(
+    issue_ids: list[str] = typer.Argument(  # noqa: B008
+        ..., help="One or more beads issue ids to wait for."
+    ),
+    any_: bool = typer.Option(
+        False, "--any",
+        help="Exit when ANY of the given issues closes (default: wait for ALL).",
+    ),
+    timeout: int = typer.Option(
+        3600, "--timeout", "-t",
+        help="Maximum seconds to wait before giving up (default: 3600 = 1h).",
+    ),
+    poll: int = typer.Option(
+        30, "--poll", "-p",
+        help="Seconds between bd-show polls (default: 30).",
+    ),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q",
+        help="Suppress per-poll status lines; only print the final summary.",
+    ),
+) -> None:
+    """Block until one or more bd issues reach `closed` state.
+
+    Polls `bd show <id>` every `--poll` seconds. Exits when:
+
+      - default: every id is closed (or one fails / timeout fires)
+      - with `--any`: as soon as the first id closes
+
+    Designed to be run with `run_in_background: true` from an agent
+    harness — the harness gets a clean exit-code signal instead of
+    streaming a watch UI.
+
+    Exit codes:
+
+      0   all (or any, with --any) closed; close-reasons look like success
+      1   at least one closed with a failure-coded reason
+          (`failed:`, `cap-exhausted`, `nudge failed`, `force-closed`,
+          `regression:`, `rejected:`)
+      2   timeout reached before terminal state
+      3   bd not available / no such issue
+    """
+    import time as _time
+
+    from prefect_orchestration.beads_meta import _bd_available, _bd_show
+
+    if not _bd_available():
+        typer.echo("error: bd not on PATH", err=True)
+        raise typer.Exit(3)
+
+    # Agent close-reasons follow a verb-first convention (`approved: …`,
+    # `passed: …`, `no regression: …` for success vs `rejected: …`,
+    # `failed: …`, `regression: …` for failure). Match on prefix to
+    # avoid false-positives like "no regression:" containing "regression:".
+    failure_prefixes = (
+        "failed:", "cap-exhausted", "nudge failed", "force-closed",
+        "regression:", "rejected:",
+    )
+
+    def _looks_failed(reason: str) -> bool:
+        r = (reason or "").lower().lstrip()
+        return any(r.startswith(m) for m in failure_prefixes)
+
+    deadline = _time.monotonic() + max(timeout, 1)
+    seen_closed: dict[str, str] = {}  # id → close_reason
+
+    while True:
+        # Snapshot all issues each tick (cheap; bd show is local sql).
+        for issue_id in issue_ids:
+            if issue_id in seen_closed:
+                continue
+            row = _bd_show(issue_id)
+            if row is None:
+                typer.echo(
+                    f"error: bd show {issue_id!r} returned no row "
+                    f"(typo? not initialized?)", err=True,
+                )
+                raise typer.Exit(3)
+            if row.get("status") == "closed":
+                # bd show JSON uses `close_reason`; agent_step uses
+                # `closure_reason` for in-memory rows. Accept both.
+                seen_closed[issue_id] = (
+                    row.get("close_reason") or row.get("closure_reason") or ""
+                )
+                if not quiet:
+                    typer.echo(f"✓ closed: {issue_id} — {seen_closed[issue_id]}")
+
+        # Termination conditions.
+        if any_ and seen_closed:
+            break
+        if not any_ and len(seen_closed) == len(issue_ids):
+            break
+        if _time.monotonic() >= deadline:
+            still_open = [i for i in issue_ids if i not in seen_closed]
+            typer.echo(
+                f"timeout after {timeout}s; still open: {still_open}", err=True,
+            )
+            raise typer.Exit(2)
+
+        if not quiet:
+            still_open = [i for i in issue_ids if i not in seen_closed]
+            typer.echo(f"  waiting on {len(still_open)} of {len(issue_ids)}: {still_open}")
+        _time.sleep(max(poll, 1))
+
+    # Summarise + decide exit code.
+    failed = [i for i, r in seen_closed.items() if _looks_failed(r)]
+    if failed:
+        typer.echo(f"⚠ failure-coded close on: {failed}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"✓ done ({len(seen_closed)}/{len(issue_ids)} closed cleanly)")
+
+
+@app.command()
 def sessions(
     issue_id: str = typer.Argument(
         ..., help="Beads issue id (e.g. prefect-orchestration-5i9)"
