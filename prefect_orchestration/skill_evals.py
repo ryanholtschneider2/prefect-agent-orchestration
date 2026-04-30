@@ -71,13 +71,22 @@ class PackSkillNotFound(RuntimeError):
 
 
 def resolve_pack_skill_dir(pack: str, skill: str) -> Path:
-    """Return the absolute path to `<pack-dist-root>/skills/<skill>/`.
+    """Return the absolute path to a pack's skill directory.
+
+    Two pack-layouts are supported:
+      - Multi-skill: ``<pack>/skills/<skill>/SKILL.md``
+      - Single-skill: ``<pack>/skills/SKILL.md`` — the whole ``skills/``
+        dir IS the skill (no inner subdir). Used when the pack ships
+        exactly one skill (e.g. ``prefect-orchestration`` ships only
+        the ``po`` skill).
 
     Resolution order:
       1. Editable install — read PEP 610 `direct_url.json`, take the
-         `file://` URL, append `skills/<skill>/`.
-      2. Wheel install — iterate `dist.files` for any path under
-         `skills/<skill>/SKILL.md`; resolve via `dist.locate_file()`.
+         `file://` URL, append ``skills/<skill>/`` then fall back to
+         ``skills/`` (single-skill layout).
+      2. Wheel install — iterate `dist.files` for any path ending in
+         ``skills/<skill>/SKILL.md`` or just ``skills/SKILL.md``;
+         resolve via `dist.locate_file()`.
 
     Raises `PackSkillNotFound` with a fixable message when the pack
     isn't installed or doesn't ship that skill.
@@ -112,17 +121,27 @@ def resolve_pack_skill_dir(pack: str, skill: str) -> Path:
         url = data.get("url", "") if isinstance(data, dict) else ""
         if url.startswith("file://"):
             base = Path(url[len("file://") :])
+            # Multi-skill layout: skills/<skill>/SKILL.md
             candidate = base / "skills" / skill
             attempted.append(str(candidate))
             if candidate.is_dir() and (candidate / "SKILL.md").is_file():
                 return candidate
+            # Single-skill layout: skills/SKILL.md (the whole `skills/`
+            # IS the skill). Accept when the pack ships exactly one
+            # skill matching `--skill`.
+            single = base / "skills"
+            attempted.append(str(single))
+            if single.is_dir() and (single / "SKILL.md").is_file():
+                return single
 
     # 2) Wheel install — dist.files holds RECORD entries.
     files = dist.files or []
-    target_suffix = f"skills/{skill}/SKILL.md"
+    nested_suffix = f"skills/{skill}/SKILL.md"
+    bare_suffix = "skills/SKILL.md"
     for rec in files:
         # `rec` is a `PackagePath`; comparing as POSIX is portable.
-        if rec.as_posix().endswith(target_suffix):
+        path = rec.as_posix()
+        if path.endswith(nested_suffix) or path.endswith(bare_suffix):
             try:
                 located = Path(dist.locate_file(rec))
             except Exception:
@@ -133,7 +152,7 @@ def resolve_pack_skill_dir(pack: str, skill: str) -> Path:
 
     raise PackSkillNotFound(
         f"pack {pack!r} is installed but does not ship skill {skill!r}. "
-        f"Expected SKILL.md under skills/{skill}/. "
+        f"Expected SKILL.md under skills/{skill}/ or skills/. "
         f"Attempted paths: {attempted or '(none)'}"
     )
 

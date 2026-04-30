@@ -185,14 +185,34 @@ Install these before `uv sync` / `uv tool install`:
 
 ## Install
 
+**One-liner** (clones the repo to `~/.local/share/prefect-orchestration/`,
+installs prerequisites if missing, symlinks the agent skill into every
+detected coding agent's skill dir):
+
 ```bash
-cd prefect-orchestration
-uv sync
+curl -fsSL https://raw.githubusercontent.com/<USER>/prefect-orchestration/main/scripts/install.sh | sh
+
+# Knobs (env vars):
+#   AGENT=claude        skill only for Claude Code (others: cursor, aider, all, none; default: all)
+#   PO_REPO_URL=...     fork URL (default: this repo)
+#   PO_REPO_REF=...     git ref (default: main)
+#   PO_INSTALL_DIR=...  clone target (default: ~/.local/share/prefect-orchestration)
 ```
 
-That gets you the `po` CLI and the library. On its own `po list` will show
-no formulas — run `po packs install <pack>` to get useful output. For pack
-authors: `po packs install --editable <path>`. See `po packs list` for what's
+**From a local checkout** (development / pack authors):
+
+```bash
+git clone <repo> && cd prefect-orchestration
+make install                    # CLI + skill for all detected agents
+make install AGENT=claude       # CLI + skill for Claude Code only
+make install AGENT=none         # CLI only, no skill
+make help                       # see all targets + which agents are detected
+```
+
+Both paths run `uv tool install --editable` under the hood and symlink
+`<agent-skill-dir>/po → <repo>/skills/`. On its own `po list` will show only
+core formulas — run `po packs install <pack>` (or `po packs install --editable
+<path>` for pack authors) to get useful output. See `po packs list` for what's
 currently installed and `po packs update` if you change a pack's
 `pyproject.toml` entry points and need the metadata refreshed.
 
