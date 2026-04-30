@@ -1,4 +1,5 @@
 """Unit tests for `context_bundle.build_context_md`."""
+
 from __future__ import annotations
 
 import subprocess
@@ -68,7 +69,9 @@ def test_all_present(
     run_dir.joinpath("decision-log.md").write_text("- decision A")
 
     out = _call(
-        run_dir, rig_path, monkeypatch,
+        run_dir,
+        rig_path,
+        monkeypatch,
         bd_outputs={"proj-abc": "issue body", "proj-abc.build.iter1": "step spec"},
     )
     text = out.read_text()
@@ -164,8 +167,11 @@ def test_bd_show_failure(
     monkeypatch.setattr(subprocess, "run", fail_run)
 
     out = build_context_md(
-        run_dir=run_dir, rig_path=rig_path,
-        issue_id="proj-abc", role="build", iter_n=1,
+        run_dir=run_dir,
+        rig_path=rig_path,
+        issue_id="proj-abc",
+        role="build",
+        iter_n=1,
     )
     text = out.read_text()
     issue_section = text.split("## Issue")[1].split("---")[0]
@@ -194,8 +200,11 @@ def test_no_iter_n(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     out = build_context_md(
-        run_dir=run_dir, rig_path=rig_path,
-        issue_id="proj-abc", role="build", iter_n=None,
+        run_dir=run_dir,
+        rig_path=rig_path,
+        issue_id="proj-abc",
+        role="build",
+        iter_n=None,
     )
     text = out.read_text()
     step_section = text.split("## This role-step")[1].split("---")[0]

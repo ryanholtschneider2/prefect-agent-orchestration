@@ -4,6 +4,7 @@ Collapses the N `cat` round-trips an agent would otherwise spend reading
 plan.md / triage.md / build-iter-*.diff / decision-log.md into one file
 read at the start of the turn.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -14,7 +15,10 @@ def _bd_show(bead_id: str, rig_path: Path) -> str:
     try:
         r = subprocess.run(
             ["bd", "show", bead_id],
-            capture_output=True, text=True, cwd=rig_path, timeout=15,
+            capture_output=True,
+            text=True,
+            cwd=rig_path,
+            timeout=15,
         )
         return r.stdout.strip() if r.returncode == 0 else ""
     except (FileNotFoundError, subprocess.TimeoutExpired):
