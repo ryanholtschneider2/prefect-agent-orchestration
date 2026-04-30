@@ -33,7 +33,12 @@ class _BdFake:
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
 
-def _seed_run(tmp_path: Path, *, with_metadata: bool = False) -> tuple[Path, Path]:
+def _seed_run(
+    tmp_path: Path,
+    *,
+    with_metadata: bool = False,
+    formula_stamp: str | None = None,
+) -> tuple[Path, Path]:
     rig_path = tmp_path / "rig"
     run_dir = rig_path / ".planning" / "software-dev-full" / "beads-xyz"
     run_dir.mkdir(parents=True)
@@ -42,6 +47,8 @@ def _seed_run(tmp_path: Path, *, with_metadata: bool = False) -> tuple[Path, Pat
         (run_dir / "metadata.json").write_text(
             json.dumps({"sessions": {"builder": "uuid-1", "critic": "uuid-2"}})
         )
+    if formula_stamp is not None:
+        (run_dir / retry.FORMULA_STAMP).write_text(formula_stamp)
     return rig_path, run_dir
 
 
@@ -63,13 +70,16 @@ class _FormulaSpy:
 
 
 def _patch_formula(
-    monkeypatch, spy: _FormulaSpy, *, name: str = retry.DEFAULT_FORMULA
+    monkeypatch, spy: _FormulaSpy, *, name: str = "software-dev-full"
 ) -> None:
     def _load(n: str):
         assert n == name
         return spy
 
     monkeypatch.setattr(retry, "_load_formula", _load)
+    # Ensure the Prefect fallback resolves to `name` when no stamp file exists,
+    # so tests that don't seed a stamp still reach _load_formula.
+    monkeypatch.setattr(retry, "_formula_from_prefect", lambda _id: name)
 
 
 # ─── AC1: archive ─────────────────────────────────────────────────────
@@ -338,6 +348,69 @@ def test_retry_kills_prior_tmux_for_issue(tmp_path, monkeypatch):
     retry.retry_issue("beads-xyz", _in_flight_probe=lambda _i: 0)
 
     assert calls == ["beads-xyz"]
+
+
+# ─── formula resolution chain ─────────────────────────────────────────
+
+
+def test_explicit_formula_overrides_stamp(tmp_path, monkeypatch):
+    """Explicit --formula wins even when a stamp file is present."""
+    rig_path, run_dir = _seed_run(tmp_path, formula_stamp="software-dev-fast")
+    _patch_resolve(monkeypatch, rig_path, run_dir)
+    monkeypatch.setattr(retry.subprocess, "run", _BdFake(status="open"))
+    spy = _FormulaSpy()
+    _patch_formula(monkeypatch, spy, name="software-dev-full")
+
+    retry.retry_issue(
+        "beads-xyz",
+        formula="software-dev-full",
+        _in_flight_probe=lambda _i: 0,
+    )
+
+    assert spy.calls[0]["issue_id"] == "beads-xyz"
+
+
+def test_stamp_file_used_when_present(tmp_path, monkeypatch):
+    """Stamp file is honoured when no explicit --formula is given."""
+    rig_path, run_dir = _seed_run(tmp_path, formula_stamp="software-dev-fast")
+    _patch_resolve(monkeypatch, rig_path, run_dir)
+    monkeypatch.setattr(retry.subprocess, "run", _BdFake(status="open"))
+    spy = _FormulaSpy()
+    _patch_formula(monkeypatch, spy, name="software-dev-fast")
+
+    retry.retry_issue("beads-xyz", _in_flight_probe=lambda _i: 0)
+
+    assert spy.calls[0]["issue_id"] == "beads-xyz"
+
+
+def test_prefect_fallback_used_when_no_stamp(tmp_path, monkeypatch):
+    """No stamp → Prefect fallback is used and a warning is emitted."""
+    rig_path, run_dir = _seed_run(tmp_path)
+    _patch_resolve(monkeypatch, rig_path, run_dir)
+    monkeypatch.setattr(retry.subprocess, "run", _BdFake(status="open"))
+    monkeypatch.setattr(retry, "_formula_from_prefect", lambda _id: "software-dev-fast")
+    spy = _FormulaSpy()
+    _patch_formula(monkeypatch, spy, name="software-dev-fast")
+
+    warnings: list[str] = []
+    retry.retry_issue("beads-xyz", warn=warnings.append, _in_flight_probe=lambda _i: 0)
+
+    assert any("Prefect history" in w for w in warnings)
+    assert spy.calls[0]["issue_id"] == "beads-xyz"
+
+
+def test_no_formula_found_raises_exit_four(tmp_path, monkeypatch):
+    """No stamp + no Prefect history → RetryError with exit_code=4."""
+    rig_path, run_dir = _seed_run(tmp_path)
+    _patch_resolve(monkeypatch, rig_path, run_dir)
+    monkeypatch.setattr(retry.subprocess, "run", _BdFake(status="open"))
+    monkeypatch.setattr(retry, "_formula_from_prefect", lambda _id: None)
+
+    with pytest.raises(retry.RetryError) as exc:
+        retry.retry_issue("beads-xyz", _in_flight_probe=lambda _i: 0)
+
+    assert exc.value.exit_code == 4
+    assert "po list" in str(exc.value)
 
 
 def test_retry_tmux_cleanup_failure_is_nonfatal(tmp_path, monkeypatch):

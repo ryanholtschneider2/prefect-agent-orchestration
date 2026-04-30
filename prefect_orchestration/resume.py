@@ -35,8 +35,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from prefect_orchestration import run_lookup
+DEFAULT_FORMULA = "software-dev-full"
+
 from prefect_orchestration.retry import (
-    DEFAULT_FORMULA,
     LOCK_SUFFIX,
     _bd_reopen,
     _bd_show_status,

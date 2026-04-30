@@ -43,7 +43,7 @@ from typing import Any, Callable, Iterator
 
 from prefect_orchestration import run_lookup, status as _status
 
-DEFAULT_FORMULA = "software-dev-full"
+FORMULA_STAMP = ".po-formula"
 LOCK_SUFFIX = ".retry.lock"
 
 
@@ -84,6 +84,73 @@ def _load_formula(name: str) -> Callable[..., Any]:
     raise RetryError(
         f"no formula named {name!r}. Install the pack that provides it "
         "or run `po list`.",
+        exit_code=4,
+    )
+
+
+async def _formula_from_prefect_async(issue_id: str) -> str | None:
+    """Query the most-recent Prefect flow run for issue_id; return its
+    entry-point name (underscore → hyphen normalised), or None on miss.
+    """
+    from prefect.client.orchestration import get_client
+    from prefect.client.schemas.filters import FlowRunFilter, FlowRunFilterName
+    from prefect.client.schemas.sorting import FlowRunSort
+
+    async with get_client() as client:
+        runs = await client.read_flow_runs(
+            flow_run_filter=FlowRunFilter(name=FlowRunFilterName(any_=[issue_id])),
+            sort=FlowRunSort.START_TIME_DESC,
+            limit=1,
+        )
+        if not runs:
+            return None
+        flow_run = runs[0]
+        flow = await client.read_flow(flow_run.flow_id)
+        ep_name = flow.name.replace("_", "-")
+    try:
+        eps = entry_points(group="po.formulas")
+    except TypeError:
+        eps = entry_points().get("po.formulas", [])  # type: ignore[assignment]
+    for ep in eps:
+        if ep.name == ep_name:
+            return ep_name
+    return None  # flow name present but pack not installed
+
+
+def _formula_from_prefect(issue_id: str) -> str | None:
+    """Sync wrapper around _formula_from_prefect_async; returns None on any error."""
+    try:
+        import anyio
+
+        return anyio.run(_formula_from_prefect_async, issue_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _resolve_formula(
+    run_dir: Path,
+    issue_id: str,
+    explicit: str | None,
+    warn: Callable[[str], None],
+) -> str:
+    """Resolve formula name: explicit flag → stamp file → Prefect history → error."""
+    if explicit is not None:
+        return explicit
+    stamp = run_dir / FORMULA_STAMP
+    if stamp.exists():
+        name = stamp.read_text().strip()
+        if name:
+            return name
+    prefect_name = _formula_from_prefect(issue_id)
+    if prefect_name is not None:
+        warn(
+            f"po retry: no .po-formula stamp found, using Prefect history:"
+            f" {prefect_name!r}"
+        )
+        return prefect_name
+    raise RetryError(
+        "po retry: cannot determine original formula. "
+        "Pass --formula <name> explicitly. Available formulas: run `po list`",
         exit_code=4,
     )
 
@@ -179,7 +246,7 @@ def retry_issue(
     keep_sessions: bool = False,
     rig: str | None = None,
     force: bool = False,
-    formula: str = DEFAULT_FORMULA,
+    formula: str | None = None,
     warn: Callable[[str], None] = lambda _m: None,
     _in_flight_probe: Callable[[str], int] | None = None,
 ) -> RetryResult:
@@ -256,7 +323,8 @@ def retry_issue(
             run_dir.mkdir(parents=True, exist_ok=True)
             (run_dir / "metadata.json").write_bytes(stashed_metadata)
 
-        flow_obj = _load_formula(formula)
+        resolved_formula = _resolve_formula(run_dir, issue_id, formula, warn)
+        flow_obj = _load_formula(resolved_formula)
         rig_name = rig or rig_path.name
         try:
             result = flow_obj(
@@ -265,7 +333,9 @@ def retry_issue(
                 rig_path=str(rig_path),
             )
         except Exception as exc:  # noqa: BLE001
-            raise RetryError(f"formula {formula!r} raised: {exc}", exit_code=5) from exc
+            raise RetryError(
+                f"formula {resolved_formula!r} raised: {exc}", exit_code=5
+            ) from exc
 
     return RetryResult(
         archived_to=archived,

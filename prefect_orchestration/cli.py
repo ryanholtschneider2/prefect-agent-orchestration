@@ -360,6 +360,13 @@ def run(
     finally:
         signal.signal(signal.SIGINT, prior_int)
         signal.signal(signal.SIGTERM, prior_term)
+        # Write formula stamp so `po retry` can detect the original formula.
+        if name is not None and isinstance(kwargs.get("issue_id"), str):
+            try:
+                loc = _run_lookup.resolve_run_dir(kwargs["issue_id"])
+                (loc.run_dir / _retry.FORMULA_STAMP).write_text(name)
+            except Exception:  # noqa: BLE001
+                pass
     typer.echo(result)
 
 
@@ -1191,10 +1198,11 @@ def retry(
         "--force",
         help="Skip the in-flight check (Prefect Running runs for this issue).",
     ),
-    formula: str = typer.Option(
-        _retry.DEFAULT_FORMULA,
+    formula: str | None = typer.Option(
+        None,
         "--formula",
-        help="Formula entry-point name to relaunch.",
+        help="Formula entry-point name to relaunch. If omitted, po retry reads "
+        ".po-formula from the run_dir or falls back to Prefect history.",
     ),
 ) -> None:
     """Archive an issue's run_dir and re-run its formula from scratch.
