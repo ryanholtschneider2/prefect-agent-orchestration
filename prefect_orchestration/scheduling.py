@@ -1,6 +1,7 @@
-"""Future-scheduled `po run` — `--time <when>` plumbing.
+"""Future-scheduled `po run` — `--at <when>` plumbing.
 
-Backs `po run <formula> --time <when>` (issue prefect-orchestration-7jr):
+Backs `po run <formula> --at <when>` (issue prefect-orchestration-7jr,
+renamed --time → --at in prefect-orchestration-40y):
 turn a synchronous in-process flow invocation into a one-shot scheduled
 flow-run on the connected Prefect server, by convention against the
 `<formula>-manual` deployment.
@@ -27,7 +28,7 @@ _REL_UNIT = {
 
 
 def parse_when(spec: str) -> datetime:
-    """Parse `--time` to a tz-aware UTC datetime.
+    """Parse `--at` to a tz-aware UTC datetime.
 
     Accepts a relative duration (`2h`, `30m`, `+30m`, `1d`) or an
     ISO-8601 string with timezone (`2026-04-25T09:00:00-04:00`, `…Z`).
@@ -40,13 +41,13 @@ def parse_when(spec: str) -> datetime:
     exact spec so the CLI can surface it verbatim.
     """
     if not spec or not spec.strip():
-        raise ValueError("empty --time value")
+        raise ValueError("empty --at value")
     spec = spec.strip()
     m = _REL_RE.match(spec)
     if m:
         n = int(m.group(1))
         if n == 0:
-            raise ValueError(f"--time {spec!r}: relative duration must be > 0")
+            raise ValueError(f"--at {spec!r}: relative duration must be > 0")
         unit = _REL_UNIT[m.group(2).lower()]
         return datetime.now(timezone.utc) + timedelta(**{unit: n})
     iso = spec[:-1] + "+00:00" if spec.endswith("Z") else spec
@@ -54,12 +55,12 @@ def parse_when(spec: str) -> datetime:
         dt = datetime.fromisoformat(iso)
     except ValueError as exc:
         raise ValueError(
-            f"bad --time {spec!r}: expected relative (2h, 30m, 1d, +30m) "
+            f"bad --at {spec!r}: expected relative (2h, 30m, 1d, +30m) "
             "or ISO-8601 with timezone"
         ) from exc
     if dt.tzinfo is None:
         raise ValueError(
-            f"--time {spec!r}: ISO-8601 must include a timezone offset "
+            f"--at {spec!r}: ISO-8601 must include a timezone offset "
             "(e.g. +00:00 or Z); naive datetimes are rejected to avoid "
             "ambiguous local-vs-UTC scheduling."
         )
@@ -108,6 +109,52 @@ async def find_manual_deployment(client: Any, formula: str) -> Any | None:
     return deployments[0] if deployments else None
 
 
+async def ensure_manual_deployment(client: Any, formula: str) -> tuple[Any, str | None]:
+    """Return (deployment, worker_warning | None). Auto-applies if absent.
+
+    If `<formula>-manual` is not on the server, loads pack-declared
+    deployments and applies any matching one. Raises `ManualDeploymentMissing`
+    if the deployment is still absent after apply (pack doesn't register it).
+    After finding/creating the deployment, probes the work pool for running
+    workers and returns a warning string if none are found.
+    """
+    import asyncio
+
+    from prefect_orchestration import deployments as _deployments
+
+    deployment = await find_manual_deployment(client, formula)
+    if deployment is None:
+        # Auto-apply from pack-declared deployments.
+        loaded, _errors = _deployments.load_deployments()
+        target_name = f"{formula}-manual"
+        matches = [
+            d for d in loaded if getattr(d.deployment, "name", None) == target_name
+        ]
+        if matches:
+            for item in matches:
+                await asyncio.to_thread(_deployments.apply_deployment, item.deployment)
+        deployment = await find_manual_deployment(client, formula)
+        if deployment is None:
+            raise ManualDeploymentMissing(formula)
+
+    # Probe for running workers on the target pool.
+    warn_msg: str | None = None
+    pool_name = getattr(deployment, "work_pool_name", None)
+    if pool_name:
+        try:
+            workers = await client.read_workers(work_pool_name=pool_name)
+            if len(workers) == 0:
+                warn_msg = (
+                    f"warning: no workers running on pool {pool_name!r}. "
+                    f"Run `prefect worker start --pool {pool_name}` before "
+                    f"the scheduled time or the run will stay Scheduled."
+                )
+        except Exception:  # noqa: BLE001 — older Prefect servers may lack this API
+            pass
+
+    return deployment, warn_msg
+
+
 async def submit_scheduled_run(
     *,
     client: Any,
@@ -115,20 +162,19 @@ async def submit_scheduled_run(
     parameters: dict[str, Any],
     scheduled_time: datetime,
     issue_id: str | None = None,
-) -> tuple[Any, str]:
+) -> tuple[Any, str, str | None]:
     """Submit a one-shot scheduled flow-run for `<formula>-manual`.
 
-    Returns `(flow_run, full_name)` where `full_name` is the
-    `<flow_name>/<deployment_name>` form used by `prefect deployment run`.
+    Returns `(flow_run, full_name, worker_warning | None)` where
+    `full_name` is the `<flow_name>/<deployment_name>` form used by
+    `prefect deployment run`. Auto-applies the deployment if absent.
 
     `timeout=0` makes `arun_deployment` return as soon as the flow-run
     is created in `Scheduled` state — the worker picks it up at
     `scheduled_time`. `as_subflow=False` is required because `po run`
     runs outside any Prefect flow context.
     """
-    deployment = await find_manual_deployment(client, formula)
-    if deployment is None:
-        raise ManualDeploymentMissing(formula)
+    deployment, warn_msg = await ensure_manual_deployment(client, formula)
     flow = await client.read_flow(deployment.flow_id)
     full_name = f"{flow.name}/{deployment.name}"
 
@@ -143,4 +189,4 @@ async def submit_scheduled_run(
         as_subflow=False,
         tags=tags,
     )
-    return flow_run, full_name
+    return flow_run, full_name, warn_msg

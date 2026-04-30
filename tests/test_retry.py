@@ -436,3 +436,64 @@ def test_retry_tmux_cleanup_failure_is_nonfatal(tmp_path, monkeypatch):
     )
     assert result.launched is True
     assert any("tmux pre-cleanup" in w for w in warnings)
+
+
+# ─── --at scheduling path ─────────────────────────────────────────────
+
+
+def test_retry_with_at_schedules(tmp_path, monkeypatch):
+    """retry_issue(when='2h') archives + reopens then submits a scheduled run."""
+    from datetime import datetime, timezone
+
+    rig_path, run_dir = _seed_run(tmp_path)
+    _patch_resolve(monkeypatch, rig_path, run_dir)
+    monkeypatch.setattr(retry.subprocess, "run", _BdFake(status="open"))
+    # Stamp file gets archived with run_dir; fall back to Prefect history stub
+    monkeypatch.setattr(retry, "_formula_from_prefect", lambda _id: "software-dev-full")
+
+    class _FakeFlowRun:
+        id = "fr-scheduled"
+
+    scheduled_time = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+
+    async def _fake_schedule(formula_name, rig_name, rig_path_arg, issue_id, when):
+        return (
+            _FakeFlowRun(),
+            "software_dev_full/software-dev-full-manual",
+            scheduled_time,
+        )
+
+    monkeypatch.setattr(retry, "_schedule_retry", _fake_schedule)
+
+    result = retry.retry_issue(
+        "beads-xyz",
+        when="2h",
+        _in_flight_probe=lambda _i: 0,
+    )
+
+    assert result.launched is True
+    assert "fr-scheduled" in result.flow_result
+    assert "scheduled" in result.flow_result
+
+
+def test_retry_with_at_formula_missing_errors(tmp_path, monkeypatch):
+    """retry_issue(when=...) raises RetryError(5) when scheduling fails."""
+    rig_path, run_dir = _seed_run(tmp_path)
+    _patch_resolve(monkeypatch, rig_path, run_dir)
+    monkeypatch.setattr(retry.subprocess, "run", _BdFake(status="open"))
+    monkeypatch.setattr(retry, "_formula_from_prefect", lambda _id: "software-dev-full")
+
+    async def _fail_schedule(*args, **kwargs):
+        raise RuntimeError("no deployment found")
+
+    monkeypatch.setattr(retry, "_schedule_retry", _fail_schedule)
+
+    with pytest.raises(retry.RetryError) as exc:
+        retry.retry_issue(
+            "beads-xyz",
+            when="2h",
+            _in_flight_probe=lambda _i: 0,
+        )
+
+    assert exc.value.exit_code == 5
+    assert "schedule" in str(exc.value)

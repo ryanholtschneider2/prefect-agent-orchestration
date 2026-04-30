@@ -240,6 +240,34 @@ def _archive_run_dir(run_dir: Path) -> Path | None:
     return archived
 
 
+async def _schedule_retry(
+    formula_name: str,
+    rig_name: str,
+    rig_path: Path,
+    issue_id: str,
+    when: str,
+) -> tuple[Any, str]:
+    """Archive+reopen already done; schedule the retry as a Prefect flow-run."""
+    from prefect.client.orchestration import get_client
+
+    from prefect_orchestration import scheduling as _scheduling
+
+    scheduled_time = _scheduling.parse_when(when)
+    async with get_client() as client:
+        flow_run, full_name, _warn = await _scheduling.submit_scheduled_run(
+            client=client,
+            formula=formula_name,
+            parameters={
+                "issue_id": issue_id,
+                "rig": rig_name,
+                "rig_path": str(rig_path),
+            },
+            scheduled_time=scheduled_time,
+            issue_id=issue_id,
+        )
+    return flow_run, full_name, scheduled_time
+
+
 def retry_issue(
     issue_id: str,
     *,
@@ -247,6 +275,7 @@ def retry_issue(
     rig: str | None = None,
     force: bool = False,
     formula: str | None = None,
+    when: str | None = None,
     warn: Callable[[str], None] = lambda _m: None,
     _in_flight_probe: Callable[[str], int] | None = None,
 ) -> RetryResult:
@@ -254,7 +283,8 @@ def retry_issue(
 
     `warn` receives human-readable, non-fatal diagnostics (e.g. missing
     `metadata.json` under `--keep-sessions`). `_in_flight_probe` is a
-    seam for tests — defaults to the real Prefect query.
+    seam for tests — defaults to the real Prefect query. Pass `when` to
+    schedule as a future Prefect flow-run instead of launching in-process.
     """
     loc = run_lookup.resolve_run_dir(issue_id)
     rig_path = loc.rig_path
@@ -324,8 +354,37 @@ def retry_issue(
             (run_dir / "metadata.json").write_bytes(stashed_metadata)
 
         resolved_formula = _resolve_formula(run_dir, issue_id, formula, warn)
-        flow_obj = _load_formula(resolved_formula)
         rig_name = rig or rig_path.name
+
+        if when is not None:
+            import anyio
+
+            try:
+                flow_run, full_name, scheduled_time = anyio.run(
+                    _schedule_retry,
+                    resolved_formula,
+                    rig_name,
+                    rig_path,
+                    issue_id,
+                    when,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise RetryError(
+                    f"failed to schedule retry for {resolved_formula!r}: {exc}",
+                    exit_code=5,
+                ) from exc
+            return RetryResult(
+                archived_to=archived,
+                reopened=reopened,
+                kept_sessions=stashed_metadata is not None,
+                launched=True,
+                flow_result=(
+                    f"scheduled flow-run {flow_run.id} ({full_name}) "
+                    f"at {scheduled_time.isoformat()}"
+                ),
+            )
+
+        flow_obj = _load_formula(resolved_formula)
         try:
             result = flow_obj(
                 issue_id=issue_id,

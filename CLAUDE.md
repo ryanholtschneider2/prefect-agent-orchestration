@@ -1010,6 +1010,6 @@ register) any `po.formulas` entry-point.
 - `shj` `po deploy` + `register()` convention (shipped)
 - `9cn` OpenTelemetry / Logfire spans (open)
 - `pw4` rig-path vs pack-path split (shipped — see README §"Rig path vs pack path")
-- `7jr` `po run --time` for future-scheduled runs (open)
+- `7jr` `po run --at` for future-scheduled runs (shipped; `--time` kept as deprecated alias per 40y)
 - `7vs` graph-mode software-dev-full (shipped — see §"Graph-mode / per_role_step patterns")
 - `dgr` po-formulas-prompt deprecation (shipped — see §"Deprecating a `po.formulas` pack")

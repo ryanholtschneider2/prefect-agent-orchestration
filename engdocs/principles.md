@@ -24,7 +24,7 @@ learning a second CLI that re-exports the first.
 - `po deploy` / `po deploy --apply` — Prefect's deploy flow is YAML-first;
   we ship deployments as Python `register()` callables discovered via
   the `po.deployments` entry-point group.
-- `po run <formula> --time 2h --args …` — resolves the pack's manual
+- `po run <formula> --at 2h --args …` — resolves the pack's manual
   deployment name by convention so callers don't grep `po deploy` output.
 
 **What fails the test.**

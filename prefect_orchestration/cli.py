@@ -291,13 +291,19 @@ def run(
     ),
     when: str | None = typer.Option(
         None,
-        "--time",
+        "--at",
         help="Schedule the formula's <name>-manual deployment for a future "
         "time instead of running synchronously. Relative duration "
         "(2h, 30m, 1d, +30m) or ISO-8601 with timezone "
-        "(2026-04-25T09:00:00-04:00 / 2026-04-25T13:00:00Z). Requires "
-        "`po deploy --apply` for <formula>-manual first; CLI prints a "
-        "worker-startup reminder.",
+        "(2026-04-25T09:00:00-04:00 / 2026-04-25T13:00:00Z). "
+        "Auto-applies <formula>-manual if not on the server; CLI warns "
+        "when no workers are running on the target pool.",
+    ),
+    time_compat: str | None = typer.Option(
+        None,
+        "--time",
+        hidden=True,
+        help="Deprecated alias for --at.",
     ),
     model: str | None = typer.Option(
         None,
@@ -321,9 +327,16 @@ def run(
     """Run a registered formula or an ad-hoc scratch flow.
 
     Registered:  po run software-dev-full --issue-id sr-8yu.3 --rig site --rig-path ./site
-    Scheduled:   po run software-dev-full --time 2h --issue-id ...
+    Scheduled:   po run software-dev-full --at 2h --issue-id ...
     Scratch:     po run --from-file ./my_flow.py [--name foo] --arg value
     """
+    if time_compat is not None:
+        if when is not None:
+            typer.echo("error: --at and --time are mutually exclusive", err=True)
+            raise typer.Exit(2)
+        typer.echo("warning: --time is deprecated; use --at instead", err=True)
+        when = time_compat
+
     _autoconfigure_prefect_api()
 
     # Formula name is the first non-option token in extras (when --from-file
@@ -470,17 +483,18 @@ def _run_scheduled(
     effort: str | None = None,
     start_command: str | None = None,
 ) -> None:
-    """Implementation of `po run <formula> --time <when>`.
+    """Implementation of `po run <formula> --at <when>`.
 
     Resolves `<formula>-manual` on the Prefect server (per
     engdocs/principles.md §1 — collapses
     `prefect deployment run <flow>/<formula>-manual --start-in 2h`
     into the by-convention shape) and submits a one-shot scheduled
-    flow-run with the parsed CLI kwargs as parameters.
+    flow-run with the parsed CLI kwargs as parameters. Auto-applies
+    the deployment if absent from the server.
     """
     if from_file is not None:
         typer.echo(
-            "--time and --from-file are mutually exclusive: scratch flows "
+            "--at and --from-file are mutually exclusive: scratch flows "
             "aren't registered as deployments and have no manual deployment "
             "to schedule against.",
             err=True,
@@ -488,7 +502,7 @@ def _run_scheduled(
         raise typer.Exit(2)
     if name is None:
         typer.echo(
-            "--time requires a formula name (no scratch-flow scheduling).",
+            "--at requires a formula name (no scratch-flow scheduling).",
             err=True,
         )
         raise typer.Exit(2)
@@ -528,7 +542,7 @@ def _run_scheduled(
             )
 
     try:
-        flow_run, full_name = asyncio.run(_go())
+        flow_run, full_name, warn_msg = asyncio.run(_go())
     except _scheduling.ManualDeploymentMissing as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(3) from exc
@@ -545,10 +559,13 @@ def _run_scheduled(
     typer.echo(
         f"scheduled flow-run {flow_run.id} ({full_name}) at {scheduled_time.isoformat()}"
     )
-    typer.echo(
-        f"queued for {when}; ensure `prefect worker start --pool po` "
-        f"is running before then."
-    )
+    if warn_msg:
+        typer.echo(warn_msg, err=True)
+    else:
+        typer.echo(
+            f"queued for {when}; ensure `prefect worker start --pool po` "
+            f"is running before then."
+        )
 
 
 @app.command()
@@ -1270,6 +1287,14 @@ def retry(
         help="Formula entry-point name to relaunch. If omitted, po retry reads "
         ".po-formula from the run_dir or falls back to Prefect history.",
     ),
+    when: str | None = typer.Option(
+        None,
+        "--at",
+        help="Schedule the retry as a future Prefect flow-run instead of "
+        "launching in-process. Same format as `po run --at`: relative "
+        "(2h, 30m, 1d) or ISO-8601 with timezone. Auto-applies the "
+        "<formula>-manual deployment if absent.",
+    ),
 ) -> None:
     """Archive an issue's run_dir and re-run its formula from scratch.
 
@@ -1277,7 +1302,8 @@ def retry(
     run_dir to a `.bak-<utc-timestamp>` sibling, reopens the bead if
     closed, and invokes the formula in-process. Refuses to proceed if
     another flow for this issue is still Running on the Prefect server
-    (pass `--force` to bypass).
+    (pass `--force` to bypass). Pass `--at <when>` to schedule the
+    retry as a future flow-run instead.
     """
     try:
         result = _retry.retry_issue(
@@ -1286,6 +1312,7 @@ def retry(
             rig=rig,
             force=force,
             formula=formula,
+            when=when,
             warn=lambda msg: typer.echo(f"warning: {msg}", err=True),
         )
     except _run_lookup.RunDirNotFound as exc:

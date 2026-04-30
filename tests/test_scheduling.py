@@ -111,12 +111,12 @@ def test_parse_when_whitespace_only_rejected() -> None:
 
 
 def test_parse_when_garbage_rejected() -> None:
-    with pytest.raises(ValueError, match="bad --time"):
+    with pytest.raises(ValueError, match="bad --at"):
         scheduling.parse_when("yesterday")
 
 
 def test_parse_when_unknown_unit_rejected() -> None:
-    with pytest.raises(ValueError, match="bad --time"):
+    with pytest.raises(ValueError, match="bad --at"):
         scheduling.parse_when("2y")
 
 
@@ -194,7 +194,11 @@ async def test_submit_scheduled_run_raises_when_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pytest.importorskip("prefect")
+    from prefect_orchestration import deployments as _deployments
+
     client = _FakeClient(deployments=[], flow=_FakeFlow("x"))
+    # No packs registered → load_deployments returns nothing → ManualDeploymentMissing
+    monkeypatch.setattr(_deployments, "load_deployments", lambda: ([], []))
     with pytest.raises(scheduling.ManualDeploymentMissing) as info:
         await scheduling.submit_scheduled_run(
             client=client,
@@ -229,7 +233,7 @@ async def test_submit_scheduled_run_calls_arun_deployment(
     monkeypatch.setattr(flow_runs_mod, "arun_deployment", _fake_arun_deployment)
 
     scheduled = datetime.now(timezone.utc) + timedelta(hours=2)
-    flow_run, full_name = await scheduling.submit_scheduled_run(
+    flow_run, full_name, warn_msg = await scheduling.submit_scheduled_run(
         client=client,
         formula="software-dev-full",
         parameters={"issue_id": "po-1"},
@@ -270,7 +274,7 @@ async def test_submit_scheduled_run_omits_tags_when_no_issue_id(
 
     monkeypatch.setattr(flow_runs_mod, "arun_deployment", _fake_arun_deployment)
 
-    await scheduling.submit_scheduled_run(
+    _flow_run, _full_name, _warn = await scheduling.submit_scheduled_run(
         client=client,
         formula="x",
         parameters={},
@@ -278,3 +282,118 @@ async def test_submit_scheduled_run_omits_tags_when_no_issue_id(
         issue_id=None,
     )
     assert captured["kwargs"]["tags"] is None
+
+
+# ─── ensure_manual_deployment ─────────────────────────────────────────
+
+
+class _FakeLoadedDeployment:
+    """Minimal stand-in for deployments.LoadedDeployment."""
+
+    def __init__(self, name: str) -> None:
+        self.deployment = _FakeApplyableDeployment(name)
+
+
+class _FakeApplyableDeployment:
+    def __init__(self, name: str, work_pool_name: str | None = None) -> None:
+        self.name = name
+        self.work_pool_name = work_pool_name
+        self.applied = False
+
+    def apply(self) -> str:  # sync (called via asyncio.to_thread)
+        self.applied = True
+        return "fake-dep-id"
+
+
+class _FakeClientWithWorkers(_FakeClient):
+    def __init__(
+        self,
+        deployments: list,
+        flow: _FakeFlow,
+        workers: list | None = None,
+        after_apply_deployments: list | None = None,
+    ) -> None:
+        super().__init__(deployments, flow)
+        self._workers = workers or []
+        self._after_apply_deployments = after_apply_deployments
+        self._call_count = 0
+
+    async def read_deployments(self, **kwargs: object) -> list:
+        self._call_count += 1
+        # Second call (after apply) returns different deployments if configured
+        if self._after_apply_deployments is not None and self._call_count > 1:
+            return list(self._after_apply_deployments)
+        return list(self._deployments)
+
+    async def read_workers(self, work_pool_name: str | None = None) -> list:
+        return list(self._workers)
+
+
+@pytest.mark.asyncio
+async def test_ensure_manual_deployment_found_returns_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("prefect")
+    dep = _FakeDeployment(name="foo-manual", flow_id="abc")
+    client = _FakeClientWithWorkers(
+        deployments=[dep], flow=_FakeFlow("foo"), workers=[object()]
+    )
+    result, warn_msg = await scheduling.ensure_manual_deployment(client, "foo")
+    assert result is dep
+    assert warn_msg is None  # worker found → no warning
+
+
+@pytest.mark.asyncio
+async def test_ensure_manual_deployment_found_warns_no_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("prefect")
+    dep = _FakeDeployment(name="foo-manual", flow_id="abc")
+    dep.work_pool_name = "my-pool"  # type: ignore[attr-defined]
+    client = _FakeClientWithWorkers(
+        deployments=[dep], flow=_FakeFlow("foo"), workers=[]
+    )
+    result, warn_msg = await scheduling.ensure_manual_deployment(client, "foo")
+    assert result is dep
+    assert warn_msg is not None
+    assert "my-pool" in warn_msg
+    assert "worker" in warn_msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_ensure_manual_deployment_auto_applies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("prefect")
+    from prefect_orchestration import deployments as _deployments
+
+    applied_dep = _FakeApplyableDeployment("foo-manual")
+    loaded = _FakeLoadedDeployment("foo-manual")
+    loaded.deployment = applied_dep
+
+    applied_dep_server = _FakeDeployment(name="foo-manual", flow_id="xyz")
+    client = _FakeClientWithWorkers(
+        deployments=[],  # not found initially
+        flow=_FakeFlow("foo"),
+        after_apply_deployments=[applied_dep_server],  # found after apply
+    )
+    monkeypatch.setattr(_deployments, "load_deployments", lambda: ([loaded], []))
+
+    result, warn_msg = await scheduling.ensure_manual_deployment(client, "foo")
+    assert result is applied_dep_server
+    assert applied_dep.applied
+
+
+@pytest.mark.asyncio
+async def test_ensure_manual_deployment_no_pack_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("prefect")
+    from prefect_orchestration import deployments as _deployments
+
+    client = _FakeClientWithWorkers(deployments=[], flow=_FakeFlow("x"))
+    monkeypatch.setattr(_deployments, "load_deployments", lambda: ([], []))
+
+    with pytest.raises(scheduling.ManualDeploymentMissing) as info:
+        await scheduling.ensure_manual_deployment(client, "no-such-formula")
+    assert info.value.formula == "no-such-formula"

@@ -199,7 +199,7 @@ def test_scheduled_run_stamps_runtime_env(
 
     captured: dict[str, Any] = {}
 
-    async def _fake_submit(**kwargs: Any) -> tuple[Any, str]:
+    async def _fake_submit(**kwargs: Any) -> tuple[Any, str, None]:
         captured["env_at_submit"] = {
             "PO_MODEL_CLI": os.environ.get("PO_MODEL_CLI"),
             "PO_EFFORT_CLI": os.environ.get("PO_EFFORT_CLI"),
@@ -209,7 +209,7 @@ def test_scheduled_run_stamps_runtime_env(
         class _FR:
             id = "fr-test"
 
-        return _FR(), "my-flow/my-flow-manual"
+        return _FR(), "my-flow/my-flow-manual", None
 
     class _FakeClientCtx:
         async def __aenter__(self) -> object:
