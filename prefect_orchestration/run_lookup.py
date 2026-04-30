@@ -71,25 +71,41 @@ def _bd_show_json(issue_id: str, *, cwd: Path | str | None = None) -> dict:
 
 
 def rig_path_from_prefect(issue_id: str) -> Path | None:
-    """Find a rig_path by querying Prefect for a flow run named=issue_id.
+    """Find a rig_path by querying Prefect.
 
-    Used as a fallback when `bd show <id>` from cwd misses because the
-    bead lives in a different rig. Reads the latest flow run whose
-    `name` equals `issue_id` (matches `flow_run_name="{issue_id}"` in
-    `software_dev_full`, `flow_run_name="{root_id}"` in `graph_run`,
-    `flow_run_name="{epic_id}"` in `epic_run`) and returns its
-    `rig_path` parameter, or `None` if no such flow run exists or
-    Prefect is unreachable.
-
-    Best-effort: never raises. Callers retry `bd show` with this as
-    cwd, and only fail with the original "no issue found" if even that
-    misses.
+    Best-effort thin wrapper around `lookup_prefect_run` that returns
+    just the rig_path, kept for compatibility with `po wait`'s simple
+    cache. New code should prefer `lookup_prefect_run` directly to also
+    pick up the canonical issue_id (handles the UUID-prefix case where
+    the user typed a flow-run id instead of the bead id).
     """
+    info = lookup_prefect_run(issue_id)
+    return info[0] if info else None
+
+
+def lookup_prefect_run(token: str) -> tuple[Path, str] | None:
+    """Resolve a status-table token → `(rig_path, issue_id)`.
+
+    Accepts any of the three forms `po status` shows:
+
+      - bead id          (e.g. `prefect-orchestration-god`)
+      - flow-run name    (e.g. `rig-4lp` — `flow_run_name="{issue_id}"`)
+      - flow-run UUID    (full or prefix ≥ 4 chars)
+
+    Returns the latest matching flow run's `rig_path` parameter +
+    `issue_id` (or `root_id` / `epic_id`) parameter — the canonical bead
+    id callers should pass to `bd show`. Returns None on any miss.
+
+    Best-effort: never raises. Lazy-imports prefect so this module stays
+    importable when prefect isn't installed.
+    """
+    if not token:
+        return None
     try:
-        # Lazy imports — keep run_lookup importable when prefect isn't.
         from prefect.client.orchestration import get_client
         from prefect.client.schemas.filters import (
             FlowRunFilter,
+            FlowRunFilterId,
             FlowRunFilterName,
         )
         from prefect.client.schemas.sorting import FlowRunSort
@@ -97,21 +113,62 @@ def rig_path_from_prefect(issue_id: str) -> Path | None:
         return None
     try:
         import anyio
+        from uuid import UUID
 
-        async def _run() -> Path | None:
+        # Heuristic: if the token looks like a UUID (or its 8-char prefix),
+        # try id-filter; otherwise try name-filter. Fall back to the other
+        # if nothing matches.
+        looks_like_uuid_prefix = (
+            len(token) >= 4 and all(c in "0123456789abcdef-" for c in token.lower())
+        )
+        try:
+            full_uuid = UUID(token)
+        except (ValueError, AttributeError):
+            full_uuid = None
+
+        async def _run() -> tuple[Path, str] | None:
             async with get_client() as client:
-                runs = await client.read_flow_runs(
-                    flow_run_filter=FlowRunFilter(
-                        name=FlowRunFilterName(any_=[issue_id]),
-                    ),
-                    sort=FlowRunSort.START_TIME_DESC,
-                    limit=1,
-                )
+                runs: list = []
+                if full_uuid is not None:
+                    runs = await client.read_flow_runs(
+                        flow_run_filter=FlowRunFilter(
+                            id=FlowRunFilterId(any_=[full_uuid]),
+                        ),
+                        limit=1,
+                    )
+                if not runs:
+                    runs = await client.read_flow_runs(
+                        flow_run_filter=FlowRunFilter(
+                            name=FlowRunFilterName(any_=[token]),
+                        ),
+                        sort=FlowRunSort.START_TIME_DESC,
+                        limit=1,
+                    )
+                if not runs and looks_like_uuid_prefix and full_uuid is None:
+                    # Prefix-match against recent runs — bounded scan.
+                    candidates = await client.read_flow_runs(
+                        sort=FlowRunSort.START_TIME_DESC, limit=200,
+                    )
+                    runs = [r for r in candidates
+                            if str(getattr(r, "id", "")).startswith(token)]
                 if not runs:
                     return None
-                params = getattr(runs[0], "parameters", None) or {}
+                fr = runs[0]
+                params = getattr(fr, "parameters", None) or {}
                 rp = params.get("rig_path")
-                return Path(rp) if rp else None
+                if not rp:
+                    return None
+                # Canonical bead id: issue_id (software_dev_full) /
+                # root_id (graph_run) / epic_id (epic_run). Fall back to
+                # flow-run name (== that id by template).
+                bead_id = (
+                    params.get("issue_id")
+                    or params.get("root_id")
+                    or params.get("epic_id")
+                    or getattr(fr, "name", None)
+                    or token
+                )
+                return Path(rp), str(bead_id)
 
         return anyio.run(_run)
     except Exception:
@@ -134,10 +191,21 @@ def resolve_run_dir(issue_id: str) -> RunLocation:
         row = _bd_show_json(issue_id)
     except RunDirNotFound:
         # Fallback: ask Prefect where the flow ran, then retry there.
-        rig_from_prefect = rig_path_from_prefect(issue_id)
-        if rig_from_prefect is None or not rig_from_prefect.is_dir():
+        # `lookup_prefect_run` returns the canonical bead id too, so the
+        # caller can pass a flow-run name OR UUID prefix and we resolve
+        # to the right `bd show <issue_id>` lookup.
+        info = lookup_prefect_run(issue_id)
+        if info is None or not info[0].is_dir():
             raise
-        row = _bd_show_json(issue_id, cwd=rig_from_prefect)
+        rig_from_prefect, canonical_id = info
+        # If the input wasn't actually the bead id (UUID prefix case),
+        # use the canonical id for the bd lookup.
+        bead_id = canonical_id or issue_id
+        row = _bd_show_json(bead_id, cwd=rig_from_prefect)
+        # Reflect the resolved id back so downstream code (run_dir paths)
+        # uses the canonical name.
+        if bead_id != issue_id:
+            issue_id = bead_id
     meta = row.get("metadata") or {}
     rig_path_s = meta.get(META_RIG_PATH)
     run_dir_s = meta.get(META_RUN_DIR)

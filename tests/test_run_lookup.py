@@ -139,11 +139,43 @@ def test_resolve_run_dir_cross_rig_via_prefect(tmp_path, monkeypatch):
             expected_cwd=str(rig_a),
         ),
     )
-    monkeypatch.setattr(run_lookup, "rig_path_from_prefect", lambda _: rig_a)
+    monkeypatch.setattr(
+        run_lookup, "lookup_prefect_run", lambda _: (rig_a, "rig-4lp"),
+    )
 
     loc = run_lookup.resolve_run_dir("rig-4lp")
     assert loc.rig_path == rig_a
     assert loc.run_dir == run_dir
+
+
+def test_resolve_run_dir_uuid_prefix_resolves_to_canonical_id(
+    tmp_path, monkeypatch,
+):
+    """User pastes the RUN UUID prefix from `po status` → Prefect lookup
+    returns `(rig_path, canonical_bead_id)` and we run `bd show
+    <canonical_bead_id>` in that rig. Reproduces the `po watch
+    60f43185` confusion observed 2026-04-29."""
+    rig_a = tmp_path / "rig-a"
+    rig_a.mkdir()
+    run_dir = rig_a / "run"
+    run_dir.mkdir()
+
+    monkeypatch.setattr(run_lookup.shutil, "which", lambda _: "/usr/bin/bd")
+    # bd only succeeds for the canonical bead id `rig-4lp` from the
+    # right rig. The UUID prefix `60f43185` is never a valid bead.
+    monkeypatch.setattr(
+        run_lookup.subprocess, "run",
+        _fake_bd_show_cwd_required(
+            {"po.rig_path": str(rig_a), "po.run_dir": str(run_dir)},
+            expected_cwd=str(rig_a),
+        ),
+    )
+    monkeypatch.setattr(
+        run_lookup, "lookup_prefect_run", lambda _: (rig_a, "rig-4lp"),
+    )
+
+    loc = run_lookup.resolve_run_dir("60f43185")
+    assert loc.rig_path == rig_a
 
 
 def test_resolve_run_dir_raises_when_prefect_also_misses(tmp_path, monkeypatch):
@@ -157,7 +189,7 @@ def test_resolve_run_dir_raises_when_prefect_also_misses(tmp_path, monkeypatch):
             expected_cwd=str(tmp_path / "definitely-not-cwd"),
         ),
     )
-    monkeypatch.setattr(run_lookup, "rig_path_from_prefect", lambda _: None)
+    monkeypatch.setattr(run_lookup, "lookup_prefect_run", lambda _: None)
 
     with pytest.raises(run_lookup.RunDirNotFound, match="bd show"):
         run_lookup.resolve_run_dir("ghost-id")

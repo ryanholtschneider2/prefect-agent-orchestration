@@ -740,30 +740,39 @@ def wait(
     import time as _time
 
     from prefect_orchestration.beads_meta import _bd_available, _bd_show
-    from prefect_orchestration.run_lookup import rig_path_from_prefect
+    from prefect_orchestration.run_lookup import lookup_prefect_run
 
     if not _bd_available():
         typer.echo("error: bd not on PATH", err=True)
         raise typer.Exit(3)
 
-    # Cross-rig resolution: cache `issue_id → rig_path` once via Prefect
-    # so subsequent polls don't re-query. Lets `po wait <id>` from any cwd
-    # work even when the bead is actually in a sibling rig.
-    rig_for: dict[str, Path | None] = {}
+    # Resolve each input token to (canonical_id, rig_path) once via
+    # Prefect, then poll `bd show canonical_id` in that rig. Tokens can
+    # be: bead id, flow-run name, or flow-run UUID prefix (matches what
+    # `po status` shows in its ISSUE / FLOW / RUN columns).
+    resolved: dict[str, tuple[str, Path | None]] = {}
 
-    def _show(issue_id: str) -> dict | None:
-        cwd = rig_for.get(issue_id, "__unset__")
-        # First try: cwd if cached, else current cwd.
-        row = _bd_show(issue_id, rig_path=cwd if cwd != "__unset__" else None)
+    def _resolve(token: str) -> tuple[str, Path | None]:
+        if token in resolved:
+            return resolved[token]
+        # Try bd in cwd first — fastest path for the in-rig case.
+        row = _bd_show(token)
         if row is not None:
-            return row
-        # Fallback: ask Prefect once for this id, retry bd in that rig.
-        if cwd == "__unset__":
-            rp = rig_path_from_prefect(issue_id)
-            rig_for[issue_id] = rp
-            if rp is not None and rp.is_dir():
-                return _bd_show(issue_id, rig_path=rp)
-        return None
+            resolved[token] = (token, None)
+            return resolved[token]
+        # Fallback: ask Prefect. Returns canonical bead id even when the
+        # caller passed a UUID prefix.
+        info = lookup_prefect_run(token)
+        if info is not None:
+            rp, bead_id = info
+            resolved[token] = (bead_id, rp)
+        else:
+            resolved[token] = (token, None)
+        return resolved[token]
+
+    def _show(token: str) -> dict | None:
+        bead_id, rp = _resolve(token)
+        return _bd_show(bead_id, rig_path=rp)
 
     # Agent close-reasons follow a verb-first convention (`approved: …`,
     # `passed: …`, `no regression: …` for success vs `rejected: …`,
