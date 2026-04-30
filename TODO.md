@@ -1,59 +1,90 @@
 # prefect-orchestration TODO
 
-Post-`sr-8yu.3` validation. First real run succeeded end-to-end in 17 min
-(happy path, no loops triggered). Next chunk of work below.
+Status as of 2026-04-29. Most of the older items on this list shipped
+weeks ago; see `git log` and the closed beads under `bd list --status=closed`.
 
-## 1. Refactor verdicts: JSON-in-reply → file artifacts `[in progress]`
+## Shipped recently
 
-Current design parses trailing ` ```json ` blocks out of agent replies
-(`last_json_block`). Wrong abstraction — the orchestrator should read
-the world the agent changed, not parse the agent's prose.
+- ✅ Verdicts as file artifacts (`$RUN_DIR/verdicts/<step>.json`) —
+  the orchestrator no longer parses prose for step results.
+- ✅ `po run epic` — Beads dependencies map to Prefect `wait_for=`.
+- ✅ Claim-on-enter / close-on-exit (`po-{flow_run_id}` assignee).
+- ✅ `agent_step` primitive — single-turn agent dispatch with bead-
+  stamping, session affinity, convergence ladder, resumability cache.
+- ✅ Simple-mode `software_dev_full` — replaces nested-loop legacy +
+  short-lived graph-mode body. ~150 LOC vs ~600.
+- ✅ 4-tier complexity gating in the triager (trivial / simple /
+  moderate / complex). Trivial completes in <2 min via self-execute.
+- ✅ Cache fast-path — skip-on-closed-bead in 1 shellout (was 4).
+- ✅ Resumed-session short prompt — saves tokens on iter2+ turns.
+- ✅ Typed `RateLimitError` propagated from `agent_session.py`.
+- ✅ `tests-changed.txt` wired in `software_dev_full` so regression-gate
+  + tester run scoped tests instead of full suite (eliminated 30-min
+  pytest-thrash timeouts under multi-flow rig contention).
+- ✅ Ralph + full-test-gate are opt-in (`--enable-ralph`,
+  `--enable-full-test-gate`); off by default even at complex tier.
+- ✅ Skill flattened to `skills/SKILL.md` (single-skill pack layout).
+- ✅ One-line install: `make install` + `scripts/install.sh`
+  (curl-installable; detects Claude Code / Cursor / Aider and symlinks
+  the skill into each).
+- ✅ `engdocs/` decoupled from any specific deployment vocabulary.
+- ✅ Tmux backend with lurk-able sessions (`po-<issue>-<role>`).
+- ✅ Repo published to GitHub at
+  `ryanholtschneider2/prefect-agent-orchestration`.
 
-- Replace with: agent writes `$RUN_DIR/verdicts/<step>-iter-N.json` via
-  a shell `echo ... > ...` at the end of its turn. File existence is
-  the step signal; the JSON content is trivially parseable because the
-  agent controls the exact bytes.
-- Affected prompts: `triager`, `critique_plan`, `review`, `verification`,
-  `ralph`, `test`, `regression_gate` (7).
-- Affected tasks: same set — swap `last_json_block(reply)` for
-  `read_verdict(run_dir, "<step>-iter-N")`.
-- Drop `parsing.last_json_block`; it's redundant once this lands.
+## Open beads — see `bd ready`
 
-## 2. `po epic <epic-id>` — topo-sort beads children into a Prefect DAG `[in progress]`
+| ID | P | What |
+|---|---|---|
+| `xhb` | P3 | RemoteComputer backend abstraction (SSH / Modal / K8s pod / Daytona workers). The next big architectural move. |
+| `god` | P4 | `po tui`: right panel shows `bd show <id>` for selected issue. (May already be closing as this commit lands.) |
+| `7vs.6` | P3 | Delete legacy verdicts/ + prompt_for_verdict + loop scaffolding. **Deferred** until ~1 week of green PO runs in production. |
+| `7vs` | P2 | Parent epic for the bead-graph collapse work; mostly closed. |
 
-Beads dependencies map 1:1 onto Prefect's `wait_for=`. No polling, no
-daemon. When `bd list --parent=<epic-id>` changes, re-invoke — idempotent
-claim logic skips already-closed children.
+## Sketch — RemoteComputer (`xhb`) shape
 
-- Read `bd list --parent=<epic-id> --status=open,in_progress --json`.
-- Build dep graph from each child's `dependencies[]` (scoped to this epic).
-- Topo-sort; submit `software_dev_full.submit(...)` per child with
-  `wait_for=[parent_run.result()]` chained through a dict of futures.
-- Tag the flow runs with `{epic_id, issue_id}` for UI filtering.
+The single-largest follow-on. Today's `SessionBackend` Protocol abstracts
+"how do I talk to an agent runtime" into three impls (`ClaudeCliBackend`,
+`TmuxClaudeBackend`, `StubBackend`), all running the Claude CLI as a
+child process of the Prefect worker on the orchestrator host. That
+couples worker concurrency to host resources and gives no story for:
 
-## 3. Claim-on-enter / close-on-exit `[in progress]`
+- Persistent worker filesystems across turns (hibernate between agent
+  iters; resume with full state).
+- Spawning workers on remote hosts (SSH, Modal sandbox, Daytona, K8s
+  pod, Cloudflared tunnel).
+- Mixed-runtime fan-out (one rig, two roles on different machines).
 
-- At flow start (after triage dir setup): `bd update <issue_id> --status=in_progress --assignee=po-{flow_run_id}`.
-- At flow end (after `learn`): `bd close <issue_id>`.
-- Skip gracefully if `bd` not on PATH.
+Sketch: a `RemoteComputer` Protocol that wraps a `SessionBackend` plus
+a `persistent: bool` flag. Implementations:
 
-## 4. Concurrency docs `[pending]`
+- `LocalRemoteComputer` (default; what we have today)
+- `SSHRemoteComputer` (transient by default; persistent via `tmux new-session -dDP` reuse)
+- `ModalRemoteComputer` (Modal sandbox per agent iter; persistent via volume snapshot)
+- `K8sPodRemoteComputer` (one pod per role; persistent = StatefulSet, transient = Job)
+- `DaytonaRemoteComputer` (Daytona workspace; persistent built-in)
 
-README section only, no code:
+`agent_step` takes an optional `computer:` kwarg; defaults to the
+local one. Per-role `metadata.json` records which computer the role
+uses so resume picks the right host.
 
-```bash
-# Total concurrent issues in the pool ("max-workers"):
-prefect work-pool create po --type process --concurrency-limit 4
+## Open product/architecture questions
 
-# Per-role caps (across all flow runs):
-prefect concurrency-limit create critic 2
-prefect concurrency-limit create builder 3
-# then tag tasks: @task(tags=["critic"])
-```
+- Should approval/budget decorators (`@require_human_approval`,
+  `@budget`) live in core, or in a `po-policy` pack? Today we'd put
+  them in core; revisit if rule surface grows past ~20 rules.
+- How does memory scale past `bd remember` + `$RUN_DIR/lessons-learned.md`?
+  Vector store (mem0 / letta) ships as `po-integrations-mem0` if/when
+  load-bearing — not as a core Protocol.
+- Per-pack CLAUDE.md fragments — convention for assembly into a
+  rig-level CLAUDE.md? The starter meta-pack ships a consolidated
+  fragment, but the assembly story for à-la-carte installs is open.
 
-Also add `tags=["<role>"]` to each `@task` in `software_dev.py` so the
-global tag limits actually bite.
+## Out of scope
 
-## 5. `TmuxClaudeBackend` — lurk-able sessions `[pending]`
-
-New backend class: spawns `claude --print` inside `tmux new-session -d -s po-{issue}-{role}` with stdout tee'd. Envelope parsing stays the same (`--output-format json` still works through tee). User can `tmux attach po-sr-8yu.3-builder` to watch a turn happen live.
+- Reinventing Linear / Stripe / Gmail as the source of truth.
+- Generic event-bus primitives in core (NATS / Kafka belongs in an
+  integration pack).
+- Per-flow plugin systems — entry points are sufficient; everything
+  composes through `po.formulas`, `po.deployments`, `po.commands`,
+  `po.doctor_checks`.
