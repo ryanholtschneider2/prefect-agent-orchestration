@@ -1,6 +1,0 @@
-# Lessons Learned: prefect-orchestration-sav.3
-
-- The repo's auto-formatter (or some session-side tool) reverted edits I'd made to `agent_session.py` (the wrapper conditional) and to two test files mid-session — twice. Confirming the edit landed via grep after each `Edit` call would have caught it on the first iteration; I only noticed when tests started failing inexplicably. For future sessions: re-grep after Edit when an unrelated reminder mentions "file modified by linter."
-- The diagnostic-friendly pattern `<cmd> ; sleep infinity` is a cleanup hazard whenever the parent process can be killed — the detached child outlives the supervisor. Conditional keep-alive on rc != 0 preserves the diagnostic value without the leak.
-- `tmux list-sessions` + `list-windows` is enough to recover from a dead supervisor cross-process; you don't need a persisted registry on disk if the naming convention encodes ownership (`po-{issue}-{role}` / `{issue}-{role}` window in `po-{rig}`).
-- When `signal.signal(SIGINT, h)` is installed inside a Typer command and `CliRunner` is used, the handler is reachable from the in-process flow function (verified empirically). The handler must restore the prior signal in a `finally` block so subsequent CLI invocations in the same process don't inherit it.

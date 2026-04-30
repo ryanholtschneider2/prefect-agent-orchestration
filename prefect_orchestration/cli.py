@@ -1063,17 +1063,21 @@ app.add_typer(
 )
 
 
-@app.command(
+tui_app = typer.Typer(
+    no_args_is_help=False,
+    help="Open the Ink-based TUI dashboard, or rebuild it from source.",
+)
+app.add_typer(tui_app, name="tui")
+
+
+@tui_app.callback(
+    invoke_without_command=True,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
-def tui(ctx: typer.Context) -> None:
-    """Open the Ink-based TUI dashboard (read-only swarm overview).
-
-    Discovers the `po-tui` binary in this order:
-      1. `<repo>/bin/po-tui` (preferred — built via `bun build --compile`)
-      2. `<repo>/tui/dist/po-tui` (fresh build, not yet copied to bin/)
-      3. anywhere on $PATH
-    """
+def _tui_default(ctx: typer.Context) -> None:
+    """Default action: open the TUI. Subcommands (`update`) skip this body."""
+    if ctx.invoked_subcommand is not None:
+        return
     here = Path(__file__).resolve().parent.parent
     candidates = [
         here / "bin" / "po-tui",
@@ -1091,6 +1095,7 @@ def tui(ctx: typer.Context) -> None:
     if binary is None:
         typer.echo("po-tui binary not found.\n", err=True)
         typer.echo("Build it first:", err=True)
+        typer.echo(f"  po tui update    # or:", err=True)
         typer.echo(f"  cd {here / 'tui'} && bun install && bun run build", err=True)
         typer.echo(
             f"  mkdir -p {here / 'bin'} && cp dist/po-tui {here / 'bin' / 'po-tui'}",
@@ -1099,6 +1104,69 @@ def tui(ctx: typer.Context) -> None:
         raise SystemExit(1)
     extra = ctx.args or []
     os.execvp(binary, [binary, *extra])
+
+
+@tui_app.command("update")
+def _tui_update(
+    skip_install: bool = typer.Option(
+        False, "--skip-install", help="Skip `bun install` (faster on no-dep-change rebuilds)."
+    ),
+    no_copy: bool = typer.Option(
+        False, "--no-copy", help="Skip the `cp dist/po-tui bin/po-tui` step.",
+    ),
+) -> None:
+    """Rebuild the TUI binary from `tui/` source (`bun install` + `bun build`).
+
+    Writes the binary to `<repo>/tui/dist/po-tui` and copies it to
+    `<repo>/bin/po-tui` (the path `po tui` prefers). Use after
+    `git pull` brings in TUI source changes, or after editing `tui/src/*`.
+
+    Requires `bun` on PATH (see https://bun.sh).
+    """
+    if shutil.which("bun") is None:
+        typer.echo(
+            "bun not found on PATH. Install: curl -fsSL https://bun.sh/install | bash",
+            err=True,
+        )
+        raise SystemExit(1)
+    here = Path(__file__).resolve().parent.parent
+    tui_dir = here / "tui"
+    if not tui_dir.is_dir():
+        typer.echo(f"tui source not found at {tui_dir}", err=True)
+        raise SystemExit(1)
+
+    if not skip_install:
+        typer.echo(f"→ bun install (in {tui_dir})")
+        rc = subprocess.run(["bun", "install"], cwd=tui_dir).returncode
+        if rc != 0:
+            typer.echo("bun install failed", err=True)
+            raise SystemExit(rc)
+
+    typer.echo(f"→ bun run build (in {tui_dir})")
+    rc = subprocess.run(["bun", "run", "build"], cwd=tui_dir).returncode
+    if rc != 0:
+        typer.echo("bun run build failed", err=True)
+        raise SystemExit(rc)
+
+    dist_bin = tui_dir / "dist" / "po-tui"
+    if not dist_bin.is_file():
+        typer.echo(f"build did not produce {dist_bin}", err=True)
+        raise SystemExit(1)
+    typer.echo(f"  built: {dist_bin}  ({dist_bin.stat().st_size // (1024 * 1024)} MB)")
+
+    if not no_copy:
+        bin_dir = here / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        target = bin_dir / "po-tui"
+        # Atomic replace via temp file so a running TUI process holding
+        # the old inode doesn't break the swap with `Text file busy`.
+        tmp = target.with_suffix(".new")
+        shutil.copy2(dist_bin, tmp)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, target)
+        typer.echo(f"  copied to: {target}")
+
+    typer.echo("✓ tui updated. run `po tui` to launch.")
 
 
 @app.command()
