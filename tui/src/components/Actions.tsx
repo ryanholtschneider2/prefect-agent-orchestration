@@ -32,7 +32,6 @@ export function Actions({ issueId, flowRunId, prefectUrl }: Props): React.ReactE
         ) : (
           <Text color="gray">[o]  Open in Prefect UI (no run selected)</Text>
         )}
-        <Text color="gray">[s]  Show artifacts dir</Text>
       </Box>
     </Box>
   );

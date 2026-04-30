@@ -151,13 +151,17 @@ export function IssueList({
 
   // When hideCompleted is on, also hide done rows unless showDone is set.
   const showDoneRows = !hideCompleted && (showDone || done.length <= 5);
-  const visibleForGroups = showDoneRows ? [...running, ...done] : running;
 
-  const groups = buildGroups(visibleForGroups);
+  // Split groups so each row renders exactly once: runningGroups owns the
+  // top block, doneGroups owns the block below the separator.
+  const runningGroups = buildGroups(running);
+  const doneGroups = showDoneRows ? buildGroups(done) : [];
 
   const panelWidth = mobile ? 0 : Math.max(40, width ?? 54);
 
-  const allStems = groups.flatMap((g) => g.rows.map((r) => r.stem));
+  const allStems = [...runningGroups, ...doneGroups].flatMap((g) =>
+    g.rows.map((r) => r.stem),
+  );
   const stemMaxLen = allStems.reduce((m, s) => Math.max(m, s.length), 0);
   // Reserve: cursor(2) + paddingX(2) + border(2) + flowMode(5) + wall(6) + step(16) + stuck(2) = 35
   const reserved = 6 + 5 + 6 + 16 + 2;
@@ -192,9 +196,9 @@ export function IssueList({
           <Text color="gray">no flow runs found</Text>
         ) : (
           <>
-            {groups
-              .filter((g) => running.some((r) => g.rows.some((dr) => dr.issue.issueId === r.issueId)) || showDoneRows)
-              .flatMap((group, gi) => renderGroupRows(group, gi, running, selectedId, idColWidth, mobile))}
+            {runningGroups.flatMap((group, gi) =>
+              renderGroupRows(group, gi, running, selectedId, idColWidth, mobile),
+            )}
             {done.length > 0 && (
               <Box key="done-sep">
                 <Text color="gray">
@@ -202,10 +206,9 @@ export function IssueList({
                 </Text>
               </Box>
             )}
-            {showDoneRows &&
-              buildGroups(done).flatMap((group, gi) =>
-                renderGroupRows(group, 1000 + gi, done, selectedId, idColWidth, mobile),
-              )}
+            {doneGroups.flatMap((group, gi) =>
+              renderGroupRows(group, 1000 + gi, done, selectedId, idColWidth, mobile),
+            )}
           </>
         )}
       </Box>
