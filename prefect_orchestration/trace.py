@@ -7,8 +7,8 @@ slug = rig_path with all '/' replaced by '-'.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -82,7 +82,9 @@ def parse_jsonl(path: Path) -> list[TurnRecord]:
             thinking = any(c.get("type") == "thinking" for c in content)
             tool_names = [c["name"] for c in content if c.get("type") == "tool_use"]
             tool_inputs_preview = [
-                repr(c.get("input", {}))[:80] for c in content if c.get("type") == "tool_use"
+                repr(c.get("input", {}))[:80]
+                for c in content
+                if c.get("type") == "tool_use"
             ]
             text_preview = ""
             for c in content:
@@ -178,7 +180,17 @@ def _fmt_wall(s: float) -> str:
 
 
 def format_summary_table(summaries: list[RoleSummary]) -> str:
-    headers = ("ROLE", "MODEL", "TURNS", "TOOLS", "IN_TOK", "OUT_TOK", "CACHE_R", "THINK", "WALL")
+    headers = (
+        "ROLE",
+        "MODEL",
+        "TURNS",
+        "TOOLS",
+        "IN_TOK",
+        "OUT_TOK",
+        "CACHE_R",
+        "THINK",
+        "WALL",
+    )
     data = [
         (
             s.role,
@@ -219,7 +231,9 @@ def format_transcript(traces: list[RoleTrace], role: str) -> str:
             flags.append(f"{len(turn.tool_names)} tool(s)")
         flag_str = " + ".join(flags) if flags else "text"
         chunks.append(f"[Turn {turn.index}  T+{wall_fmt}  {role}]  {flag_str}")
-        for name, preview in zip(turn.tool_names, turn.tool_inputs_preview, strict=False):
+        for name, preview in zip(
+            turn.tool_names, turn.tool_inputs_preview, strict=False
+        ):
             chunks.append(f"  Tool: {name}")
             if preview:
                 chunks.append(f"    {preview}")
@@ -274,8 +288,12 @@ def format_turn_detail(traces: list[RoleTrace], role: str, turn_n: int) -> str:
     if not turns or turn_n < 1 or turn_n > len(turns):
         return f"turn {turn_n} out of range (role {role!r} has {len(turns)} turns)"
     turn = turns[turn_n - 1]
-    lines = [f"[Turn {turn.index}  T+{_fmt_wall(turn.wall_s)}  {role}  model={turn.model}]"]
-    lines.append(f"  in_tok={turn.in_tok} out_tok={turn.out_tok} cache_r={turn.cache_r}")
+    lines = [
+        f"[Turn {turn.index}  T+{_fmt_wall(turn.wall_s)}  {role}  model={turn.model}]"
+    ]
+    lines.append(
+        f"  in_tok={turn.in_tok} out_tok={turn.out_tok} cache_r={turn.cache_r}"
+    )
     if turn.thinking:
         lines.append("  <thinking block present>")
     for name, preview in zip(turn.tool_names, turn.tool_inputs_preview, strict=False):

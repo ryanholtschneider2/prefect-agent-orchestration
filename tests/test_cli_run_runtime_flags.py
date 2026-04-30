@@ -183,6 +183,69 @@ def test_flag_does_not_overwrite_explicit_kwarg(
     assert captured["kwargs"].get("model") == "sonnet"
 
 
+def test_scheduled_run_stamps_runtime_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`po run … --time 2h --model sonnet` stamps PO_MODEL_CLI before
+    submitting the deferred run. Mirrors the sync-path behavior so a
+    worker picking up the scheduled flow inherits the operator's
+    runtime knobs."""
+    from prefect_orchestration import cli as cli_mod
+
+    def _flow() -> str:
+        return "ok"
+
+    _patch_flow(monkeypatch, _flow)
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_submit(**kwargs: Any) -> tuple[Any, str]:
+        captured["env_at_submit"] = {
+            "PO_MODEL_CLI": os.environ.get("PO_MODEL_CLI"),
+            "PO_EFFORT_CLI": os.environ.get("PO_EFFORT_CLI"),
+            "PO_START_COMMAND_CLI": os.environ.get("PO_START_COMMAND_CLI"),
+        }
+
+        class _FR:
+            id = "fr-test"
+
+        return _FR(), "my-flow/my-flow-manual"
+
+    class _FakeClientCtx:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "prefect.client.orchestration.get_client", lambda: _FakeClientCtx()
+    )
+    monkeypatch.setattr(cli_mod._scheduling, "submit_scheduled_run", _fake_submit)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "my-flow",
+            "--time",
+            "2h",
+            "--model",
+            "sonnet",
+            "--effort",
+            "low",
+            "--start-command",
+            "claude --foo",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    env = captured["env_at_submit"]
+    assert env["PO_MODEL_CLI"] == "sonnet"
+    assert env["PO_EFFORT_CLI"] == "low"
+    assert env["PO_START_COMMAND_CLI"] == "claude --foo"
+
+
 def test_help_documents_new_flags() -> None:
     """`po run --help` advertises --model, --effort, --start-command."""
     runner = CliRunner()

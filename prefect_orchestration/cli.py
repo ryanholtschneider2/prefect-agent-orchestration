@@ -700,12 +700,24 @@ def artifacts(
 @app.command()
 def trace(
     issue_id: str = typer.Argument(..., help="Beads issue id"),
-    role: str | None = typer.Option(None, "--role", help="Full transcript for one role"),
-    tools: bool = typer.Option(False, "--tools", help="Chronological tool-call timeline"),
-    tokens: bool = typer.Option(False, "--tokens", help="Token + cache breakdown table"),
-    turn: int | None = typer.Option(None, "--turn", help="Show one specific turn (requires --role)"),
-    slow: float | None = typer.Option(None, "--slow", help="Show turns slower than N seconds"),
-    output_json: bool = typer.Option(False, "--json", help="Raw JSON output for piping"),
+    role: str | None = typer.Option(
+        None, "--role", help="Full transcript for one role"
+    ),
+    tools: bool = typer.Option(
+        False, "--tools", help="Chronological tool-call timeline"
+    ),
+    tokens: bool = typer.Option(
+        False, "--tokens", help="Token + cache breakdown table"
+    ),
+    turn: int | None = typer.Option(
+        None, "--turn", help="Show one specific turn (requires --role)"
+    ),
+    slow: float | None = typer.Option(
+        None, "--slow", help="Show turns slower than N seconds"
+    ),
+    output_json: bool = typer.Option(
+        False, "--json", help="Raw JSON output for piping"
+    ),
 ) -> None:
     """Inspect agent traces for an issue's PO run.
 
@@ -756,14 +768,18 @@ def trace(
     for key, uuid in sorted(metadata.items()):
         if not key.startswith("session_"):
             continue
-        role_name = key[len("session_"):]
+        role_name = key[len("session_") :]
         jsonl_path = _trace.find_jsonl(uuid, loc.rig_path)
         if jsonl_path is None:
             missing.append(f"  {role_name}: JSONL not found (uuid={uuid})")
             turns: list[_trace.TurnRecord] = []
         else:
             turns = _trace.parse_jsonl(jsonl_path)
-        traces.append(_trace.RoleTrace(role=role_name, uuid=uuid, turns=turns, jsonl_path=jsonl_path))
+        traces.append(
+            _trace.RoleTrace(
+                role=role_name, uuid=uuid, turns=turns, jsonl_path=jsonl_path
+            )
+        )
 
     for warn_line in missing:
         typer.echo(warn_line, err=True)
