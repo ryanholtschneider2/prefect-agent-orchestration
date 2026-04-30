@@ -82,6 +82,16 @@ uv run python -m pytest -k "deploy"         # by keyword
 po packs update
 ```
 
+### Linting / testing — use the helpers
+
+PO's linter and tester agents (and any human contributor) MUST use:
+- `make lint` — ruff check+fix, ruff format, tsc (full output logged to `.planning/logs/`)
+- `make test-unit` — pytest unit layer (excludes `tests/e2e/`)
+- `make test-e2e` — pytest e2e layer only (slow; ~2-3 min)
+- `make format` — formatter only (ruff format on Python)
+
+Do NOT invoke ruff / pytest / tsc directly inside an agent — full output can be large and trigger Claude Code's persist-to-disk pattern, causing re-read cycles.
+
 ### Test layers
 
 `tests/` is split by **layer**, and the layers MUST NOT OVERLAP — the PO

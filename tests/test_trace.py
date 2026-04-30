@@ -17,6 +17,7 @@ from prefect_orchestration.run_lookup import RunLocation
 # Fixture helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_jsonl(tmp_path: Path, records: list[dict]) -> Path:
     p = tmp_path / "session.jsonl"
     p.write_text("\n".join(json.dumps(r) for r in records) + "\n")
@@ -36,8 +37,10 @@ def _assistant(
     content = []
     if thinking:
         content.append({"type": "thinking", "thinking": "some thought"})
-    for name in (tools or []):
-        content.append({"type": "tool_use", "id": "x", "name": name, "input": {"cmd": "ls"}})
+    for name in tools or []:
+        content.append(
+            {"type": "tool_use", "id": "x", "name": name, "input": {"cmd": "ls"}}
+        )
     content.append({"type": "text", "text": "hello response"})
     return {
         "type": "assistant",
@@ -61,9 +64,19 @@ def sample_jsonl(tmp_path: Path) -> Path:
     records = [
         # non-assistant record (should be skipped)
         {"type": "user", "timestamp": "2026-01-01T00:00:00Z", "message": {}},
-        _assistant("2026-01-01T00:00:00Z", thinking=True, in_tok=100, out_tok=50, cache_r=200),
-        _assistant("2026-01-01T00:00:10Z", tools=["Bash", "Read"], in_tok=200, out_tok=80, cache_r=300),
-        _assistant("2026-01-01T00:00:25Z", tools=["Write"], in_tok=150, out_tok=60, cache_r=250),
+        _assistant(
+            "2026-01-01T00:00:00Z", thinking=True, in_tok=100, out_tok=50, cache_r=200
+        ),
+        _assistant(
+            "2026-01-01T00:00:10Z",
+            tools=["Bash", "Read"],
+            in_tok=200,
+            out_tok=80,
+            cache_r=300,
+        ),
+        _assistant(
+            "2026-01-01T00:00:25Z", tools=["Write"], in_tok=150, out_tok=60, cache_r=250
+        ),
     ]
     return _make_jsonl(tmp_path, records)
 
@@ -71,6 +84,7 @@ def sample_jsonl(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 # Parser tests
 # ---------------------------------------------------------------------------
+
 
 def test_parse_jsonl_counts_turns(sample_jsonl: Path) -> None:
     turns = _trace.parse_jsonl(sample_jsonl)
@@ -123,18 +137,33 @@ def test_parse_jsonl_skips_non_assistant(tmp_path: Path) -> None:
 # Formatter tests
 # ---------------------------------------------------------------------------
 
+
 def test_format_summary_table_headers(sample_jsonl: Path) -> None:
     turns = _trace.parse_jsonl(sample_jsonl)
-    rt = _trace.RoleTrace(role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl)
+    rt = _trace.RoleTrace(
+        role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl
+    )
     summaries = _trace.summarize([rt])
     table = _trace.format_summary_table(summaries)
-    for header in ("ROLE", "MODEL", "TURNS", "TOOLS", "IN_TOK", "OUT_TOK", "CACHE_R", "THINK", "WALL"):
+    for header in (
+        "ROLE",
+        "MODEL",
+        "TURNS",
+        "TOOLS",
+        "IN_TOK",
+        "OUT_TOK",
+        "CACHE_R",
+        "THINK",
+        "WALL",
+    ):
         assert header in table
 
 
 def test_format_summary_table_values(sample_jsonl: Path) -> None:
     turns = _trace.parse_jsonl(sample_jsonl)
-    rt = _trace.RoleTrace(role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl)
+    rt = _trace.RoleTrace(
+        role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl
+    )
     summaries = _trace.summarize([rt])
     table = _trace.format_summary_table(summaries)
     assert "builder" in table
@@ -144,21 +173,25 @@ def test_format_summary_table_values(sample_jsonl: Path) -> None:
 
 def test_format_tools_timeline(sample_jsonl: Path) -> None:
     turns = _trace.parse_jsonl(sample_jsonl)
-    rt = _trace.RoleTrace(role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl)
+    rt = _trace.RoleTrace(
+        role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl
+    )
     timeline = _trace.format_tools_timeline([rt])
     assert "Bash" in timeline
     assert "Read" in timeline
     assert "Write" in timeline
-    lines = [l for l in timeline.splitlines() if l.strip()]
+    lines = [line for line in timeline.splitlines() if line.strip()]
     # Chronological: Bash/Read before Write
-    bash_idx = next(i for i, l in enumerate(lines) if "Bash" in l)
-    write_idx = next(i for i, l in enumerate(lines) if "Write" in l)
+    bash_idx = next(i for i, line in enumerate(lines) if "Bash" in line)
+    write_idx = next(i for i, line in enumerate(lines) if "Write" in line)
     assert bash_idx < write_idx
 
 
 def test_to_json_list_structure(sample_jsonl: Path) -> None:
     turns = _trace.parse_jsonl(sample_jsonl)
-    rt = _trace.RoleTrace(role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl)
+    rt = _trace.RoleTrace(
+        role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl
+    )
     items = _trace.to_json_list([rt])
     assert len(items) == 3
     for item in items:
@@ -173,14 +206,18 @@ def test_to_json_list_structure(sample_jsonl: Path) -> None:
 
 def test_format_transcript_role_not_found(sample_jsonl: Path) -> None:
     turns = _trace.parse_jsonl(sample_jsonl)
-    rt = _trace.RoleTrace(role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl)
+    rt = _trace.RoleTrace(
+        role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl
+    )
     out = _trace.format_transcript([rt], "planner")
     assert "not found" in out or "planner" in out
 
 
 def test_format_slow_turns_no_slow(sample_jsonl: Path) -> None:
     turns = _trace.parse_jsonl(sample_jsonl)
-    rt = _trace.RoleTrace(role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl)
+    rt = _trace.RoleTrace(
+        role="builder", uuid="abc", turns=turns, jsonl_path=sample_jsonl
+    )
     out = _trace.format_slow_turns([rt], min_secs=9999)
     assert "no turns" in out
 
@@ -188,6 +225,7 @@ def test_format_slow_turns_no_slow(sample_jsonl: Path) -> None:
 # ---------------------------------------------------------------------------
 # find_jsonl tests
 # ---------------------------------------------------------------------------
+
 
 def test_find_jsonl_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rig = Path("/fake/rig")
@@ -233,6 +271,7 @@ def _trace_find_jsonl_with_home(home: Path, uuid: str, rig_path: Path) -> Path |
 # CLI tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
@@ -263,7 +302,9 @@ def _make_trace_fixtures(
         )
     ]
     traces = [
-        _trace.RoleTrace(role="builder", uuid="uuid-builder-1", turns=turns, jsonl_path=None)
+        _trace.RoleTrace(
+            role="builder", uuid="uuid-builder-1", turns=turns, jsonl_path=None
+        )
     ]
     return loc, metadata, traces
 
@@ -271,18 +312,19 @@ def _make_trace_fixtures(
 def test_trace_command_summary(
     tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from prefect_orchestration import cli as cli_mod, sessions as _sessions_mod
+    from prefect_orchestration import cli as cli_mod
     from prefect_orchestration import beads_meta as _beads_meta_mod
 
     loc, metadata, traces = _make_trace_fixtures(tmp_path)
     monkeypatch.setattr(cli_mod._run_lookup, "resolve_run_dir", lambda _id: loc)
     monkeypatch.setattr(_beads_meta_mod, "resolve_seed_bead", lambda _id, **kw: _id)
-    monkeypatch.setattr(cli_mod._sessions, "load_role_sessions", lambda *a, **kw: metadata)
+    monkeypatch.setattr(
+        cli_mod._sessions, "load_role_sessions", lambda *a, **kw: metadata
+    )
     monkeypatch.setattr(cli_mod._trace, "find_jsonl", lambda uuid, rp: None)
     # Provide parsed turns via parse_jsonl — but since find_jsonl returns None, turns will be []
     # Instead patch so that the RoleTrace gets our fixture turns:
 
-    original_find = cli_mod._trace.find_jsonl
     fake_path = tmp_path / "fake.jsonl"
     fake_path.write_text("")
     monkeypatch.setattr(cli_mod._trace, "find_jsonl", lambda uuid, rp: fake_path)
@@ -290,7 +332,17 @@ def test_trace_command_summary(
 
     result = runner.invoke(app, ["trace", "test-issue"])
     assert result.exit_code == 0, result.output
-    for header in ("ROLE", "MODEL", "TURNS", "TOOLS", "IN_TOK", "OUT_TOK", "CACHE_R", "THINK", "WALL"):
+    for header in (
+        "ROLE",
+        "MODEL",
+        "TURNS",
+        "TOOLS",
+        "IN_TOK",
+        "OUT_TOK",
+        "CACHE_R",
+        "THINK",
+        "WALL",
+    ):
         assert header in result.output
 
 
@@ -303,7 +355,9 @@ def test_trace_command_json(
     loc, metadata, traces = _make_trace_fixtures(tmp_path)
     monkeypatch.setattr(cli_mod._run_lookup, "resolve_run_dir", lambda _id: loc)
     monkeypatch.setattr(_beads_meta_mod, "resolve_seed_bead", lambda _id, **kw: _id)
-    monkeypatch.setattr(cli_mod._sessions, "load_role_sessions", lambda *a, **kw: metadata)
+    monkeypatch.setattr(
+        cli_mod._sessions, "load_role_sessions", lambda *a, **kw: metadata
+    )
     fake_path = tmp_path / "fake.jsonl"
     fake_path.write_text("")
     monkeypatch.setattr(cli_mod._trace, "find_jsonl", lambda uuid, rp: fake_path)

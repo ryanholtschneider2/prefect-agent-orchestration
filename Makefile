@@ -24,7 +24,22 @@ CLAUDE_SKILLS_DIR := $(HOME)/.claude/skills
 CURSOR_SKILLS_DIR := $(HOME)/.cursor/skills
 AIDER_SKILLS_DIR  := $(HOME)/.aider/skills
 
-.PHONY: help install install-cli install-skill uninstall uninstall-skill doctor test lint clean
+LOG_DIR         := $(REPO_DIR)/.planning/logs
+
+# Internal: run CMD, tee full output to LOG_DIR/NAME.log.
+# Print "  ✓ NAME" on success; last 30 log lines + exit on failure.
+define _run_logged
+	@mkdir -p $(LOG_DIR)
+	@if $(2) > $(LOG_DIR)/$(1).log 2>&1; then \
+	  echo "  ✓ $(1)"; \
+	else \
+	  echo "  ✗ $(1) — last 30 lines (full log: $(LOG_DIR)/$(1).log):"; \
+	  tail -30 $(LOG_DIR)/$(1).log; \
+	  exit 1; \
+	fi
+endef
+
+.PHONY: help install install-cli install-skill uninstall uninstall-skill doctor test test-unit test-e2e lint format clean
 
 help:
 	@echo "PO install targets (run \`make install\` for all-in-one):"
@@ -40,7 +55,10 @@ help:
 	@echo "  make uninstall            remove CLI + all skill symlinks"
 	@echo "  make doctor               run \`po doctor\` health check"
 	@echo "  make test                 full test suite"
-	@echo "  make lint                 ruff + mypy"
+	@echo "  make lint                 ruff check+fix, ruff format, tsc (logs → .planning/logs/)"
+	@echo "  make test-unit            pytest unit layer (excludes tests/e2e/)"
+	@echo "  make test-e2e             pytest e2e layer only (slow; ~2-3 min)"
+	@echo "  make format               ruff format (Python)"
 	@echo ""
 	@echo "Detected coding agents (will get skill on AGENT=all):"
 	@$(MAKE) -s _detect-agents
@@ -117,8 +135,18 @@ test:
 	uv run python -m pytest tests/ -v
 
 lint:
-	uv run ruff check prefect_orchestration tests
-	uv run python -m mypy prefect_orchestration
+	$(call _run_logged,ruff-check,uv run ruff check --fix prefect_orchestration tests)
+	$(call _run_logged,ruff-format,uv run ruff format prefect_orchestration tests)
+	$(call _run_logged,tsc,cd tui && bun run typecheck)
+
+test-unit:
+	$(call _run_logged,pytest-unit,uv run python -m pytest tests/ --ignore=tests/e2e -q)
+
+test-e2e:
+	$(call _run_logged,pytest-e2e,uv run python -m pytest tests/e2e -q)
+
+format:
+	uv run ruff format prefect_orchestration/ tests/
 
 clean:
 	rm -rf .pytest_cache .ruff_cache **/__pycache__ build dist *.egg-info

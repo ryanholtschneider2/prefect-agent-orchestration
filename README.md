@@ -206,8 +206,14 @@ git clone <repo> && cd prefect-orchestration
 make install                    # CLI + skill for all detected agents
 make install AGENT=claude       # CLI + skill for Claude Code only
 make install AGENT=none         # CLI only, no skill
+make lint                       # ruff + mypy + tsc (logs to .planning/logs/)
+make test-unit                  # pytest unit layer
+make test-e2e                   # pytest e2e layer (slow)
+make format                     # ruff format
 make help                       # see all targets + which agents are detected
 ```
+
+`make lint`, `make test-unit`, `make test-e2e`, `make format` — see [CLAUDE.md](CLAUDE.md) for details.
 
 Both paths run `uv tool install --editable` under the hood and symlink
 `<agent-skill-dir>/po → <repo>/skills/`. On its own `po list` will show only

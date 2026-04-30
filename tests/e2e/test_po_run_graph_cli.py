@@ -130,6 +130,21 @@ def test_po_run_graph_discovers_via_bd_dep_edges(
         assert a_id in combined, combined
         assert b_id in combined, combined
         assert c_id in combined, combined
+        # Topo order check: A's submission line must appear before B's
+        # which must appear before C's. The `_dispatch_nodes` info-log
+        # prints `submitting N node(s): [<id>, ...]` in topo order.
+        submit_line = next(
+            (
+                ln
+                for ln in combined.splitlines()
+                if "submitting" in ln and "node(s)" in ln
+            ),
+            None,
+        )
+        assert submit_line is not None, combined
+        assert (
+            submit_line.index(a_id) < submit_line.index(b_id) < submit_line.index(c_id)
+        ), submit_line
     finally:
         # Clean up any Prefect flow runs created by this test. Without
         # this, a `po run graph` whose subprocess crashes mid-flight
@@ -169,10 +184,13 @@ def _cancel_flow_runs_for_rig(api_url: str, rig_path: str) -> None:
                 runs = await c.read_flow_runs(
                     flow_run_filter=FlowRunFilter(
                         state=FlowRunFilterState(
-                            type=FlowRunFilterStateType(any_=[
-                                StateType.RUNNING, StateType.PENDING,
-                                StateType.SCHEDULED,
-                            ]),
+                            type=FlowRunFilterStateType(
+                                any_=[
+                                    StateType.RUNNING,
+                                    StateType.PENDING,
+                                    StateType.SCHEDULED,
+                                ]
+                            ),
                         ),
                     ),
                     limit=200,
@@ -195,15 +213,3 @@ def _cancel_flow_runs_for_rig(api_url: str, rig_path: str) -> None:
     except Exception:
         # Best-effort: don't let cleanup hide the test result.
         pass
-
-    # Topo order check: A's submission line must appear before B's
-    # which must appear before C's. The `_dispatch_nodes` info-log
-    # prints `submitting N node(s): [<id>, ...]` in topo order.
-    submit_line = next(
-        (ln for ln in combined.splitlines() if "submitting" in ln and "node(s)" in ln),
-        None,
-    )
-    assert submit_line is not None, combined
-    assert (
-        submit_line.index(a_id) < submit_line.index(b_id) < submit_line.index(c_id)
-    ), submit_line
