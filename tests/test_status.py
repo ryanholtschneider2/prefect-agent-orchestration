@@ -42,6 +42,7 @@ class FakeFlowRun:
     start_time: datetime | None = None
     end_time: datetime | None = None
     created: datetime | None = None
+    parameters: dict[str, Any] | None = None
 
 
 # ─── parse_since ─────────────────────────────────────────────────────
@@ -178,6 +179,64 @@ def test_render_table_row_per_issue() -> None:
     assert "po-dmy" in out
     assert "Running" in out
     assert "build" in out
+
+
+def test_render_table_shows_rig_and_run_columns() -> None:
+    """`po status` should surface the rig (so users know which bd
+    database the issue lives in — addresses the rig-4lp confusion)
+    and a flow-run UUID prefix (so users can `prefect flow-run inspect
+    <prefix>` or jump to the UI directly)."""
+    t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
+    g = _status.IssueGroup(
+        issue_id="rig-4lp",
+        latest=FakeFlowRun(
+            id="60f43185-ca71-4589-a97a-4a0117e2cd3a",
+            name="rig-4lp",
+            tags=["issue_id:rig-4lp"],
+            state_name="Running",
+            start_time=t0,
+            parameters={"rig": "uc0-e2e", "rig_path": "/path/to/uc0-e2e"},
+        ),
+        extras=[],
+        current_step="build",
+    )
+    out = _status.render_table([g])
+    assert "RIG" in out and "RUN" in out
+    assert "uc0-e2e" in out, out
+    assert "60f43185" in out, "first 8 chars of flow-run UUID should appear"
+
+
+def test_render_table_rig_falls_back_to_rig_path_basename() -> None:
+    """When `rig` param isn't set, derive a label from `rig_path`."""
+    g = _status.IssueGroup(
+        issue_id="x",
+        latest=FakeFlowRun(
+            id="abc-123", name="x", tags=["issue_id:x"],
+            parameters={"rig_path": "/some/path/my-rig"},
+        ),
+        extras=[],
+        current_step="-",
+    )
+    out = _status.render_table([g])
+    assert "my-rig" in out
+
+
+def test_render_table_rig_dash_when_absent() -> None:
+    """Ad-hoc / scratch flows have no rig parameter — show `-`, not blank."""
+    g = _status.IssueGroup(
+        issue_id="ad-hoc",
+        latest=FakeFlowRun(
+            id="abc", name="ad-hoc", tags=["issue_id:ad-hoc"],
+            parameters=None,
+        ),
+        extras=[],
+        current_step="-",
+    )
+    out = _status.render_table([g])
+    # Header column "RIG" + a dash row entry under it.
+    assert "RIG" in out
+    # Two dashes per row for unknown rig + step.
+    assert " - " in out
 
 
 def test_render_table_empty() -> None:

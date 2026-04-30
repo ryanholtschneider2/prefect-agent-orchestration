@@ -220,11 +220,50 @@ def _fmt_duration(start: datetime | None, end: datetime | None) -> str:
     return f"{h}h{rem // 60:02d}m"
 
 
+def _rig_label(fr: Any) -> str:
+    """Best-effort rig label from a flow run's `rig` / `rig_path` parameter.
+
+    Falls back to "-" when neither is set (ad-hoc / scratch flows).
+    """
+    params = getattr(fr, "parameters", None) or {}
+    rig = params.get("rig")
+    if isinstance(rig, str) and rig:
+        return rig
+    rp = params.get("rig_path")
+    if isinstance(rp, str) and rp:
+        from pathlib import Path as _P
+        return _P(rp).name or "-"
+    return "-"
+
+
+def _flow_run_id_short(fr: Any) -> str:
+    """First 8 chars of the flow-run UUID — enough to grep /
+    `prefect flow-run inspect <prefix>` in practice."""
+    fr_id = getattr(fr, "id", None)
+    if fr_id is None:
+        return "-"
+    s = str(fr_id)
+    return s.split("-", 1)[0] if "-" in s else s[:8]
+
+
 def render_table(groups: list[IssueGroup]) -> str:
-    """Format grouped runs as a plain-text table."""
+    """Format grouped runs as a plain-text table.
+
+    Columns:
+      ISSUE     — value of the `issue_id:<id>` tag (canonical bead id)
+      RIG       — `rig` param if set, else basename of `rig_path`
+      RUN       — first 8 chars of the flow-run UUID (lookup with
+                  `prefect flow-run inspect <prefix>` or in the UI)
+      FLOW      — flow-run name (often == ISSUE; differs for graph_run
+                  where it's `{root_id}` and for ad-hoc flows)
+      STATE / STARTED / DURATION / STEP / RUNS — Prefect-side metadata
+    """
     if not groups:
         return "no flow runs with issue_id tag found."
-    headers = ("ISSUE", "FLOW", "STATE", "STARTED", "DURATION", "STEP", "RUNS")
+    headers = (
+        "ISSUE", "RIG", "RUN", "FLOW",
+        "STATE", "STARTED", "DURATION", "STEP", "RUNS",
+    )
     rows: list[tuple[str, ...]] = []
     for g in groups:
         fr = g.latest
@@ -240,6 +279,8 @@ def render_table(groups: list[IssueGroup]) -> str:
         rows.append(
             (
                 g.issue_id,
+                _rig_label(fr),
+                _flow_run_id_short(fr),
                 str(getattr(fr, "name", None) or getattr(fr, "flow_name", "-")),
                 str(state),
                 _fmt_dt(start),
