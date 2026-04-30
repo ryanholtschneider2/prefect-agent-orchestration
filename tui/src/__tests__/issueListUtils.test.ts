@@ -1,8 +1,9 @@
 import { describe, expect, it } from "bun:test";
 
 import { humanWall } from "../components/IssueList.js";
-import { computeStuck } from "../state/store.js";
+import { computeStuck, selectLatestRunPerIssue } from "../state/store.js";
 import type { IssueRow } from "../state/store.js";
+import type { PrefectFlowRun } from "../data/prefect.js";
 
 describe("humanWall()", () => {
   it("returns 0m for 0ms", () => {
@@ -102,5 +103,103 @@ describe("computeStuck()", () => {
       roles: [{ role: "mystery-role", state: "running", iterations: 1, startedAt: startedAt2 }],
     });
     expect(computeStuck(row2, now)).toBe(true);
+  });
+});
+
+// ─── selectLatestRunPerIssue ─────────────────────────────────────────
+
+function makeFr(
+  overrides: Partial<PrefectFlowRun> & { id: string },
+): PrefectFlowRun {
+  return {
+    id: overrides.id,
+    name: overrides.id,
+    flow_id: "flow-1",
+    state_type: "COMPLETED",
+    state_name: "Completed",
+    tags: [`issue_id:${overrides.id}`],
+    start_time: null,
+    end_time: null,
+    ...overrides,
+  };
+}
+
+describe("selectLatestRunPerIssue()", () => {
+  it("RUNNING with null start_time beats COMPLETED with old start_time", () => {
+    // Regression: newly dispatched RUNNING runs were invisible because
+    // "" > "2026-04-28T..." is false, so the old COMPLETED run won.
+    const completed = makeFr({
+      id: "sb-595",
+      state_type: "COMPLETED",
+      state_name: "Completed",
+      tags: ["issue_id:sb-595"],
+      start_time: "2026-04-28T10:00:00+00:00",
+    });
+    const running = makeFr({
+      id: "sb-595-new",
+      state_type: "RUNNING",
+      state_name: "Running",
+      tags: ["issue_id:sb-595"],
+      start_time: null, // freshly dispatched — no start_time yet
+    });
+    const result = selectLatestRunPerIssue([completed, running]);
+    expect(result.get("sb-595")?.id).toBe("sb-595-new");
+  });
+
+  it("COMPLETED with newer start_time beats COMPLETED with older start_time", () => {
+    const older = makeFr({
+      id: "run-old",
+      state_type: "COMPLETED",
+      tags: ["issue_id:po-1"],
+      start_time: "2026-04-20T10:00:00+00:00",
+    });
+    const newer = makeFr({
+      id: "run-new",
+      state_type: "COMPLETED",
+      tags: ["issue_id:po-1"],
+      start_time: "2026-04-28T10:00:00+00:00",
+    });
+    const result = selectLatestRunPerIssue([older, newer]);
+    expect(result.get("po-1")?.id).toBe("run-new");
+  });
+
+  it("RUNNING run beats CANCELLED run regardless of timestamps", () => {
+    const cancelled = makeFr({
+      id: "run-cancelled",
+      state_type: "CANCELLED",
+      tags: ["issue_id:po-2"],
+      start_time: "2026-04-28T10:00:00+00:00",
+    });
+    const running = makeFr({
+      id: "run-running",
+      state_type: "RUNNING",
+      tags: ["issue_id:po-2"],
+      start_time: "2026-04-01T00:00:00+00:00", // older timestamp
+    });
+    const result = selectLatestRunPerIssue([cancelled, running]);
+    expect(result.get("po-2")?.id).toBe("run-running");
+  });
+
+  it("PENDING run beats CANCELLED run", () => {
+    const cancelled = makeFr({
+      id: "run-done",
+      state_type: "CANCELLED",
+      tags: ["issue_id:po-3"],
+      start_time: "2026-04-28T10:00:00+00:00",
+    });
+    const pending = makeFr({
+      id: "run-pending",
+      state_type: "PENDING",
+      tags: ["issue_id:po-3"],
+      start_time: null,
+    });
+    const result = selectLatestRunPerIssue([cancelled, pending]);
+    expect(result.get("po-3")?.id).toBe("run-pending");
+  });
+
+  it("runs without issue_id tag are ignored", () => {
+    const untagged = makeFr({ id: "no-tag", tags: ["other:tag"] });
+    const result = selectLatestRunPerIssue([untagged]);
+    expect(result.size).toBe(0);
   });
 });

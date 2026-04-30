@@ -151,7 +151,7 @@ async def find_runs_by_issue_id(
     """
     from prefect.client.schemas.filters import (
         FlowRunFilter,
-        FlowRunFilterStartTime,
+        FlowRunFilterExpectedStartTime,
         FlowRunFilterStateName,
         FlowRunFilterTags,
     )
@@ -161,7 +161,10 @@ async def find_runs_by_issue_id(
     if issue_id is not None:
         kwargs["tags"] = FlowRunFilterTags(all_=[f"{ISSUE_TAG_PREFIX}{issue_id}"])
     if since is not None:
-        kwargs["start_time"] = FlowRunFilterStartTime(after_=since)
+        # expected_start_time is always set at dispatch time (unlike start_time,
+        # which is null until the flow actually starts). Using it here ensures
+        # newly dispatched PENDING/SCHEDULED runs are visible immediately.
+        kwargs["expected_start_time"] = FlowRunFilterExpectedStartTime(after_=since)
     if state is not None:
         kwargs["state"] = {"name": FlowRunFilterStateName(any_=[state])}
 

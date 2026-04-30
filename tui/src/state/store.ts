@@ -231,6 +231,53 @@ function flowToIssueId(fr: PrefectFlowRun): string | undefined {
   return tagValue(fr.tags, "issue_id");
 }
 
+// Non-terminal state types — a run in any of these states is "active" and
+// should always win over a terminal run when deduplicating per issue_id.
+const ACTIVE_STATE_TYPES = new Set<string>([
+  "RUNNING",
+  "PENDING",
+  "SCHEDULED",
+  "PAUSED",
+]);
+
+/**
+ * Deduplicate flow runs to one per issue_id.
+ *
+ * Preference order:
+ *   1. Active (non-terminal) run over any terminal run.
+ *   2. Among same category: most recent start_time (null → "" sorts last,
+ *      so among two active runs with null start_time either wins).
+ */
+export function selectLatestRunPerIssue(
+  flowRuns: PrefectFlowRun[],
+): Map<string, PrefectFlowRun> {
+  const byIssue = new Map<string, PrefectFlowRun>();
+  for (const fr of flowRuns) {
+    const iid = flowToIssueId(fr);
+    if (!iid) continue;
+    const existing = byIssue.get(iid);
+    if (!existing) {
+      byIssue.set(iid, fr);
+      continue;
+    }
+    const existingActive = ACTIVE_STATE_TYPES.has(existing.state_type);
+    const newActive = ACTIVE_STATE_TYPES.has(fr.state_type);
+    // Active always beats terminal regardless of timestamps.
+    if (newActive && !existingActive) {
+      byIssue.set(iid, fr);
+      continue;
+    }
+    if (existingActive && !newActive) {
+      continue;
+    }
+    // Same category: pick the more recent start_time.
+    const a = existing.start_time ?? "";
+    const b = fr.start_time ?? "";
+    if (b > a) byIssue.set(iid, fr);
+  }
+  return byIssue;
+}
+
 const STEP_TYPICAL_MS: Record<string, number> = {
   triager: 2 * 60_000,
   baseline: 2 * 60_000,
@@ -316,20 +363,9 @@ export const useStore = create<PoTuiState>((set, get) => ({
         /* bd not on PATH or no rig — ignore */
       }
 
-      // Dedupe to one flow run per issue_id (most recent start).
-      const byIssue = new Map<string, PrefectFlowRun>();
-      for (const fr of flowRuns) {
-        const iid = flowToIssueId(fr);
-        if (!iid) continue;
-        const existing = byIssue.get(iid);
-        if (!existing) {
-          byIssue.set(iid, fr);
-          continue;
-        }
-        const a = existing.start_time ?? "";
-        const b = fr.start_time ?? "";
-        if (b > a) byIssue.set(iid, fr);
-      }
+      // Dedupe to one flow run per issue_id — active runs beat terminal ones,
+      // then fall back to most-recent start_time within the same category.
+      const byIssue = selectLatestRunPerIssue(flowRuns);
 
       const flowEntries = Array.from(byIssue.entries());
 

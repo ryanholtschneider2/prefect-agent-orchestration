@@ -353,6 +353,48 @@ async def test_find_runs_applies_tag_filter_server_side() -> None:
     assert any("po-9" in t for t in flt.tags.all_)
 
 
+@pytest.mark.asyncio
+async def test_find_runs_uses_expected_start_time_filter() -> None:
+    """Regression: `--since` must filter on expected_start_time, not start_time.
+
+    A newly dispatched flow run (PENDING/SCHEDULED) has start_time=null.
+    Filtering with FlowRunFilterStartTime(after_=since) uses a `start_time > ?`
+    SQL predicate that excludes null values, making in-flight runs invisible.
+    FlowRunFilterExpectedStartTime is always set at dispatch time, so it
+    correctly includes new runs.
+    """
+    client = _FakeClient([])
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    await _status.find_runs_by_issue_id(client, since=since)
+    flt = client.call_kwargs.get("flow_run_filter")
+    assert flt is not None
+    # Must use expected_start_time, not start_time.
+    assert flt.expected_start_time is not None, (
+        "expected_start_time filter not set — newly dispatched PENDING runs would be invisible"
+    )
+    assert flt.start_time is None, "start_time filter must not be set (excludes null-start_time runs)"
+
+
+def test_group_by_issue_null_start_time_run_visible() -> None:
+    """Regression: a RUNNING run with start_time=None but expected_start_time set
+    must appear in group_by_issue results (was hidden when sorted only by start_time).
+    """
+    t0 = datetime.now(timezone.utc) - timedelta(minutes=5)
+    runs = [
+        FakeFlowRun(
+            id="running-1",
+            name="software_dev_fast",
+            tags=["issue_id:sb-595"],
+            state_name="Running",
+            expected_start_time=t0,
+            start_time=None,  # null — as seen on newly dispatched flows
+        ),
+    ]
+    groups = _status.group_by_issue(runs)
+    assert len(groups) == 1
+    assert groups[0].latest.id == "running-1"
+
+
 # ─── CLI: exit 0 on server down (AC3) ────────────────────────────────
 
 
