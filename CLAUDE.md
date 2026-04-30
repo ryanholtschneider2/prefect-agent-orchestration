@@ -843,6 +843,18 @@ approval and the byte-identical diff (89e iter-2 + iter-3 critiques
 are the canonical examples). This keeps the loop closeable instead
 of inventing fake findings.
 
+**Fast-mode parents are a known phantom source.** When the parent
+bead closes with reason `po fast-mode complete`, graph-mode
+bookkeeping still seeds `plan` / `plan-critic` (and sometimes
+follow-on `build` / `review` iters) even though fast-mode bypassed
+planning entirely — there is no `plan.md` on disk and no rejection
+signal to act on. `prv` hit this 4 times in one run (plan-critic
+iter 1+2, plan iter 2, build iter 3). When you find yourself
+dispatched on a fast-mode parent: confirm parent close-reason +
+absence of `plan.md`, apply the diagnose/don't-churn/document
+protocol, and (planner only) re-save a byte-identical or empty
+`plan.md` so downstream critics see consistent state.
+
 ## agent_step adoption patterns (non-bead-driven flows)
 
 Lessons from migrating `po-formulas-retro` (a *scheduled* cron flow,
