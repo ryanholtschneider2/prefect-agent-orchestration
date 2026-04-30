@@ -110,7 +110,7 @@ async def _formula_from_prefect_async(issue_id: str) -> str | None:
     try:
         eps = entry_points(group="po.formulas")
     except TypeError:
-        eps = entry_points().get("po.formulas", [])  # type: ignore[assignment]
+        eps = entry_points().get("po.formulas", [])  # type: ignore[assignment,attr-defined]
     for ep in eps:
         if ep.name == ep_name:
             return ep_name

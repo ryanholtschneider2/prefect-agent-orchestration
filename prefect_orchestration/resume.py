@@ -29,14 +29,11 @@ Failure surface (raised as `ResumeError` with a numeric `exit_code`):
 from __future__ import annotations
 
 import os
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 from prefect_orchestration import run_lookup
-DEFAULT_FORMULA = "software-dev-full"
-
 from prefect_orchestration.retry import (
     LOCK_SUFFIX,
     _bd_reopen,
@@ -45,6 +42,8 @@ from prefect_orchestration.retry import (
     _in_flight_count,
     _load_formula,
 )
+
+DEFAULT_FORMULA = "software-dev-full"
 
 
 class ResumeError(RuntimeError):
