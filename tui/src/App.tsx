@@ -4,19 +4,13 @@ import { Box, Text, useApp, useInput, useStdout } from "ink";
 import Gradient from "ink-gradient";
 import TextInput from "ink-text-input";
 
-import { BdShow, buildLines } from "./components/BdShow.js";
-import { FlowOverview } from "./components/FlowOverview.js";
+import { buildLines } from "./components/BdShow.js";
+import { DetailTabs } from "./components/DetailTabs.js";
 import { IssueList } from "./components/IssueList.js";
-import { RoleTimeline } from "./components/RoleTimeline.js";
-import { TmuxTail } from "./components/TmuxTail.js";
 import { useTicker } from "./hooks/useTicker.js";
-import { activitySort, useStore } from "./state/store.js";
+import { activitySort, useStore, type TabName } from "./state/store.js";
 import { openAttachInNewWindow } from "./data/tmux.js";
 
-/**
- * Sentinel file the wrapper (cli.tsx) reads after Ink exits. If present and
- * we exited cleanly, the wrapper execvp's `tmux attach -t <session>`.
- */
 const ATTACH_SENTINEL = `${process.env.TMPDIR ?? "/tmp"}/po-tui-attach.${process.pid}`;
 
 export interface AppProps {
@@ -24,6 +18,13 @@ export interface AppProps {
   epicFilter?: string;
   refreshMs: number;
   mobile?: boolean;
+}
+
+type DispatchStep = "issue" | "flow" | "rig" | "rigPath" | "confirm";
+
+interface DispatchForm {
+  step: DispatchStep;
+  values: Partial<Record<"issue" | "flow" | "rig" | "rigPath", string>>;
 }
 
 export function App(props: AppProps): React.ReactElement {
@@ -40,16 +41,18 @@ export function App(props: AppProps): React.ReactElement {
   const refreshPane = useStore((s) => s.refreshPane);
   const paneText = useStore((s) => s.paneText);
   const paneSession = useStore((s) => s.paneSession);
-  const hideCompleted = useStore((s) => s.hideCompleted);
-  const toggleHideCompleted = useStore((s) => s.toggleHideCompleted);
   const drillIntoIssueId = useStore((s) => s.drillIntoIssueId);
   const setDrill = useStore((s) => s.setDrill);
-  const bdShowVisible = useStore((s) => s.bdShowVisible);
   const bdShowCache = useStore((s) => s.bdShowCache);
   const bdShowError = useStore((s) => s.bdShowError);
-  const setBdShowVisible = useStore((s) => s.setBdShowVisible);
+  const selectedTab = useStore((s) => s.selectedTab);
+  const setSelectedTab = useStore((s) => s.setSelectedTab);
+  const showDone = useStore((s) => s.showDone);
+  const toggleShowDone = useStore((s) => s.toggleShowDone);
+  const pendingConfirm = useStore((s) => s.pendingConfirm);
+  const setPendingConfirm = useStore((s) => s.setPendingConfirm);
+  const hideCompleted = useStore((s) => s.hideCompleted);
 
-  // Inject CLI args into the store on first render.
   useMemo(() => {
     useStore.setState({
       prefectUrl: props.prefectUrl,
@@ -59,30 +62,25 @@ export function App(props: AppProps): React.ReactElement {
   }, [props.prefectUrl, props.epicFilter, props.refreshMs]);
 
   useTicker(tick, props.refreshMs);
-  // Decoupled fast ticker for the tmux pane only — feels live without
-  // hammering the Prefect API.
   useTicker(refreshPane, 500);
 
   const [filterMode, setFilterMode] = useState(false);
   const [filterDraft, setFilterDraft] = useState("");
   const [attachStatus, setAttachStatus] = useState<string | null>(null);
   const [bdScrollOffset, setBdScrollOffset] = useState(0);
+  const [dispatchForm, setDispatchForm] = useState<DispatchForm | null>(null);
+  const [dispatchDraft, setDispatchDraft] = useState("");
 
-  // Reset bd-show scroll on selection change so a new bead always opens
-  // at the top.
   useEffect(() => {
     setBdScrollOffset(0);
-  }, [selectedId]);
+  }, [selectedId, selectedTab]);
 
-  // Auto-clear the attach toast after a few seconds.
   useEffect(() => {
     if (!attachStatus) return;
     const t = setTimeout(() => setAttachStatus(null), 3000);
     return () => clearTimeout(t);
   }, [attachStatus]);
 
-  // Pre-filter for the nav order. The visual list does its own
-  // hide/drill/filter so what you see and what you arrow through stay aligned.
   const navIssues = useMemo(() => {
     let v = issues;
     if (drillIntoIssueId) {
@@ -96,14 +94,7 @@ export function App(props: AppProps): React.ReactElement {
       v = v.filter((i) => keep.has(i.issueId));
     }
     if (hideCompleted) {
-      // "t" hides terminal states — show only active work (running / queued
-      // / paused). COMPLETED, FAILED, CRASHED, CANCELLED all drop out.
-      const TERMINAL = new Set([
-        "COMPLETED",
-        "FAILED",
-        "CRASHED",
-        "CANCELLED",
-      ]);
+      const TERMINAL = new Set(["COMPLETED", "FAILED", "CRASHED", "CANCELLED"]);
       v = v.filter((i) => !TERMINAL.has(i.flowState ?? ""));
     }
     if (filter) {
@@ -120,25 +111,16 @@ export function App(props: AppProps): React.ReactElement {
   const selected = navIssues.find((i) => i.issueId === selectedId)
     ?? issues.find((i) => i.issueId === selectedId);
 
-  // Sizing — needed early so the bd-show scroll math can clamp against it.
   const totalRows = stdout?.rows ?? 40;
   const totalCols = stdout?.columns ?? 120;
   const mobile = !!props.mobile;
-  // On mobile we stack vertically, so the tail must share rows with the
-  // issue list + timeline. Give it a smaller fixed slice.
   const tailHeight = mobile
     ? Math.max(6, Math.floor(totalRows / 3))
     : Math.max(8, Math.floor(totalRows / 2) - 4);
-  // Left panel grows with the terminal up to a cap; beyond that the right
-  // pane absorbs the rest. Min 54 (legacy width), max 96 — wide enough to
-  // show full issue stems + role names without truncation.
   const leftWidth = mobile
     ? undefined
     : Math.min(Math.max(54, Math.floor(totalCols * 0.42)), 96);
 
-  // Bd-show scroll math: clamp `bdScrollOffset` so we can't scroll past the
-  // last line. `maxBdOffset` is recomputed each render — the cached issue,
-  // its description length, and the terminal height can all change.
   const bdShowIssue = selectedId ? bdShowCache[selectedId] ?? null : null;
   const bdShowLineCount = useMemo(
     () => (bdShowIssue ? buildLines(bdShowIssue).length : 0),
@@ -146,18 +128,51 @@ export function App(props: AppProps): React.ReactElement {
   );
   const maxBdOffset = Math.max(0, bdShowLineCount - tailHeight);
 
+  const TAB_ORDER: TabName[] = ["LIVE", "TRACE", "BD", "ACTIONS"];
+
   useInput((input, key) => {
-    if (filterMode) return; // TextInput owns keys
+    if (filterMode) return;
+
+    // Dispatch form input handling
+    if (dispatchForm !== null) {
+      if (key.escape) {
+        setDispatchForm(null);
+        setDispatchDraft("");
+        return;
+      }
+      // TextInput handles its own chars; only intercept Escape
+      return;
+    }
+
+    // Confirmation overlay
+    if (pendingConfirm) {
+      if (input === "y") {
+        void runConfirmedAction(pendingConfirm);
+        setPendingConfirm(null);
+      } else {
+        setPendingConfirm(null);
+      }
+      return;
+    }
 
     if (input === "q" || (key.ctrl && input === "c")) {
       exit();
       return;
     }
-    if (input === "b") {
-      setBdShowVisible(!bdShowVisible);
+
+    // Tab navigation
+    if (input === "t") {
+      const next = TAB_ORDER[(TAB_ORDER.indexOf(selectedTab) + 1) % TAB_ORDER.length]!;
+      setSelectedTab(next);
       return;
     }
-    if (bdShowVisible) {
+    if (input === "1") { setSelectedTab("LIVE"); return; }
+    if (input === "2") { setSelectedTab("TRACE"); return; }
+    if (input === "3") { setSelectedTab("BD"); return; }
+    if (input === "4") { setSelectedTab("ACTIONS"); return; }
+
+    // BD tab scroll
+    if (selectedTab === "BD") {
       if (input === "j") {
         setBdScrollOffset((o) => Math.min(o + 1, maxBdOffset));
         return;
@@ -175,23 +190,36 @@ export function App(props: AppProps): React.ReactElement {
         return;
       }
     }
-    if (input === "r") {
-      void tick();
+
+    if (input === "D") { toggleShowDone(); return; }
+
+    if (input === "c" && selected) {
+      setPendingConfirm({ action: "cancel", issueId: selected.issueId });
       return;
     }
+    if (input === "r" && selected) {
+      setPendingConfirm({ action: "retry", issueId: selected.issueId });
+      return;
+    }
+    if (input === "d") {
+      setDispatchForm({ step: "issue", values: {} });
+      setDispatchDraft(selected?.issueId ?? "");
+      return;
+    }
+
+    if (input === "o" && selected?.flowRunId) {
+      const base = props.prefectUrl ?? "http://127.0.0.1:4200";
+      const url = `${base}/flow-runs/flow-run/${selected.flowRunId}`;
+      Bun.spawn(["xdg-open", url]);
+      return;
+    }
+
     if (input === "/") {
       setFilterDraft(filter);
       setFilterMode(true);
       return;
     }
-    if (input === "t") {
-      toggleHideCompleted();
-      return;
-    }
     if (input === "e") {
-      // Drill into the selected row's nearest parent (or the row itself if
-      // it's already a parent of something). Pressing again drills further.
-      // Pressing "E" pops back out.
       if (selected) {
         const target = selected.parentIssueId ?? selected.issueId;
         setDrill(target);
@@ -204,7 +232,6 @@ export function App(props: AppProps): React.ReactElement {
     }
     if (input === "a") {
       if (!paneSession) return;
-      // Try to spawn tmux attach in a new tab/window so po-tui keeps running.
       void (async () => {
         const method = await openAttachInNewWindow(paneSession);
         if (method) {
@@ -216,7 +243,6 @@ export function App(props: AppProps): React.ReactElement {
       return;
     }
     if (input === "A") {
-      // Capital A: legacy in-place attach (replaces the TUI, returns on detach).
       if (paneSession) {
         try {
           fs.writeFileSync(ATTACH_SENTINEL, paneSession, "utf8");
@@ -227,25 +253,24 @@ export function App(props: AppProps): React.ReactElement {
       }
       return;
     }
-    if (key.upArrow) {
-      moveWithinSiblings(-1);
-      return;
-    }
-    if (key.downArrow) {
-      moveWithinSiblings(1);
-      return;
-    }
-    if (key.rightArrow) {
-      moveIntoChild();
-      return;
-    }
-    if (key.leftArrow) {
-      moveToParent();
-      return;
-    }
+    if (key.upArrow) { moveWithinSiblings(-1); return; }
+    if (key.downArrow) { moveWithinSiblings(1); return; }
+    if (key.rightArrow) { moveIntoChild(); return; }
+    if (key.leftArrow) { moveToParent(); return; }
   });
 
-  /** Siblings of `id` in the current navIssues view (same parent, sorted). */
+  function runConfirmedAction(confirm: { action: "cancel" | "retry"; issueId: string }): void {
+    if (confirm.action === "retry") {
+      Bun.spawn(["po", "retry", confirm.issueId]);
+    } else {
+      // po cancel does not exist; use prefect flow-run cancel via flowRunId
+      const row = issues.find((i) => i.issueId === confirm.issueId);
+      if (row?.flowRunId) {
+        Bun.spawn(["prefect", "flow-run", "cancel", row.flowRunId]);
+      }
+    }
+  }
+
   function siblingsOf(id: string | null): typeof navIssues {
     if (!id) return navIssues.filter((i) => !i.parentIssueId);
     const row = navIssues.find((i) => i.issueId === id);
@@ -272,7 +297,7 @@ export function App(props: AppProps): React.ReactElement {
     );
     if (visibleChildIds.length === 0) return;
     const childRows = navIssues.filter((i) => visibleChildIds.includes(i.issueId));
-    const target = childRows[0]; // already sorted by activitySort within navIssues
+    const target = childRows[0];
     if (target) setSelected(target.issueId);
   }
 
@@ -283,20 +308,60 @@ export function App(props: AppProps): React.ReactElement {
   }
 
   const summary = useMemo(() => {
-    let running = 0;
-    let failed = 0;
-    let done = 0;
+    let running = 0, stuck = 0, failed = 0, done = 0;
     for (const i of issues) {
-      if (i.flowState === "RUNNING") running++;
+      if (i.flowState === "RUNNING") { running++; if (i.stuck) stuck++; }
       else if (i.flowState === "FAILED" || i.flowState === "CRASHED") failed++;
       else if (i.flowState === "COMPLETED") done++;
     }
-    return { running, failed, done };
+    return { running, stuck, failed, done, total: issues.length };
   }, [issues]);
+
+  // Dispatch form step label and placeholder
+  const dispatchStepLabel: Record<DispatchStep, string> = {
+    issue: "Issue ID",
+    flow: "Flow (default: software-dev-full)",
+    rig: "Rig name",
+    rigPath: "Rig path",
+    confirm: "",
+  };
+
+  function handleDispatchSubmit(value: string): void {
+    if (!dispatchForm) return;
+    const trimmed = value.trim();
+    if (dispatchForm.step === "issue") {
+      setDispatchForm({ step: "flow", values: { issue: trimmed } });
+      setDispatchDraft("");
+    } else if (dispatchForm.step === "flow") {
+      setDispatchForm({
+        step: "rig",
+        values: { ...dispatchForm.values, flow: trimmed || "software-dev-full" },
+      });
+      setDispatchDraft("");
+    } else if (dispatchForm.step === "rig") {
+      setDispatchForm({ step: "rigPath", values: { ...dispatchForm.values, rig: trimmed } });
+      setDispatchDraft("");
+    } else if (dispatchForm.step === "rigPath") {
+      setDispatchForm({ step: "confirm", values: { ...dispatchForm.values, rigPath: trimmed } });
+      setDispatchDraft("");
+    } else if (dispatchForm.step === "confirm") {
+      if (trimmed.toLowerCase() === "y") {
+        const v = dispatchForm.values;
+        Bun.spawn([
+          "po", "run", v.flow ?? "software-dev-full",
+          "--issue-id", v.issue ?? "",
+          "--rig", v.rig ?? "",
+          "--rig-path", v.rigPath ?? "",
+        ]);
+      }
+      setDispatchForm(null);
+      setDispatchDraft("");
+    }
+  }
 
   return (
     <Box flexDirection="column">
-      {/* Header — collapse to two lines on mobile so counts don't overflow. */}
+      {/* Header */}
       <Box
         flexDirection={mobile ? "column" : "row"}
         justifyContent="space-between"
@@ -309,6 +374,12 @@ export function App(props: AppProps): React.ReactElement {
         </Box>
         <Box>
           <Text color="cyan">run:{summary.running}</Text>
+          {summary.stuck > 0 ? (
+            <>
+              <Text> </Text>
+              <Text color="red">stuck:{summary.stuck}</Text>
+            </>
+          ) : null}
           <Text> </Text>
           <Text color="green">ok:{summary.done}</Text>
           <Text> </Text>
@@ -334,10 +405,7 @@ export function App(props: AppProps): React.ReactElement {
         </Box>
       ) : null}
 
-      {/* Main layout: 2-col on desktop, stacked on mobile.
-          On mobile the right pane (timeline + tmux tail) is hidden by default
-          and only renders once the user drills into a row with `e` — keeps
-          the issue list usable on a phone-sized terminal. */}
+      {/* Main layout */}
       <Box flexDirection={mobile ? "column" : "row"}>
         <IssueList
           issues={issues}
@@ -345,31 +413,82 @@ export function App(props: AppProps): React.ReactElement {
           filter={filter}
           hideCompleted={hideCompleted}
           drillIntoIssueId={drillIntoIssueId}
+          showDone={showDone}
           mobile={mobile}
           width={leftWidth}
         />
         {mobile && !drillIntoIssueId ? null : (
-          <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor="gray">
-            <FlowOverview flowName={selected?.flowName} />
-            <RoleTimeline issue={selected} allIssues={issues} />
-            <Box borderStyle="single" borderColor="gray" flexDirection="column">
-              {bdShowVisible ? (
-                <BdShow
-                  issue={bdShowIssue}
-                  issueId={selectedId}
-                  error={bdShowError}
-                  height={tailHeight}
-                  scrollOffset={Math.min(bdScrollOffset, maxBdOffset)}
-                />
-              ) : (
-                <TmuxTail text={paneText} session={paneSession} height={tailHeight} />
-              )}
-            </Box>
-          </Box>
+          <DetailTabs
+            selectedTab={selectedTab}
+            selected={selected}
+            allIssues={issues}
+            paneText={paneText}
+            paneSession={paneSession}
+            tailHeight={tailHeight}
+            bdShowIssue={bdShowIssue}
+            issueId={selectedId}
+            bdShowError={bdShowError}
+            bdScrollOffset={Math.min(bdScrollOffset, maxBdOffset)}
+            prefectUrl={props.prefectUrl}
+            mobile={mobile}
+          />
         )}
       </Box>
 
-      {/* Footer / hotkeys */}
+      {/* Confirmation overlay */}
+      {pendingConfirm ? (
+        <Box paddingX={1} borderStyle="single" borderColor="yellow">
+          <Text color="yellow">
+            {pendingConfirm.action === "cancel" ? "Cancel" : "Retry"}{" "}
+            <Text color="cyan">{pendingConfirm.issueId}</Text>? [y/n]
+          </Text>
+        </Box>
+      ) : null}
+
+      {/* Dispatch form */}
+      {dispatchForm && dispatchForm.step !== "confirm" ? (
+        <Box paddingX={1} borderStyle="single" borderColor="cyan" flexDirection="column">
+          <Text color="cyan" bold>
+            Dispatch new run
+          </Text>
+          {(["issue", "flow", "rig", "rigPath"] as const)
+            .filter((s) => dispatchForm.values[s] !== undefined)
+            .map((s) => (
+              <Text key={s} color="gray">
+                {dispatchStepLabel[s]}: {dispatchForm.values[s]}
+              </Text>
+            ))}
+          <Box>
+            <Text color="cyan">{dispatchStepLabel[dispatchForm.step]}: </Text>
+            <TextInput
+              value={dispatchDraft}
+              onChange={setDispatchDraft}
+              onSubmit={handleDispatchSubmit}
+            />
+          </Box>
+          <Text color="gray">[Esc] cancel</Text>
+        </Box>
+      ) : null}
+
+      {dispatchForm?.step === "confirm" ? (
+        <Box paddingX={1} borderStyle="single" borderColor="yellow" flexDirection="column">
+          <Text color="yellow">
+            Dispatch: po run {dispatchForm.values.flow ?? "software-dev-full"} --issue-id{" "}
+            {dispatchForm.values.issue} --rig {dispatchForm.values.rig} --rig-path{" "}
+            {dispatchForm.values.rigPath}
+          </Text>
+          <Box>
+            <Text color="yellow">Confirm? [y/n]: </Text>
+            <TextInput
+              value={dispatchDraft}
+              onChange={setDispatchDraft}
+              onSubmit={handleDispatchSubmit}
+            />
+          </Box>
+        </Box>
+      ) : null}
+
+      {/* Footer */}
       <Box paddingX={1} flexDirection="row" justifyContent="space-between">
         {filterMode ? (
           <Box>
@@ -386,8 +505,8 @@ export function App(props: AppProps): React.ReactElement {
         ) : (
           <Text color="gray">
             {mobile
-              ? "[↑↓←→] nav [a] attach [/] filt [e/E] drill [t] active-only [r] ref [q]"
-              : "[↑↓] sibs  [←→] tree  [a] new-tab  [A] in-place  [r] refresh  [/] filter  [e] drill-in  [E] reset  [t] active-only  [b] bd-show  [q] quit"}
+              ? "[↑↓←→] nav [a] attach [/] filt [e/E] drill [t] tab [c] cancel [r] retry [q]"
+              : "[↑↓] sibs  [←→] tree  [t] tab  [1-4] jump  [c] cancel  [r] retry  [d] dispatch  [D] show-done  [a] attach  [A] in-place  [/] filter  [e/E] drill  [q] quit"}
           </Text>
         )}
       </Box>

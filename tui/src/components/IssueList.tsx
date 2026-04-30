@@ -15,12 +15,15 @@ const STATE_COLORS: Record<string, string> = {
   SCHEDULED: "gray",
 };
 
+const TERMINAL = new Set(["COMPLETED", "FAILED", "CRASHED", "CANCELLED"]);
+
 interface Props {
   issues: IssueRow[];
   selectedId: string | null;
   filter: string;
   hideCompleted: boolean;
   drillIntoIssueId: string | null;
+  showDone: boolean;
   mobile?: boolean;
   width?: number;
 }
@@ -28,17 +31,21 @@ interface Props {
 interface DisplayRow {
   issue: IssueRow;
   depth: number;
-  /** Stem rendered for this row (id minus per-group prefix). */
   stem: string;
 }
 
 interface GroupBlock {
-  /** Root row for this group (a flow run with no parent in scope). */
   root?: IssueRow;
-  /** All rows in this group, ordered for display (root first, then children DFS). */
   rows: DisplayRow[];
-  /** The shared prefix that was stripped, if any. */
   prefix: string;
+}
+
+export function humanWall(ms: number): string {
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem > 0 ? `${h}h${rem}m` : `${h}h`;
 }
 
 function commonIdPrefix(ids: string[]): string {
@@ -58,8 +65,6 @@ function commonIdPrefix(ids: string[]): string {
   return trimmed;
 }
 
-/** Build groups by Prefect-native parent linkage; rows whose parent is missing
- *  from the visible set are treated as roots. */
 function buildGroups(issues: IssueRow[]): GroupBlock[] {
   const visible = new Set(issues.map((i) => i.issueId));
   const childrenByParent = new Map<string, IssueRow[]>();
@@ -81,11 +86,14 @@ function buildGroups(issues: IssueRow[]): GroupBlock[] {
   for (const root of roots) {
     const kids = childrenByParent.get(root.issueId) ?? [];
     const allInGroup = [root, ...kids];
-    const stripPrefix = kids.length >= 1
-      ? commonIdPrefix(allInGroup.map((i) => i.issueId))
-      : "";
+    const stripPrefix =
+      kids.length >= 1 ? commonIdPrefix(allInGroup.map((i) => i.issueId)) : "";
     const rows: DisplayRow[] = [
-      { issue: root, depth: 0, stem: root.issueId.slice(stripPrefix.length) || root.issueId },
+      {
+        issue: root,
+        depth: 0,
+        stem: root.issueId.slice(stripPrefix.length) || root.issueId,
+      },
       ...kids.map((k) => ({
         issue: k,
         depth: 1,
@@ -103,12 +111,12 @@ export function IssueList({
   filter,
   hideCompleted,
   drillIntoIssueId,
+  showDone,
   mobile,
   width,
 }: Props): React.ReactElement {
   let visible = issues;
 
-  // Drill-in: only show the targeted issue and its descendants.
   if (drillIntoIssueId) {
     const keep = new Set<string>();
     const addDescendants = (id: string): void => {
@@ -122,29 +130,6 @@ export function IssueList({
     visible = visible.filter((i) => keep.has(i.issueId));
   }
 
-  if (hideCompleted) {
-    // Keep parents of any visible active descendant so the tree stays legible.
-    // "Active" = anything not in a terminal state.
-    const TERMINAL = new Set(["COMPLETED", "FAILED", "CRASHED", "CANCELLED"]);
-    const keepers = new Set(
-      visible
-        .filter((i) => !TERMINAL.has(i.flowState ?? ""))
-        .map((i) => i.issueId),
-    );
-    let grew = true;
-    while (grew) {
-      grew = false;
-      for (const i of visible) {
-        if (!keepers.has(i.issueId)) continue;
-        if (i.parentIssueId && !keepers.has(i.parentIssueId)) {
-          keepers.add(i.parentIssueId);
-          grew = true;
-        }
-      }
-    }
-    visible = visible.filter((i) => keepers.has(i.issueId));
-  }
-
   if (filter) {
     const f = filter.toLowerCase();
     visible = visible.filter(
@@ -154,25 +139,32 @@ export function IssueList({
     );
   }
 
-  const groups = buildGroups(visible);
+  // Split into running (non-terminal) and done (terminal).
+  const running = visible.filter((i) => !TERMINAL.has(i.flowState ?? "")).sort(activitySort);
+  const done = visible.filter((i) => TERMINAL.has(i.flowState ?? "")).sort((a, b) => {
+    const sa = a.startTime ?? "";
+    const sb = b.startTime ?? "";
+    return sb.localeCompare(sa); // newest first
+  });
+
+  const stuckCount = running.filter((i) => i.stuck).length;
+
+  // When hideCompleted is on, also hide done rows unless showDone is set.
+  const showDoneRows = !hideCompleted && (showDone || done.length <= 5);
+  const visibleForGroups = showDoneRows ? [...running, ...done] : running;
+
+  const groups = buildGroups(visibleForGroups);
+
+  const panelWidth = mobile ? 0 : Math.max(40, width ?? 54);
+
   const allStems = groups.flatMap((g) => g.rows.map((r) => r.stem));
   const stemMaxLen = allStems.reduce((m, s) => Math.max(m, s.length), 0);
-  // Panel width drives column sizing. Reserve ~6 cols for the cursor +
-  // padding/borders, ~16 for active-role + glyph. Whatever's left goes to
-  // the id stem so longer ids don't truncate as the terminal grows.
-  const panelWidth = mobile ? 0 : Math.max(40, width ?? 54);
-  const reserved = 6 + 11 + 3; // cursor(2) + paddingX(2) + border(2) ≈ 6, active col 11, glyph 3
+  // Reserve: cursor(2) + paddingX(2) + border(2) + flowMode(5) + wall(6) + step(16) + stuck(2) = 35
+  const reserved = 6 + 5 + 6 + 16 + 2;
   const idCapByPanel = Math.max(8, panelWidth - reserved);
   const idColWidth = mobile
     ? Math.min(Math.max(stemMaxLen + 1, 6), 28)
     : Math.min(Math.max(stemMaxLen + 1, 6), idCapByPanel);
-  // Active-role column expands a bit on wider panels so role names like
-  // "regression-gate" stop truncating. Cap at 18.
-  const activeColWidth = mobile
-    ? 11
-    : Math.min(18, Math.max(11, panelWidth - reserved - idColWidth + 11));
-
-  const totalRows = visible.length;
 
   return (
     <Box
@@ -186,66 +178,116 @@ export function IssueList({
     >
       <Box flexDirection="row" justifyContent="space-between">
         <Text bold color="white">
-          ISSUES <Text color="gray">({totalRows})</Text>
+          ISSUES
         </Text>
         <Text color="gray">
-          {hideCompleted ? "·active-only " : ""}
-          {drillIntoIssueId ? "·drilled" : ""}
+          {" "}
+          {running.length} running
+          {stuckCount > 0 ? <Text color="red">, {stuckCount} stuck</Text> : null},{" "}
+          {done.length} done
         </Text>
       </Box>
       <Box flexDirection="column" marginTop={1}>
-        {totalRows === 0 ? (
+        {running.length === 0 && done.length === 0 ? (
           <Text color="gray">no flow runs found</Text>
         ) : (
-          groups.flatMap((group, gi) => {
-            const blocks: React.ReactElement[] = [];
-            if (group.prefix) {
-              blocks.push(
-                <Box key={`hdr-${gi}`}>
-                  <Text color="gray">
-                    ── <Text color="cyan">{group.prefix}</Text>
-                    <Text color="gray">…</Text>
-                  </Text>
-                </Box>,
-              );
-            }
-            for (const dr of group.rows) {
-              const isSel = dr.issue.issueId === selectedId;
-              const color = STATE_COLORS[dr.issue.flowState ?? ""] ?? "white";
-              const active = dr.issue.activeRole ?? "—";
-              const indent = dr.depth > 0 ? "  └ " : "";
-              blocks.push(
-                <Box key={dr.issue.issueId} flexDirection="row">
-                  <Text color={isSel ? "cyan" : "gray"}>{isSel ? "▶ " : "  "}</Text>
-                  <Box width={idColWidth}>
-                    <Text color={isSel ? "white" : "gray"} bold={isSel} wrap="truncate-end">
-                      {indent}
-                      {dr.stem}
-                    </Text>
-                  </Box>
-                  <Box width={activeColWidth}>
-                    <Text color={color} wrap="truncate-end">
-                      {active}
-                    </Text>
-                  </Box>
-                  <Box width={3}>
-                    {dr.issue.flowState === "RUNNING" ? (
-                      <Text color="cyan">
-                        <Spinner type="dots" />
-                      </Text>
-                    ) : (
-                      <Text color={color}>{glyphFor(dr.issue.flowState)}</Text>
-                    )}
-                  </Box>
-                </Box>,
-              );
-            }
-            return blocks;
-          })
+          <>
+            {groups
+              .filter((g) => running.some((r) => g.rows.some((dr) => dr.issue.issueId === r.issueId)) || showDoneRows)
+              .flatMap((group, gi) => renderGroupRows(group, gi, running, selectedId, idColWidth, mobile))}
+            {done.length > 0 && (
+              <Box key="done-sep">
+                <Text color="gray">
+                  ─ {done.length} done{!showDoneRows ? <Text> [D to expand]</Text> : null}
+                </Text>
+              </Box>
+            )}
+            {showDoneRows &&
+              buildGroups(done).flatMap((group, gi) =>
+                renderGroupRows(group, 1000 + gi, done, selectedId, idColWidth, mobile),
+              )}
+          </>
         )}
       </Box>
     </Box>
   );
+}
+
+function renderGroupRows(
+  group: GroupBlock,
+  gi: number,
+  _ctx: IssueRow[],
+  selectedId: string | null,
+  idColWidth: number,
+  mobile: boolean | undefined,
+): React.ReactElement[] {
+  const blocks: React.ReactElement[] = [];
+  if (group.prefix) {
+    blocks.push(
+      <Box key={`hdr-${gi}`}>
+        <Text color="gray">
+          ── <Text color="cyan">{group.prefix}</Text>
+          <Text color="gray">…</Text>
+        </Text>
+      </Box>,
+    );
+  }
+  for (const dr of group.rows) {
+    const isSel = dr.issue.issueId === selectedId;
+    const color = STATE_COLORS[dr.issue.flowState ?? ""] ?? "white";
+    const indent = dr.depth > 0 ? "  └ " : "";
+    const wall = dr.issue.wallMs > 0 ? humanWall(dr.issue.wallMs) : "";
+    const wallColor = dr.issue.wallMs > 3_600_000 ? "red" : "gray";
+
+    blocks.push(
+      <Box key={dr.issue.issueId} flexDirection="row">
+        <Text color={isSel ? "cyan" : "gray"}>{isSel ? "▶ " : "  "}</Text>
+        <Box width={idColWidth}>
+          <Text color={isSel ? "white" : "gray"} bold={isSel} wrap="truncate-end">
+            {indent}
+            {dr.stem}
+          </Text>
+        </Box>
+        {!mobile && (
+          <>
+            <Box width={5}>
+              <Text color="gray" wrap="truncate-end">
+                {dr.issue.flowMode}
+              </Text>
+            </Box>
+            <Box width={6}>
+              <Text color={wallColor} wrap="truncate-end">
+                {wall}
+              </Text>
+            </Box>
+            <Box width={16}>
+              <Text color={color} wrap="truncate-end">
+                {dr.issue.stepLabel}
+              </Text>
+            </Box>
+            <Box width={2}>
+              {dr.issue.stuck ? <Text color="red">⚠</Text> : <Text>  </Text>}
+            </Box>
+          </>
+        )}
+        <Box flexGrow={1}>
+          <Text color={isSel ? "white" : "gray"} wrap="truncate-end">
+            {dr.issue.title ?? ""}
+          </Text>
+        </Box>
+        <Box width={3}>
+          {dr.issue.flowState === "RUNNING" ? (
+            <Text color="cyan">
+              <Spinner type="dots" />
+            </Text>
+          ) : (
+            <Text color={color}>{glyphFor(dr.issue.flowState)}</Text>
+          )}
+        </Box>
+      </Box>,
+    );
+  }
+  return blocks;
 }
 
 function glyphFor(state: string | undefined): string {

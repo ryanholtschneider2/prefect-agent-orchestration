@@ -64,7 +64,14 @@ export interface IssueRow {
   flowId?: string;
   /** Flow name resolved via /flows/filter cache. Undefined until the cache populates. */
   flowName?: string;
+  // Computed in tick():
+  stuck: boolean;
+  flowMode: "fast" | "full";
+  wallMs: number;
+  stepLabel: string;
 }
+
+export type TabName = "LIVE" | "TRACE" | "BD" | "ACTIONS";
 
 export interface PoTuiState {
   issues: IssueRow[];
@@ -101,6 +108,9 @@ export interface PoTuiState {
   bdShowVisible: boolean;
   /** Issue ids with an in-flight `bd show` shellout (de-dup guard). */
   bdShowLoading: Set<string>;
+  selectedTab: TabName;
+  showDone: boolean;
+  pendingConfirm: { action: "cancel" | "retry"; issueId: string } | null;
   // actions
   setSelected: (id: string | null) => void;
   setFilter: (f: string) => void;
@@ -110,6 +120,9 @@ export interface PoTuiState {
   refreshPane: () => Promise<void>;
   refreshBdShow: () => Promise<void>;
   setBdShowVisible: (v: boolean) => void;
+  setSelectedTab: (tab: TabName) => void;
+  toggleShowDone: () => void;
+  setPendingConfirm: (c: PoTuiState["pendingConfirm"]) => void;
 }
 
 function deriveRoles(
@@ -218,6 +231,34 @@ function flowToIssueId(fr: PrefectFlowRun): string | undefined {
   return tagValue(fr.tags, "issue_id");
 }
 
+const STEP_TYPICAL_MS: Record<string, number> = {
+  triager: 2 * 60_000,
+  baseline: 2 * 60_000,
+  planner: 15 * 60_000,
+  "plan-critic": 5 * 60_000,
+  builder: 30 * 60_000,
+  "build-critic": 5 * 60_000,
+  linter: 5 * 60_000,
+  tester: 10 * 60_000,
+  "regression-gate": 5 * 60_000,
+  "deploy-smoke": 5 * 60_000,
+  verifier: 10 * 60_000,
+  ralph: 10 * 60_000,
+  documenter: 5 * 60_000,
+  learn: 5 * 60_000,
+};
+const DEFAULT_TYPICAL_MS = 20 * 60_000;
+
+export function computeStuck(row: IssueRow, nowMs: number): boolean {
+  if (row.flowState !== "RUNNING" || !row.activeRole) return false;
+  const slot = row.roles.find((r) => r.role === row.activeRole);
+  const startedAt = slot?.startedAt ?? row.startTime;
+  if (!startedAt) return false;
+  const elapsed = nowMs - new Date(startedAt).getTime();
+  const typical = STEP_TYPICAL_MS[row.activeRole] ?? DEFAULT_TYPICAL_MS;
+  return elapsed > typical * 2;
+}
+
 export const useStore = create<PoTuiState>((set, get) => ({
   issues: [],
   selectedId: null,
@@ -237,9 +278,12 @@ export const useStore = create<PoTuiState>((set, get) => ({
   bdShowError: null,
   bdShowVisible: false,
   bdShowLoading: new Set<string>(),
+  selectedTab: "LIVE",
+  showDone: false,
+  pendingConfirm: null,
 
   setSelected: (id) => {
-    set({ selectedId: id });
+    set({ selectedId: id, selectedTab: "LIVE" });
     void get().refreshPane();
     void get().refreshBdShow();
   },
@@ -401,6 +445,11 @@ export const useStore = create<PoTuiState>((set, get) => ({
           startTime: fr.start_time,
           flowId: fr.flow_id,
           flowName: flowNames[fr.flow_id],
+          // Derived fields — computed after childIssueIds are wired.
+          stuck: false,
+          flowMode: "fast" as const,
+          wallMs: 0,
+          stepLabel: "",
         };
       });
 
@@ -411,6 +460,18 @@ export const useStore = create<PoTuiState>((set, get) => ({
           const parent = byId.get(iss.parentIssueId);
           if (parent) parent.childIssueIds.push(iss.issueId);
         }
+      }
+
+      // Compute derived display fields.
+      const nowMs = Date.now();
+      for (const row of issues) {
+        row.stuck = computeStuck(row, nowMs);
+        row.flowMode = row.flowName === "software_dev_full" ? "full" : "fast";
+        row.wallMs = row.startTime ? nowMs - new Date(row.startTime).getTime() : 0;
+        const slot = row.roles.find((r) => r.role === row.activeRole);
+        row.stepLabel = row.activeRole
+          ? `${row.activeRole} ⟲${slot?.iterations ?? 1}`
+          : "";
       }
 
       const nextSelected =
@@ -507,6 +568,16 @@ export const useStore = create<PoTuiState>((set, get) => ({
     set({ bdShowVisible: v });
     if (v) void get().refreshBdShow();
   },
+
+  setSelectedTab: (tab) => {
+    const visible = tab === "BD";
+    set({ selectedTab: tab, bdShowVisible: visible });
+    if (visible) void get().refreshBdShow();
+  },
+
+  toggleShowDone: () => set((s) => ({ showDone: !s.showDone })),
+
+  setPendingConfirm: (c) => set({ pendingConfirm: c }),
 }));
 
 const STATE_PRIORITY: Record<string, number> = {
