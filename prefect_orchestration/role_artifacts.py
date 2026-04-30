@@ -118,7 +118,9 @@ def _publish_transcript_link(
     fire-and-forget — never raises.
     """
     if not session_id:
-        logger.debug("no session_id for role=%s iter=%s; skip transcript link", role, iter_n)
+        logger.debug(
+            "no session_id for role=%s iter=%s; skip transcript link", role, iter_n
+        )
         return
 
     src = claude_session_jsonl(rig_path, session_id)
@@ -185,7 +187,9 @@ def _publish_handles_artifact(
         rows.append(f"**Claude session_id**: `{session_id}`")
         jsonl = claude_session_jsonl(rig_path, session_id)
         rows.append(f"**Transcript JSONL**: `{jsonl}`")
-        rows.append(f"**Resume**: `claude --print --resume {session_id} --fork-session`")
+        rows.append(
+            f"**Resume**: `claude --print --resume {session_id} --fork-session`"
+        )
     else:
         rows.append("**Claude session_id**: _(not yet recorded)_")
     logfire = os.environ.get("LOGFIRE_TRACE_URL") or os.environ.get("LOGFIRE_URL")
@@ -200,7 +204,9 @@ def _publish_handles_artifact(
             description=f"{role} (iter {iter_n}) — run handles",
         )
     except Exception as exc:  # noqa: BLE001
-        logger.debug("create_markdown_artifact (handles) failed for %s: %s", artifact_key, exc)
+        logger.debug(
+            "create_markdown_artifact (handles) failed for %s: %s", artifact_key, exc
+        )
 
 
 def publish_role_artifacts(

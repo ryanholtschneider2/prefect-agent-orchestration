@@ -118,8 +118,8 @@ def lookup_prefect_run(token: str) -> tuple[Path, str] | None:
         # Heuristic: if the token looks like a UUID (or its 8-char prefix),
         # try id-filter; otherwise try name-filter. Fall back to the other
         # if nothing matches.
-        looks_like_uuid_prefix = (
-            len(token) >= 4 and all(c in "0123456789abcdef-" for c in token.lower())
+        looks_like_uuid_prefix = len(token) >= 4 and all(
+            c in "0123456789abcdef-" for c in token.lower()
         )
         try:
             full_uuid = UUID(token)
@@ -147,10 +147,14 @@ def lookup_prefect_run(token: str) -> tuple[Path, str] | None:
                 if not runs and looks_like_uuid_prefix and full_uuid is None:
                     # Prefix-match against recent runs — bounded scan.
                     candidates = await client.read_flow_runs(
-                        sort=FlowRunSort.START_TIME_DESC, limit=200,
+                        sort=FlowRunSort.START_TIME_DESC,
+                        limit=200,
                     )
-                    runs = [r for r in candidates
-                            if str(getattr(r, "id", "")).startswith(token)]
+                    runs = [
+                        r
+                        for r in candidates
+                        if str(getattr(r, "id", "")).startswith(token)
+                    ]
                 if not runs:
                     return None
                 fr = runs[0]
