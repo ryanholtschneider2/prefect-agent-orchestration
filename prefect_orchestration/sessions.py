@@ -1,6 +1,6 @@
 """Helpers for `po sessions <issue-id>` — per-role Claude session UUIDs.
 
-The `software-dev-full` pack writes `metadata.json` at the run_dir root with
+Any pack writes `metadata.json` at the run_dir root with
 flat string keys, including `session_<role> = <uuid>`. There's no stored
 per-role iter / last-updated, so we derive them by inspecting role-specific
 artifact files in the run_dir.
@@ -198,6 +198,20 @@ def render_table(rows: list[SessionRow]) -> str:
     lines = [fmt.format(*headers), fmt.format(*("-" * w for w in widths))]
     lines.extend(fmt.format(*row) for row in data)
     return "\n".join(lines)
+
+
+def to_json_list(rows: list[SessionRow]) -> list[dict]:
+    """Stable JSON shape for `po sessions --json`."""
+    return [
+        {
+            "role": r.role,
+            "uuid": r.uuid,
+            "last_iter": r.last_iter,
+            "last_updated": r.last_updated,
+            "pod": r.pod,
+        }
+        for r in rows
+    ]
 
 
 def resume_command(uuid: str) -> str:

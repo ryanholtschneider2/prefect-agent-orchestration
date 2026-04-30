@@ -72,6 +72,20 @@ def _now() -> datetime:
 # ─── rendering ───────────────────────────────────────────────────────
 
 
+def render_ndjson(ev: Event) -> str:
+    """Format a single event as a JSON object (for `po watch --json`)."""
+    import json as _json
+
+    return _json.dumps(
+        {
+            "ts": ev.ts.isoformat(),
+            "source": ev.source,
+            "kind": ev.kind,
+            "text": ev.text,
+        }
+    )
+
+
 def render(ev: Event, *, use_color: bool) -> str:
     """Format a single event as a terminal line."""
     # Normalise timestamp to local time for display.
@@ -407,6 +421,7 @@ async def run_watch(
     replay: bool = False,
     replay_n: int = 10,
     use_color: bool = False,
+    use_json: bool = False,
     poll_prefect_s: float = PREFECT_POLL_S,
     poll_run_dir_s: float = RUN_DIR_POLL_S,
 ) -> None:
@@ -427,6 +442,12 @@ async def run_watch(
             warn(f"could not query Prefect server: {exc}")
             flow_run = None
 
+    def _emit(ev: Event) -> None:
+        if use_json:
+            write(render_ndjson(ev))
+        else:
+            write(render(ev, use_color=use_color))
+
     if flow_run is None:
         warn(f"no flow run found for issue {issue_id}; watching run_dir only.")
     else:
@@ -434,15 +455,12 @@ async def run_watch(
         if state_type in _TERMINAL_STATES:
             terminal_on_start = True
             state_name = _state_name_of(flow_run) or "?"
-            write(
-                render(
-                    Event(
-                        ts=_now(),
-                        source="prefect",
-                        kind="info",
-                        text=f"flow already {state_name}",
-                    ),
-                    use_color=use_color,
+            _emit(
+                Event(
+                    ts=_now(),
+                    source="prefect",
+                    kind="info",
+                    text=f"flow already {state_name}",
                 )
             )
 
@@ -453,8 +471,20 @@ async def run_watch(
             history = getattr(flow_run, "state_history", None) or []
             events.extend(build_prefect_replay(history, replay_n))
         for ev in merge_events([events]):
-            write(render(ev, use_color=use_color))
-        write(REPLAY_SEPARATOR)
+            _emit(ev)
+        if use_json:
+            write(
+                render_ndjson(
+                    Event(
+                        ts=_now(),
+                        source="internal",
+                        kind="replay-separator",
+                        text=REPLAY_SEPARATOR,
+                    )
+                )
+            )
+        else:
+            write(REPLAY_SEPARATOR)
 
     # ── live producers ──
     queue: asyncio.Queue[Event | None] = asyncio.Queue()
@@ -501,7 +531,9 @@ async def run_watch(
         warn("nothing to watch (no run_dir and no live flow run).")
         return
 
-    drain_task = asyncio.create_task(_drain(queue, write, use_color=use_color))
+    drain_task = asyncio.create_task(
+        _drain(queue, write, use_color=use_color, use_json=use_json)
+    )
 
     try:
         # As each producer finishes naturally, they return. When all do,
@@ -520,10 +552,17 @@ async def run_watch(
 
 
 async def _drain(
-    queue: asyncio.Queue[Event | None], write: WriteFn, *, use_color: bool
+    queue: asyncio.Queue[Event | None],
+    write: WriteFn,
+    *,
+    use_color: bool,
+    use_json: bool = False,
 ) -> None:
     while True:
         ev = await queue.get()
         if ev is None:
             return
-        write(render(ev, use_color=use_color))
+        if use_json:
+            write(render_ndjson(ev))
+        else:
+            write(render(ev, use_color=use_color))

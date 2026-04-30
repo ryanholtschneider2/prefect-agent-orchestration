@@ -232,6 +232,7 @@ def _rig_label(fr: Any) -> str:
     rp = params.get("rig_path")
     if isinstance(rp, str) and rp:
         from pathlib import Path as _P
+
         return _P(rp).name or "-"
     return "-"
 
@@ -257,9 +258,8 @@ def _is_zombie(fr: Any) -> bool:
     can't make progress. Hiding these by default keeps `po status` from
     drowning real runs.
     """
-    state = (
-        getattr(fr, "state_name", None)
-        or getattr(getattr(fr, "state", None), "name", None)
+    state = getattr(fr, "state_name", None) or getattr(
+        getattr(fr, "state", None), "name", None
     )
     if not state or str(state).lower() != "running":
         return False
@@ -268,6 +268,7 @@ def _is_zombie(fr: Any) -> bool:
     if not rp:
         return False
     from pathlib import Path as _P
+
     return not _P(rp).exists()
 
 
@@ -282,6 +283,38 @@ def partition_zombies(groups: list[IssueGroup]) -> tuple[list[IssueGroup], int]:
         else:
             live.append(g)
     return live, hidden
+
+
+def to_json_list(groups: list[IssueGroup]) -> list[dict]:
+    """Stable JSON shape for `po status --json`."""
+    rows = []
+    for g in groups:
+        fr = g.latest
+        state = (
+            getattr(fr, "state_name", None)
+            or getattr(getattr(fr, "state", None), "name", None)
+            or "-"
+        )
+        start = getattr(fr, "start_time", None) or getattr(
+            fr, "expected_start_time", None
+        )
+        end = getattr(fr, "end_time", None)
+        rows.append(
+            {
+                "issue_id": g.issue_id,
+                "rig": _rig_label(fr),
+                "run_id": _flow_run_id_short(fr),
+                "flow_name": str(
+                    getattr(fr, "name", None) or getattr(fr, "flow_name", "-")
+                ),
+                "state": str(state),
+                "started": start.isoformat() if start is not None else None,
+                "ended": end.isoformat() if end is not None else None,
+                "current_step": g.current_step,
+                "run_count": 1 + g.extra_count,
+            }
+        )
+    return rows
 
 
 def render_table(groups: list[IssueGroup]) -> str:
@@ -299,8 +332,15 @@ def render_table(groups: list[IssueGroup]) -> str:
     if not groups:
         return "no flow runs with issue_id tag found."
     headers = (
-        "ISSUE", "RIG", "RUN", "FLOW",
-        "STATE", "STARTED", "DURATION", "STEP", "RUNS",
+        "ISSUE",
+        "RIG",
+        "RUN",
+        "FLOW",
+        "STATE",
+        "STARTED",
+        "DURATION",
+        "STEP",
+        "RUNS",
     )
     rows: list[tuple[str, ...]] = []
     for g in groups:

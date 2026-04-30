@@ -118,11 +118,18 @@ def _parse_kwargs(extras: list[str]) -> dict[str, Any]:
 
 
 @app.command(name="list")
-def list_formulas() -> None:
+def list_formulas(
+    output_json: bool = typer.Option(False, "--json", help="Output as JSON array."),
+) -> None:
     """List formulas + commands registered via `po.formulas` / `po.commands`."""
+    import json as _json
+
     formulas = _load_formulas()
     cmds = _commands.load_commands()
     if not formulas and not cmds:
+        if output_json:
+            typer.echo("[]")
+            return
         typer.echo("no formulas or commands installed.")
         typer.echo("install a pack with `po packs install <pack>`")
         typer.echo(
@@ -144,6 +151,17 @@ def list_formulas() -> None:
         rows.append(("command", name, f"{module}:{fn_name}", doc))
     rows.sort(key=lambda r: (r[0], r[1]))
 
+    if output_json:
+        typer.echo(
+            _json.dumps(
+                [
+                    {"kind": r[0], "name": r[1], "module": r[2], "doc": r[3]}
+                    for r in rows
+                ]
+            )
+        )
+        return
+
     headers = ("KIND", "NAME", "MODULE:CALLABLE", "DOC")
     widths = [
         max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers[:-1])
@@ -156,16 +174,35 @@ def list_formulas() -> None:
 
 
 @app.command()
-def show(name: str) -> None:
+def show(
+    name: str,
+    output_json: bool = typer.Option(False, "--json", help="Output as JSON object."),
+) -> None:
     """Show the signature + docstring of a registered formula or command."""
+    import json as _json
+
     formulas = _load_formulas()
     if name in formulas:
         flow_obj = formulas[name]
         fn = getattr(flow_obj, "fn", flow_obj)
+        sig_str = str(inspect.signature(fn))
+        doc = inspect.getdoc(fn) or ""
+        if output_json:
+            typer.echo(
+                _json.dumps(
+                    {
+                        "kind": "formula",
+                        "name": name,
+                        "module": flow_obj.__module__,
+                        "callable": flow_obj.__name__,
+                        "signature": sig_str,
+                        "doc": doc,
+                    }
+                )
+            )
+            return
         typer.echo(f"{name} (formula) — {flow_obj.__module__}:{flow_obj.__name__}")
-        sig = inspect.signature(fn)
-        typer.echo(f"\nSignature:\n  {fn.__name__}{sig}")
-        doc = inspect.getdoc(fn)
+        typer.echo(f"\nSignature:\n  {fn.__name__}{sig_str}")
         if doc:
             typer.echo(f"\nDoc:\n{doc}")
         return
@@ -175,13 +212,27 @@ def show(name: str) -> None:
         fn = cmds[name]
         module = getattr(fn, "__module__", "?")
         fn_name = getattr(fn, "__name__", str(fn))
-        typer.echo(f"{name} (command) — {module}:{fn_name}")
         try:
-            sig = inspect.signature(fn)
-            typer.echo(f"\nSignature:\n  {fn_name}{sig}")
+            sig_str = str(inspect.signature(fn))
         except (TypeError, ValueError):
-            typer.echo("\nSignature: <unavailable>")
-        doc = inspect.getdoc(fn)
+            sig_str = "<unavailable>"
+        doc = inspect.getdoc(fn) or ""
+        if output_json:
+            typer.echo(
+                _json.dumps(
+                    {
+                        "kind": "command",
+                        "name": name,
+                        "module": module,
+                        "callable": fn_name,
+                        "signature": sig_str,
+                        "doc": doc,
+                    }
+                )
+            )
+            return
+        typer.echo(f"{name} (command) — {module}:{fn_name}")
+        typer.echo(f"\nSignature:\n  {fn_name}{sig_str}")
         if doc:
             typer.echo(f"\nDoc:\n{doc}")
         return
@@ -869,6 +920,7 @@ def status(
         "(usually pytest fixtures whose process died before reaching a "
         "terminal state). Hidden by default.",
     ),
+    output_json: bool = typer.Option(False, "--json", help="Output as JSON array."),
 ) -> None:
     """List active / recent flow runs grouped by beads `issue_id` tag.
 
@@ -919,6 +971,13 @@ def status(
                 f"error: could not query Prefect server at {api_url}: {exc}",
                 err=True,
             )
+            return
+        import json as _json
+
+        if output_json:
+            if not include_zombies:
+                groups, _ = _status.partition_zombies(groups)
+            typer.echo(_json.dumps(_status.to_json_list(groups)))
             return
         if not include_zombies:
             groups, hidden = _status.partition_zombies(groups)
@@ -1102,6 +1161,7 @@ def sessions(
         help="Print a ready-to-run `claude --print --resume <uuid> --fork-session` "
         "one-liner for this role and exit.",
     ),
+    output_json: bool = typer.Option(False, "--json", help="Output as JSON array."),
 ) -> None:
     """List per-role Claude session UUIDs recorded for an issue's run_dir.
 
@@ -1168,6 +1228,11 @@ def sessions(
     bead_meta = _attach.fetch_bead_metadata(issue_id)
     pod = bead_meta.get(_attach.META_K8S_POD)
     rows = _sessions.build_rows(loc.run_dir, metadata, pod=pod)
+    if output_json:
+        import json as _json
+
+        typer.echo(_json.dumps(_sessions.to_json_list(rows)))
+        return
     typer.echo(_sessions.render_table(rows))
 
 
@@ -1316,6 +1381,12 @@ def watch(
         "--replay-n",
         help="Number of prior flow state transitions to include in --replay.",
     ),
+    output_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit NDJSON (one JSON object per event). REPLAY_SEPARATOR is emitted "
+        "as a JSON object with kind=replay-separator.",
+    ),
 ) -> None:
     """Merge Prefect flow-state transitions + new run_dir artifacts into one feed.
 
@@ -1343,7 +1414,7 @@ def watch(
     def _warn(line: str) -> None:
         typer.echo(line, err=True)
 
-    use_color = _watch.should_use_color()
+    use_color = _watch.should_use_color() and not output_json
 
     async def _main() -> None:
         from prefect.client.orchestration import get_client
@@ -1363,6 +1434,7 @@ def watch(
                 replay=replay,
                 replay_n=replay_n,
                 use_color=use_color,
+                use_json=output_json,
             )
 
     try:
@@ -1370,6 +1442,70 @@ def watch(
     except KeyboardInterrupt:
         # AC2: clean exit; no traceback to the user.
         raise typer.Exit(0)
+
+
+@app.command()
+def spend(
+    issue_id: str | None = typer.Option(
+        None, "--issue-id", help="Limit to one issue's run_dir (resolved via bd metadata)."
+    ),
+    since: str | None = typer.Option(
+        None,
+        "--since",
+        help="Relative (1h, 30m, 7d) or ISO-8601. Filters run_dirs by mtime.",
+    ),
+    by: str = typer.Option(
+        "role",
+        "--by",
+        help="Group aggregated output by: formula | role | day (default: role).",
+    ),
+    rig_path: Path = typer.Option(
+        Path("."),
+        "--rig-path",
+        help="Root of the rig (contains .planning/). Defaults to cwd.",
+    ),
+    output_json: bool = typer.Option(False, "--json", help="Output raw records as JSON array."),
+) -> None:
+    """Estimate USD spend for PO runs by reading JSONL token traces.
+
+    Walks .planning/ under --rig-path (or a single issue's run_dir with
+    --issue-id), reads per-role JSONL files, and computes estimated cost
+    from a hardcoded pricing table. Best-effort estimation — not billing-grade.
+
+    Skips roles whose JSONL file is missing (e.g. StubBackend or cleaned up).
+    """
+    import json as _json
+
+    since_dt = None
+    if since is not None:
+        try:
+            since_dt = _status.parse_since(since)
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+
+    rig_path_abs = rig_path.resolve()
+
+    if issue_id is not None:
+        try:
+            loc = _run_lookup.resolve_run_dir(issue_id)
+        except _run_lookup.RunDirNotFound as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(2) from exc
+        formula = loc.run_dir.parent.name
+        run_dirs = [(formula, issue_id, loc.run_dir)]
+        rig_path_abs = loc.rig_path
+    else:
+        run_dirs = _spend.discover_run_dirs(rig_path_abs, since=since_dt)
+
+    records = _spend.build_records(run_dirs, rig_path=rig_path_abs)
+
+    if output_json:
+        typer.echo(_json.dumps(_spend.to_json(records)))
+        return
+
+    rows = _spend.aggregate(records, by=by)
+    typer.echo(_spend.render_table(rows, by=by))
 
 
 packs_app = typer.Typer(
