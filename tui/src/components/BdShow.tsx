@@ -32,39 +32,35 @@ export function BdShow({
   height,
   scrollOffset,
 }: Props): React.ReactElement {
-  // No cached issue and no error: we're loading (or there's nothing selected).
-  if (!issue && !error) {
+  // No cached issue: render either the red error banner or the loading spinner.
+  if (!issue) {
     return (
       <Box paddingX={1}>
-        <Text color="gray">
-          <Spinner type="dots" />{" "}
-          {issueId ? `bd show ${issueId}…` : "no issue selected"}
-        </Text>
-      </Box>
-    );
-  }
-  // Fatal error AND no cached value: render the red banner.
-  if (!issue && error) {
-    return (
-      <Box paddingX={1}>
-        <Text color="red">! bd show: {error}</Text>
+        {error ? (
+          <Text color="red">! bd show: {error}</Text>
+        ) : (
+          <Text color="gray">
+            <Spinner type="dots" />{" "}
+            {issueId ? `bd show ${issueId}…` : "no issue selected"}
+          </Text>
+        )}
       </Box>
     );
   }
 
   // We have a cached issue; render it (possibly with a "stale" banner).
-  const lines = buildLines(issue!);
+  const lines = buildLines(issue);
   const visible = lines.slice(scrollOffset, scrollOffset + height);
   const totalRest = Math.max(0, lines.length - (scrollOffset + height));
   return (
     <Box flexDirection="column" paddingX={1}>
       <Text bold color="white">
-        BD SHOW — <Text color="cyan">{issue!.id}</Text>{" "}
-        <Text color={STATUS_COLORS[issue!.status ?? ""] ?? "gray"}>
-          {issue!.status}
+        BD SHOW — <Text color="cyan">{issue.id}</Text>{" "}
+        <Text color={STATUS_COLORS[issue.status ?? ""] ?? "gray"}>
+          {issue.status}
         </Text>{" "}
         <Text color="gray">
-          P{issue!.priority} · {issue!.issue_type}
+          P{issue.priority} · {issue.issue_type}
         </Text>
         {error ? <Text color="yellow"> (stale: {error})</Text> : null}
       </Text>
