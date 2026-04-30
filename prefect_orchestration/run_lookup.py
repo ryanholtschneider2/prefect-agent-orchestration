@@ -47,7 +47,7 @@ class RunLocation:
     run_dir: Path
 
 
-def _bd_show_json(issue_id: str) -> dict:
+def _bd_show_json(issue_id: str, *, cwd: Path | str | None = None) -> dict:
     if shutil.which("bd") is None:
         raise RunDirNotFound(
             f"`bd` CLI not on PATH; cannot resolve run_dir for {issue_id}. "
@@ -58,6 +58,7 @@ def _bd_show_json(issue_id: str) -> dict:
         capture_output=True,
         text=True,
         check=False,
+        cwd=str(cwd) if cwd is not None else None,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         raise RunDirNotFound(
@@ -69,13 +70,74 @@ def _bd_show_json(issue_id: str) -> dict:
     return data
 
 
+def rig_path_from_prefect(issue_id: str) -> Path | None:
+    """Find a rig_path by querying Prefect for a flow run named=issue_id.
+
+    Used as a fallback when `bd show <id>` from cwd misses because the
+    bead lives in a different rig. Reads the latest flow run whose
+    `name` equals `issue_id` (matches `flow_run_name="{issue_id}"` in
+    `software_dev_full`, `flow_run_name="{root_id}"` in `graph_run`,
+    `flow_run_name="{epic_id}"` in `epic_run`) and returns its
+    `rig_path` parameter, or `None` if no such flow run exists or
+    Prefect is unreachable.
+
+    Best-effort: never raises. Callers retry `bd show` with this as
+    cwd, and only fail with the original "no issue found" if even that
+    misses.
+    """
+    try:
+        # Lazy imports — keep run_lookup importable when prefect isn't.
+        from prefect.client.orchestration import get_client
+        from prefect.client.schemas.filters import (
+            FlowRunFilter,
+            FlowRunFilterName,
+        )
+        from prefect.client.schemas.sorting import FlowRunSort
+    except Exception:
+        return None
+    try:
+        import anyio
+
+        async def _run() -> Path | None:
+            async with get_client() as client:
+                runs = await client.read_flow_runs(
+                    flow_run_filter=FlowRunFilter(
+                        name=FlowRunFilterName(any_=[issue_id]),
+                    ),
+                    sort=FlowRunSort.START_TIME_DESC,
+                    limit=1,
+                )
+                if not runs:
+                    return None
+                params = getattr(runs[0], "parameters", None) or {}
+                rp = params.get("rig_path")
+                return Path(rp) if rp else None
+
+        return anyio.run(_run)
+    except Exception:
+        return None
+
+
 def resolve_run_dir(issue_id: str) -> RunLocation:
     """Return (rig_path, run_dir) for an issue, or raise RunDirNotFound.
 
-    Requires that `software-dev-full` has run against the bead at least
-    once since the metadata-write infra landed.
+    Lookup order:
+      1. `bd show <id>` from cwd  — fastest, the common single-rig case.
+      2. Prefect flow run named=<id> → rig_path → retry `bd show <id>`
+         in that rig — handles cross-rig dispatch (issue lives in rig A
+         but the user is in rig B).
+
+    Requires that the flow has run against the bead at least once since
+    the metadata-write infra landed.
     """
-    row = _bd_show_json(issue_id)
+    try:
+        row = _bd_show_json(issue_id)
+    except RunDirNotFound:
+        # Fallback: ask Prefect where the flow ran, then retry there.
+        rig_from_prefect = rig_path_from_prefect(issue_id)
+        if rig_from_prefect is None or not rig_from_prefect.is_dir():
+            raise
+        row = _bd_show_json(issue_id, cwd=rig_from_prefect)
     meta = row.get("metadata") or {}
     rig_path_s = meta.get(META_RIG_PATH)
     run_dir_s = meta.get(META_RUN_DIR)

@@ -740,10 +740,30 @@ def wait(
     import time as _time
 
     from prefect_orchestration.beads_meta import _bd_available, _bd_show
+    from prefect_orchestration.run_lookup import rig_path_from_prefect
 
     if not _bd_available():
         typer.echo("error: bd not on PATH", err=True)
         raise typer.Exit(3)
+
+    # Cross-rig resolution: cache `issue_id → rig_path` once via Prefect
+    # so subsequent polls don't re-query. Lets `po wait <id>` from any cwd
+    # work even when the bead is actually in a sibling rig.
+    rig_for: dict[str, Path | None] = {}
+
+    def _show(issue_id: str) -> dict | None:
+        cwd = rig_for.get(issue_id, "__unset__")
+        # First try: cwd if cached, else current cwd.
+        row = _bd_show(issue_id, rig_path=cwd if cwd != "__unset__" else None)
+        if row is not None:
+            return row
+        # Fallback: ask Prefect once for this id, retry bd in that rig.
+        if cwd == "__unset__":
+            rp = rig_path_from_prefect(issue_id)
+            rig_for[issue_id] = rp
+            if rp is not None and rp.is_dir():
+                return _bd_show(issue_id, rig_path=rp)
+        return None
 
     # Agent close-reasons follow a verb-first convention (`approved: …`,
     # `passed: …`, `no regression: …` for success vs `rejected: …`,
@@ -766,11 +786,13 @@ def wait(
         for issue_id in issue_ids:
             if issue_id in seen_closed:
                 continue
-            row = _bd_show(issue_id)
+            row = _show(issue_id)
             if row is None:
                 typer.echo(
                     f"error: bd show {issue_id!r} returned no row "
-                    f"(typo? not initialized?)", err=True,
+                    f"(typo? not initialized? or running in a rig you "
+                    f"haven't opened? Prefect lookup also missed.)",
+                    err=True,
                 )
                 raise typer.Exit(3)
             if row.get("status") == "closed":

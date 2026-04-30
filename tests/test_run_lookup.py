@@ -13,9 +13,28 @@ from prefect_orchestration import run_lookup
 def _fake_bd_show(metadata: dict | None):
     payload = {"id": "x", "metadata": metadata} if metadata is not None else {"id": "x"}
 
-    def runner(cmd, capture_output, text, check):  # noqa: ARG001
+    def runner(cmd, capture_output, text, check, cwd=None):  # noqa: ARG001
         return subprocess.CompletedProcess(
             cmd, 0, stdout=json.dumps(payload), stderr=""
+        )
+
+    return runner
+
+
+def _fake_bd_show_cwd_required(metadata: dict, expected_cwd: str):
+    """Returns a row only when cwd matches `expected_cwd` — simulates a
+    bead that lives in rig A but is queried from rig B. Without cwd it
+    fails like real bd does for a missing bead."""
+    payload = {"id": "x", "metadata": metadata}
+
+    def runner(cmd, capture_output, text, check, cwd=None):  # noqa: ARG001
+        if cwd == expected_cwd:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps(payload), stderr=""
+            )
+        return subprocess.CompletedProcess(
+            cmd, 1, stdout="",
+            stderr=f"Error fetching {cmd[2]}: no issue found matching {cmd[2]!r}",
         )
 
     return runner
@@ -94,3 +113,51 @@ def test_candidate_log_files_picks_run_dir_patterns(tmp_path, monkeypatch):
     loc = run_lookup.RunLocation(rig_path=tmp_path, run_dir=run_dir)
     got = {p.name for p in run_lookup.candidate_log_files(loc)}
     assert got == {"lint-iter-1.log", "test-iter-2.log", "decision-log.md"}
+
+
+# ─── cross-rig fallback via Prefect ──────────────────────────────────
+
+
+def test_resolve_run_dir_cross_rig_via_prefect(tmp_path, monkeypatch):
+    """Bead lives in rig A; user calls from rig B. First `bd show` from
+    cwd misses with "no issue found". `rig_path_from_prefect` returns
+    rig A's path; retry succeeds.
+
+    Reproduces the rig-4lp confusion observed 2026-04-29: `po watch
+    rig-4lp` from prefect-orchestration cwd failed because the bead was
+    actually in a different rig. Now we resolve via Prefect and retry."""
+    rig_a = tmp_path / "rig-a"
+    rig_a.mkdir()
+    run_dir = rig_a / "run"
+    run_dir.mkdir()
+
+    monkeypatch.setattr(run_lookup.shutil, "which", lambda _: "/usr/bin/bd")
+    monkeypatch.setattr(
+        run_lookup.subprocess, "run",
+        _fake_bd_show_cwd_required(
+            {"po.rig_path": str(rig_a), "po.run_dir": str(run_dir)},
+            expected_cwd=str(rig_a),
+        ),
+    )
+    monkeypatch.setattr(run_lookup, "rig_path_from_prefect", lambda _: rig_a)
+
+    loc = run_lookup.resolve_run_dir("rig-4lp")
+    assert loc.rig_path == rig_a
+    assert loc.run_dir == run_dir
+
+
+def test_resolve_run_dir_raises_when_prefect_also_misses(tmp_path, monkeypatch):
+    """First bd-show miss + Prefect lookup returns None → original error
+    bubbles up; user sees the bd-show stderr."""
+    monkeypatch.setattr(run_lookup.shutil, "which", lambda _: "/usr/bin/bd")
+    monkeypatch.setattr(
+        run_lookup.subprocess, "run",
+        _fake_bd_show_cwd_required(
+            {"po.rig_path": str(tmp_path), "po.run_dir": str(tmp_path)},
+            expected_cwd=str(tmp_path / "definitely-not-cwd"),
+        ),
+    )
+    monkeypatch.setattr(run_lookup, "rig_path_from_prefect", lambda _: None)
+
+    with pytest.raises(run_lookup.RunDirNotFound, match="bd show"):
+        run_lookup.resolve_run_dir("ghost-id")
