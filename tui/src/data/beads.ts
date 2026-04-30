@@ -60,16 +60,12 @@ export async function bdList(
   const args = ["list", "--json"];
   if (opts.status) args.push(`--status=${opts.status}`);
   if (opts.epicId) args.push(`--epic=${opts.epicId}`);
-  try {
-    const out = await runBd(args);
-    const parsed = JSON.parse(out);
-    // bd may return either a bare array or {issues: [...]} depending on version.
-    if (Array.isArray(parsed)) return parsed as BdIssue[];
-    if (parsed && Array.isArray(parsed.issues)) return parsed.issues as BdIssue[];
-    return [];
-  } catch (err) {
-    throw err instanceof Error ? err : new Error(String(err));
-  }
+  const out = await runBd(args);
+  const parsed = JSON.parse(out);
+  // bd may return either a bare array or {issues: [...]} depending on version.
+  if (Array.isArray(parsed)) return parsed as BdIssue[];
+  if (parsed && Array.isArray(parsed.issues)) return parsed.issues as BdIssue[];
+  return [];
 }
 
 /**
