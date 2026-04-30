@@ -450,36 +450,27 @@ export const useStore = create<PoTuiState>((set, get) => ({
     if (!bdShowVisible || !selectedId) return;
     // De-dup: don't kick a second fetch while one is in flight for the same id.
     if (bdShowLoading.has(selectedId)) return;
-    const nextLoading = new Set(bdShowLoading);
-    nextLoading.add(selectedId);
-    set({ bdShowLoading: nextLoading });
+    set({ bdShowLoading: new Set(bdShowLoading).add(selectedId) });
     try {
       const issue = await bdShow(selectedId);
-      // Build the next loading set fresh from current state — another tick
-      // may have moved on; we only want to remove ourselves.
-      const after = new Set(get().bdShowLoading);
-      after.delete(selectedId);
       if (issue) {
         set({
           bdShowCache: { ...get().bdShowCache, [selectedId]: issue },
           bdShowError: null,
-          bdShowLoading: after,
         });
       } else {
         // bd returned []; treat as a soft error and preserve cache.
-        set({
-          bdShowError: `bd show ${selectedId}: empty response`,
-          bdShowLoading: after,
-        });
+        set({ bdShowError: `bd show ${selectedId}: empty response` });
       }
     } catch (err) {
       // Cache-preservation contract: leave bdShowCache untouched on error.
+      set({ bdShowError: err instanceof Error ? err.message : String(err) });
+    } finally {
+      // Build the next loading set fresh from current state — another tick
+      // may have moved on; we only want to remove ourselves.
       const after = new Set(get().bdShowLoading);
       after.delete(selectedId);
-      set({
-        bdShowError: err instanceof Error ? err.message : String(err),
-        bdShowLoading: after,
-      });
+      set({ bdShowLoading: after });
     }
   },
 
