@@ -1,6 +1,6 @@
 """Resolve an issue id → on-disk run dir via bead metadata.
 
-The `software-dev-full` flow writes `po.rig_path` and `po.run_dir` to
+The formula flow writes `po.rig_path` and `po.run_dir` to
 the parent bead at entry. Verbs like `po logs`, `po artifacts`,
 `po sessions`, `po retry`, `po watch` all need to find that run dir
 again, starting from nothing but the issue id the user typed.
@@ -158,7 +158,7 @@ def lookup_prefect_run(token: str) -> tuple[Path, str] | None:
                 rp = params.get("rig_path")
                 if not rp:
                     return None
-                # Canonical bead id: issue_id (software_dev_full) /
+                # Canonical bead id: issue_id (e.g. software_dev_full) /
                 # root_id (graph_run) / epic_id (epic_run). Fall back to
                 # flow-run name (== that id by template).
                 bead_id = (
@@ -224,7 +224,7 @@ def resolve_run_dir(issue_id: str) -> RunLocation:
 def _missing_metadata_msg(issue_id: str) -> str:
     return (
         f"no run_dir recorded for {issue_id}. "
-        f"Has `po run software-dev-full --issue-id {issue_id} ...` been executed? "
+        f"Has `po run <formula> --issue-id {issue_id} ...` been executed? "
         "If the flow ran before this infra change, rerun it, or set manually:\n"
         f"  bd update {issue_id} "
         f"--set-metadata {META_RIG_PATH}=<abs-path> "

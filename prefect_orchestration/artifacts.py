@@ -1,8 +1,8 @@
-"""Collect + render the forensic trail from a software-dev-full run dir.
+"""Collect + render the forensic trail from any formula's run dir.
 
 Pure helpers used by `po artifacts`. The run dir layout is:
 
-    <rig>/.planning/software-dev-full/<issue>/
+    <rig>/.planning/<formula>/<issue>/
       triage.md
       plan.md
       critique-iter-N.md

@@ -52,6 +52,7 @@ def test_build_registry_dry_run(
         rig=rig,
         rig_path=str(tmp_path),
         agents_dir=tmp_path / "agents",
+        formula_name="software-dev-full",
         dry_run=True,
         roles=("triager", "builder"),
     )
@@ -151,6 +152,7 @@ def test_build_registry_threads_rig_path_through_every_bd_shellout(
         rig="r",
         rig_path=str(rig_path),
         agents_dir=tmp_path / "agents",
+        formula_name="test-formula",
         parent_bead="EPIC",
         dry_run=False,
         roles=("triager",),

@@ -80,7 +80,7 @@ class ManualDeploymentMissing(Exception):
             f"connected Prefect server. Expected deployment name: "
             f"{formula}-manual.\n"
             f"  Fix: register one in your pack and apply, e.g.\n"
-            f"    # po_formulas/deployments.py\n"
+            f"    # <your-pack>/deployments.py\n"
             f"    def register():\n"
             f'        return [{callable_hint}.to_deployment(name="{formula}-manual")]\n'
             f"  then run: po deploy --apply"

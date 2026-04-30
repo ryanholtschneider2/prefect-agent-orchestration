@@ -242,7 +242,8 @@ def agent_step(
     # Resolve run_dir: caller-supplied wins; else fall through to
     # `<rig>/.planning/agent-step/<seed>/`. The caller-supplied path is
     # the formula's canonical run-dir (e.g.
-    # `<rig>/.planning/software-dev-full/<seed>/`), shared across every
+    # `<rig>/.planning/<formula>/<seed>/` where <formula> is the pack's chosen name),
+    # shared across every
     # agent_step call in that formula run so role-sessions.json and
     # verdicts/ all land in one place — and `po artifacts` / `po watch`
     # find them via the seed bead's `po.run_dir` metadata stamp.

@@ -1,4 +1,4 @@
-"""Rig-local pass/fail cache for `software_dev_full`'s per-iter tests.
+"""Rig-local pass/fail cache for per-iter tests across formula runs.
 
 Lives at ``<rig>/.po-cache/tests.json``. Keyed by
 ``sha256(layer|source_hash|collection_hash|scope_hash)``. Entries record

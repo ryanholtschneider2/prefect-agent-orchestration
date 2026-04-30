@@ -1,6 +1,6 @@
 """Publish per-role file outputs as Prefect artifacts.
 
-Every role in a software-dev-full run drops its working notes onto disk
+Every role in a formula run drops its working notes onto disk
 under `<run_dir>/...` (markdown reports, lint logs, build diffs, etc.).
 The Prefect UI only knows about whatever the flow code explicitly
 publishes via `create_markdown_artifact` / `create_link_artifact`. This
@@ -217,7 +217,7 @@ def publish_role_artifacts(
     """Publish file bodies + transcript link for a role's just-finished turn.
 
     Args:
-        run_dir: per-run artifact dir (`<rig>/.planning/software-dev-full/<issue>/`).
+        run_dir: per-run artifact dir (`<rig>/.planning/<formula>/<issue>/`).
         rig_path: rig root — used to locate the Claude session JSONL.
         role: role name as used in keys (e.g. `"plan-critic"`, `"build"`).
             Verdict-specific keys (e.g. `triage`, `review-iter-N`) are

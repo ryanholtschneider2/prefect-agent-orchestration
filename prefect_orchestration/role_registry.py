@@ -145,7 +145,7 @@ class RoleRegistry:
             return
         # Mirror seed_run_dir derivation from the registry's own seed_run_dir.
         # The formula directory is the parent of the existing seed_run_dir
-        # (e.g. `<rig>/.planning/software-dev-full/<seed>/`).
+        # (e.g. `<rig>/.planning/<formula>/<seed>/`).
         parent_dir = self.role_session_store.seed_run_dir.parent
         new_seed_run_dir = parent_dir / seed_id
         new_store = RoleSessionStore(
@@ -308,7 +308,7 @@ def build_registry(
     claim: bool = True,
     roles: tuple[str, ...] = (),
     code_roles: frozenset[str] | None = None,
-    formula_name: str = "software-dev-full",
+    formula_name: str,
 ) -> tuple[RoleRegistry, dict[str, Any]]:
     """Bundle the standard PO flow bootstrap into one call.
 

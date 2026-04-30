@@ -1,6 +1,6 @@
 """Minimal `bd` CLI wrapper for parent-molecule metadata.
 
-The software-dev-full formula uses beads metadata as the shared state
+Formulas use beads metadata as the shared state
 bus between steps (iter counters, verdicts, run_dir, feature flags).
 We mirror that here so role prompts that read `bd show <parent>` work
 unchanged.
