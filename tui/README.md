@@ -8,21 +8,33 @@ the bundler; the production build is a single self-contained binary.
 ## Layout
 
 ```
-┌─ po · <epic-id or "all"> ─────────────────────  running:N  done:N  failed:N ─┐
-│ ISSUES                  │ ROLE TIMELINE — <selected issue>                   │
-│ ────────────────────────┤ triage ✓  plan ✓  critique ⟲2  build ▶  lint ·  │
-│ ▶ 4ja.1  build  ▶▶▶    │ ──────────────────────────────────────────────────│
-│   4ja.3  plan   ⟲       │ TMUX TAIL — po-4ja.1-build  (or BD SHOW — <id>)    │
-│   4ja.4  baseline ✗    │ <last 30 lines>                                    │
-└─────────────────────────┴────────────────────────────────────────────────────┘
- [↑↓] nav  [a] attach  [r] refresh  [/] filter  [b] bd-show  [q] quit
+┌─ po · <epic or "all">    run:N  stuck:N  ok:N  fail:N ─┬──────────────────────┐
+│ ISSUES (running on top, done collapsed below ─)        │ DETAIL: <selected>   │
+│ ▶ 5vh  fast    4m   build ⟲1     Add overview         │ [LIVE][TRACE][BD][ACT]│
+│   ld9  full   52m   plan  ⟲2  ⚠  IssueList rows       ├──────────────────────┤
+│   1qn  full   48m   review ⟲3   RoleTL+tmux fix       │ ━━ LIVE ━━━━━━━━━━━━ │
+│   3ti  full  1h7m   build ⟲1                          │ planner✓ → builder⟳ │
+│ ─                                                       │ tmux tail (last 30): │
+│   oiu  fast    ✓5m  graph_run fix                      │   <live agent output>│
+└────────────────────────────────────────────────────────┴──────────────────────┘
+ [↑↓] sibs  [←→] tree  [t] tab  [1-4] jump  [c] cancel  [r] retry  [d] dispatch
+ [D] show-done  [a] attach  [A] in-place  [/] filter  [e/E] drill  [q] quit
 ```
 
-The right panel's bottom slot toggles between the live tmux tail (default)
-and a `bd show <id>` pane via the `b` key. The bd-show pane renders the
-selected issue's bd metadata, description, and parent-child children — handy
-for reading the user's task description, surveying an epic's children, or
-inspecting a closed bead's `close_reason` without leaving the TUI.
+The right pane is a 4-tab detail view, default tab **LIVE**:
+
+| Tab | Content | Source |
+|---|---|---|
+| LIVE | RoleTimeline + tmux tail of the active role | tmux + Prefect |
+| TRACE | placeholder (`coming soon — see prefect-orchestration-qhg`) | — |
+| BD | `bd show <id>` — description, metadata, dependents, `close_reason` | `bd show --json` |
+| ACTIONS | static keybind reference panel | — |
+
+Per-row columns: `<id>  <flow-mode>  <wall>  <step+iter>  <stuck>  <title>`.
+`flow-mode` is `fast`/`full`; `wall` humanizes (`4m` / `1h7m`, red over 1h);
+`stuck` (`⚠`) flags rows whose wall exceeds 2× the step-typical heuristic
+(see `STEP_TYPICAL_MS` in `state/store.ts`). Done rows collapse below an `─`
+separator (toggled by `D`); the header counts running / stuck / ok / fail.
 
 ## Data sources
 
@@ -91,17 +103,25 @@ If none of those exist it prints a friendly hint pointing back here.
 
 ## Hotkeys
 
-- `↑` / `↓` — navigate the issue list (siblings of selected row)
-- `←` / `→` — jump to parent / drill into first child
-- `a` — open `tmux attach` in a new tab/window for the active role
-- `A` — exit cleanly and `tmux attach -t <session>` in-place
-- `r` — force a refresh tick
+Navigation:
+- `↑` / `↓` — siblings of the selected row
+- `←` / `→` — parent / first child
+- `e` / `E` — drill into selection's parent / pop back out
 - `/` — filter issues by id or title substring
-- `e` / `E` — drill into the selected row's parent / pop back out
-- `t` — hide terminal-state rows (show only running/queued/paused)
-- `b` — toggle the right panel's bottom slot between TMUX TAIL and BD SHOW
-- `j` / `k` — scroll the BD SHOW pane down/up by one line (only while visible)
-- `g` / `G` — jump BD SHOW pane to top/bottom (only while visible)
+
+Tabs (right pane):
+- `t` — cycle tabs (LIVE → TRACE → BD → ACTIONS)
+- `1` / `2` / `3` / `4` — jump to LIVE / TRACE / BD / ACTIONS
+- `j` / `k` / `g` / `G` — scroll the BD tab (active only while BD is selected)
+
+Actions on the selected run:
+- `c` — cancel (confirm overlay; shells `prefect flow-run cancel <flow_run_id>`)
+- `r` — retry (confirm overlay; shells `po retry <issue_id>`)
+- `d` — dispatch a new run (multi-step form: issue id → flow → rig → rig-path)
+- `o` — open the flow run in the Prefect UI (`xdg-open`)
+- `D` — toggle show-done (collapse / expand the done block)
+- `a` — `tmux attach` to the active role's pane in a new terminal window
+- `A` — exit cleanly and `tmux attach -t <session>` in-place
 - `q` — quit
 
 ## Status
