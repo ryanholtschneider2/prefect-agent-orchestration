@@ -3,7 +3,7 @@ name: stripe
 description: Charge customers, issue refunds, inspect balances via Stripe — CLI-first.
 ---
 
-# Stripe skill — this nanocorp's conventions
+# Stripe skill — deployment conventions
 
 Use the `stripe` CLI as the primary surface. The Python SDK is a fallback
 for webhooks and streaming. Run `po doctor` once before your first call to
@@ -16,7 +16,7 @@ verify the binary, env, and live API are all green.
 - Vendor llms.txt (AI-friendly docs index): https://docs.stripe.com/llms.txt
 - Project-scoped keys (recommended): https://docs.stripe.com/projects
 
-## This nanocorp's rules
+## Deployment rules
 
 1. **Test keys in dev.** `STRIPE_API_KEY` should start with `sk_test_` in
    dev. `po doctor` warns yellow on `sk_live_` unless `PO_ENV=prod`.

@@ -16,7 +16,7 @@ Schema (all fields optional)::
 
     [identity]
     name             = "acquisitions-bot"
-    email            = "acquisitions@nanocorp.example"
+    email            = "acquisitions@example.com"
     slack            = "@acquisitions-bot"
     mail_agent_name  = "acquisitions-bot"   # falls back to name
     model            = "opus"

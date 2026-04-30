@@ -102,8 +102,9 @@ formulas). PO owns the delta.
 
 ## 2 — Minimum viable AI-native org
 
-If you want to run a nanocorp that serves real customers, the
-*minimum* primitives beyond the base execution layer are:
+If you want to run an autonomous org-style deployment that serves real
+customers, the *minimum* primitives beyond the base execution layer
+are:
 
 1. **Approval gates (12)** — so the org can sign contracts, send
    payments, publish content with a human in the loop when needed.
@@ -161,7 +162,7 @@ The same shape for `gmail` (send, list, fetch), `gcal` (create event,
 list), `slack` (post, upload), `attio`/`hubspot`/`linear` (typed
 record CRUD).
 
-Default-ship ~6 packs; a nanocorp picks the subset they need. Users
+Default-ship ~6 packs; a deployment picks the subset it needs. Users
 can also ship their own — same entry-point contract.
 
 ## 4 — Feedback loop as a standing order (Ryan's refinement)

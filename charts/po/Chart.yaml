@@ -29,9 +29,9 @@ keywords:
   - agents
   - beads
 
-home: https://github.com/nanocorp/prefect-orchestration
+home: https://github.com/ryanholtschneider2/prefect-agent-orchestration
 sources:
-  - https://github.com/nanocorp/prefect-orchestration
+  - https://github.com/ryanholtschneider2/prefect-agent-orchestration
 
 maintainers:
   - name: Ryan

@@ -14,8 +14,8 @@ preference. Each principle should survive beyond one PR.
 
 **Why.** LLMs and humans already know the `prefect` CLI; every redundant
 `po` wrapper doubles the API surface without adding capability. We want
-people running nanocorps to spend their cognitive budget on formulas and
-beads, not on learning a second CLI that re-exports the first.
+operators to spend their cognitive budget on formulas and beads, not on
+learning a second CLI that re-exports the first.
 
 **What passes the test.**
 
@@ -64,7 +64,7 @@ integration, not the primary UX.
 
 **Why.**
 
-- Operators drive nanocorps from terminals, `tmux`, CI, cron lines, and
+- Operators drive PO from terminals, `tmux`, CI, cron lines, and
   Slack slash-commands. None of those run Python.
 - LLM coding agents compose shell commands an order of magnitude more
   fluently than they compose Python snippets — every Python-required

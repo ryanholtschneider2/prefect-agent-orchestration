@@ -91,7 +91,7 @@ description: Charge customers, issue refunds, inspect balances via the Stripe AP
 
 # Stripe skill
 
-In THIS nanocorp:
+In THIS deployment:
 
 - Always use test keys (`STRIPE_API_KEY` starts with `sk_test_`) in dev.
 - Charges over $500 require human approval — `bd human <issue> --question="approve $<amt> charge to <customer>"` and wait.
@@ -208,7 +208,7 @@ Schema (all fields optional):
 ```toml
 [identity]
 name             = "acquisitions-bot"
-email            = "acquisitions@nanocorp.example"
+email            = "acquisitions@example.com"
 slack            = "@acquisitions-bot"
 mail_agent_name  = "acquisitions-bot"   # falls back to name when absent
 model            = "opus"
@@ -354,8 +354,8 @@ this order:
 A skill should **lead** with the highest available tier and
 document the lower tiers as fallbacks. When a provider ships
 their own Claude Code skill or `llms.txt`, **link to it** from the
-pack's SKILL.md rather than duplicating — our skill adds nanocorp-
-specific policy (idempotency conventions, budget thresholds,
+pack's SKILL.md rather than duplicating — our skill adds
+deployment-specific policy (idempotency conventions, budget thresholds,
 project-key discipline) on top of the vendor's canonical guidance.
 
 ### Official vendor skills / llms.txt — link, don't duplicate
@@ -376,14 +376,14 @@ name: stripe
 description: Charge customers, issue refunds, inspect balances via Stripe.
 ---
 
-# Stripe skill — <this-nanocorp> conventions
+# Stripe skill — deployment conventions
 
 ## Canonical vendor docs
 - CLI reference: https://docs.stripe.com/stripe-cli
 - API reference: https://docs.stripe.com/api
 - Vendor llms.txt: https://docs.stripe.com/llms.txt
 
-## This nanocorp's rules
+## This deployment's rules
 (idempotency, bd human on > $500, test-key-in-dev, …)
 
 ## Quick CLI recipes

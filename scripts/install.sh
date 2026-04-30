@@ -2,7 +2,7 @@
 # PO one-line installer.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/<USER>/prefect-orchestration/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/ryanholtschneider2/prefect-agent-orchestration/main/scripts/install.sh | sh
 #   curl -fsSL .../install.sh | AGENT=claude sh    # skill only for Claude Code
 #   curl -fsSL .../install.sh | AGENT=none   sh    # CLI only, no skill
 #   PO_REPO_URL=https://github.com/me/fork.git AGENT=claude sh install.sh
@@ -13,14 +13,14 @@
 #   3. `make install AGENT=<all|claude|cursor|aider|none>` from that checkout
 #
 # Honors:
-#   PO_REPO_URL   git URL to clone from (default: https://github.com/anthropics/prefect-orchestration.git)
+#   PO_REPO_URL   git URL to clone from (default: https://github.com/ryanholtschneider2/prefect-agent-orchestration.git)
 #   PO_REPO_REF   git ref to checkout (default: main)
 #   PO_INSTALL_DIR  where to clone to (default: ~/.local/share/prefect-orchestration)
 #   AGENT         all | claude | cursor | aider | none (default: all)
 
 set -euo pipefail
 
-PO_REPO_URL="${PO_REPO_URL:-https://github.com/anthropics/prefect-orchestration.git}"
+PO_REPO_URL="${PO_REPO_URL:-https://github.com/ryanholtschneider2/prefect-agent-orchestration.git}"
 PO_REPO_REF="${PO_REPO_REF:-main}"
 PO_INSTALL_DIR="${PO_INSTALL_DIR:-$HOME/.local/share/prefect-orchestration}"
 AGENT="${AGENT:-all}"

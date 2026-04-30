@@ -6,7 +6,7 @@ to [`engdocs/pack-convention.md`](../engdocs/pack-convention.md).
 Ships:
 
 - `skills/stripe/SKILL.md` — Claude Code skill teaching agents how to use
-  Stripe safely in this nanocorp's context.
+  Stripe safely in the deployment's context.
 - `overlay/CLAUDE.md` — agent-facing reinforcement copied into the rig
   cwd at session start.
 - 3 `po.commands` — `po stripe-balance`, `po stripe-recent`, `po stripe-mode`.

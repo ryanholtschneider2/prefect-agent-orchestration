@@ -190,7 +190,7 @@ installs prerequisites if missing, symlinks the agent skill into every
 detected coding agent's skill dir):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<USER>/prefect-orchestration/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ryanholtschneider2/prefect-agent-orchestration/main/scripts/install.sh | sh
 
 # Knobs (env vars):
 #   AGENT=claude        skill only for Claude Code (others: cursor, aider, all, none; default: all)
