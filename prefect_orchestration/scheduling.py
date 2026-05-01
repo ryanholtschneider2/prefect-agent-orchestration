@@ -36,6 +36,7 @@ def _load_formula_flow(formula: str) -> Any | None:
                 return None
     return None
 
+
 _REL_RE = re.compile(r"^\+?(\d+)\s*([smhdw])$", re.IGNORECASE)
 _REL_UNIT = {
     "s": "seconds",
@@ -72,18 +73,38 @@ def parse_when(spec: str) -> datetime:
     iso = spec[:-1] + "+00:00" if spec.endswith("Z") else spec
     try:
         dt = datetime.fromisoformat(iso)
-    except ValueError as exc:
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc)
+        # Naive result: strict ISO-8601 (T separator) → reject explicitly.
+        # Space-separated naive (e.g. "2026-04-30 19:00") → fall through to
+        # dateutil so local tz can be applied.
+        if "T" in spec:
+            raise ValueError(
+                f"--at {spec!r}: ISO-8601 must include a timezone offset "
+                "(e.g. +00:00 or Z); naive datetimes are rejected to avoid "
+                "ambiguous local-vs-UTC scheduling."
+            )
+    except ValueError as _iso_exc:
+        # Re-raise the explicit naive-ISO rejection; only fall through to
+        # dateutil when fromisoformat failed to parse the string at all.
+        if "ISO-8601 must include" in str(_iso_exc):
+            raise
+    # Loose fallback: handles space-separated forms, named-tz abbreviations,
+    # offset-with-space, and time-only specs (e.g. "2026-04-30 19:00 EDT").
+    try:
+        from dateutil import parser as _du_parser
+        from dateutil.tz import tzlocal as _tzlocal
+
+        dt = _du_parser.parse(spec, default=datetime.now().replace(second=0, microsecond=0))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_tzlocal())
+        return dt.astimezone(timezone.utc)
+    except Exception as exc:
         raise ValueError(
-            f"bad --at {spec!r}: expected relative (2h, 30m, 1d, +30m) "
-            "or ISO-8601 with timezone"
+            f"bad --at {spec!r}: expected relative (2h, 30m, 1d, +30m), "
+            "ISO-8601 with timezone (2026-04-30T19:00:00-04:00), "
+            "or space-separated date/time (2026-04-30 19:00 EDT)"
         ) from exc
-    if dt.tzinfo is None:
-        raise ValueError(
-            f"--at {spec!r}: ISO-8601 must include a timezone offset "
-            "(e.g. +00:00 or Z); naive datetimes are rejected to avoid "
-            "ambiguous local-vs-UTC scheduling."
-        )
-    return dt.astimezone(timezone.utc)
 
 
 class ManualDeploymentMissing(Exception):

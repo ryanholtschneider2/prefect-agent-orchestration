@@ -120,6 +120,50 @@ def test_parse_when_unknown_unit_rejected() -> None:
         scheduling.parse_when("2y")
 
 
+# ─── parse_when: space-separated / dateutil forms ────────────────────
+
+
+def test_parse_when_space_date_with_utc_offset() -> None:
+    out = scheduling.parse_when("2026-04-30 19:00 -04:00")
+    assert out == datetime(2026, 4, 30, 23, 0, tzinfo=timezone.utc)
+
+
+def test_parse_when_space_date_named_tz_edt() -> None:
+    out = scheduling.parse_when("2026-04-30 19:00 EDT")
+    assert out == datetime(2026, 4, 30, 23, 0, tzinfo=timezone.utc)
+
+
+def test_parse_when_space_date_no_tz_is_local() -> None:
+    """Space-separated naive datetime assumes local tz and returns UTC-aware result."""
+    out = scheduling.parse_when("2026-04-30 19:00")
+    assert out.tzinfo == timezone.utc
+    # Result must be within 13 hours of 2026-04-30T19:00:00Z (widest UTC offset)
+    expected_naive_utc = datetime(2026, 4, 30, 19, 0, tzinfo=timezone.utc)
+    assert abs((out - expected_naive_utc).total_seconds()) <= 13 * 3600
+
+
+def test_parse_when_time_only_no_tz_is_today() -> None:
+    """Time-only string uses today's date with local tz."""
+    out = scheduling.parse_when("19:00")
+    assert out.tzinfo == timezone.utc
+    # Hour in UTC must be within 13 hours of local 19:00 (widest UTC offset)
+    assert 0 <= out.hour <= 23
+
+
+def test_parse_when_time_only_named_tz() -> None:
+    out = scheduling.parse_when("19:00 EDT")
+    assert out.tzinfo == timezone.utc
+    assert out.hour == 23
+
+
+def test_parse_when_error_message_has_space_sep_example() -> None:
+    """Error message should list a space-separated example."""
+    with pytest.raises(ValueError) as exc_info:
+        scheduling.parse_when("not-a-date")
+    msg = str(exc_info.value)
+    assert "EDT" in msg or "space-separated" in msg
+
+
 # ─── ManualDeploymentMissing message shape (AC §4) ───────────────────
 
 
