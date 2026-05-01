@@ -95,7 +95,9 @@ def parse_when(spec: str) -> datetime:
         from dateutil import parser as _du_parser
         from dateutil.tz import tzlocal as _tzlocal
 
-        dt = _du_parser.parse(spec, default=datetime.now().replace(second=0, microsecond=0))
+        dt = _du_parser.parse(
+            spec, default=datetime.now().replace(second=0, microsecond=0)
+        )
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=_tzlocal())
         return dt.astimezone(timezone.utc)
