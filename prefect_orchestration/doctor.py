@@ -460,7 +460,10 @@ def check_logfire_token() -> CheckResult:
 
 def check_pack_overlays() -> CheckResult:
     """Warn when an installed pack ships no ``overlay/CLAUDE-*.md``."""
-    from prefect_orchestration.pack_overlay import _candidate_overlay_dirs, discover_packs
+    from prefect_orchestration.pack_overlay import (
+        _candidate_overlay_dirs,
+        discover_packs,
+    )
     from prefect_orchestration.packs import CORE_DISTRIBUTION
 
     name = "pack overlays"

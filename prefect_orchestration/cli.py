@@ -1589,7 +1589,9 @@ def packs_install(
         raise typer.Exit(2) from exc
     typer.echo(f"installed {spec}")
     from prefect_orchestration.pack_overlay import apply_pack_index
-    from prefect_orchestration.pack_overlay import discover_packs as _discover_overlay_packs
+    from prefect_orchestration.pack_overlay import (
+        discover_packs as _discover_overlay_packs,
+    )
 
     effective_rig = rig_path or Path.cwd()
     for pack in _discover_overlay_packs():
