@@ -56,6 +56,26 @@ warns when `dolt_mode != "server"`. This rig is already on dolt-server —
 see `.beads/dolt-server.port` for the live port and `.beads/metadata.json`
 for the connection details.
 
+### Local bd fork (`-nanocorps`)
+
+`~/.local/bin/bd` is a build of our local fork (`bd version` shows a
+`-nanocorps` suffix). The fork is upstream-bd plus `.d/`-style
+state-change hooks: drop an executable into `.beads/hooks/post-<event>.d/`
+and bd runs it after every matching mutation, with `BD_ISSUE_ID` /
+`BD_HOOK_TYPE` / `BD_OLD_STATE` / `BD_NEW_STATE` / `BD_RIG_PATH` in env.
+Event types: `post-create` / `post-update` / `post-status-change` /
+`post-close`. Failures log a warning but never fail the bd command.
+Disable globally with `BD_NO_HOOKS=1`. Convenience verbs: `bd hooks list`
+(shows git + state-change hooks), `bd hooks install --type=post-close
+<script>`. Fork source lives at `~/Desktop/Code/personal/beads-fork`;
+full reference in the fork's README. Two non-obvious contracts worth
+knowing before authoring a hook: (1) `bd close` fires only `post-close.d/`,
+while `bd update --status=closed` fires `post-status-change.d/` then
+`post-update.d/` (NOT `post-close.d/`); (2) on a non-status update
+(priority bump, assignee change, …) `BD_OLD_STATE == BD_NEW_STATE`.
+Followup `lae` will install a `post-status-change` hook here that
+emits Prefect events.
+
 ## Session Completion
 
 **This repo has no git remote configured** — local-only. The beads
@@ -411,16 +431,26 @@ takes `issue_id` and writes a run_dir. Runs arbitrary Python in-process
 ### Scheduling (cron, interval, manual)
 
 ```bash
-# 1. Ship a register() in your pack's po_formulas/deployments.py
-#    (declare the Prefect deployment Pythonically, no YAML)
+# 1. (Optional) Ship a register() in your pack's po_formulas/deployments.py
+#    for a custom manual-deployment shape (params, queues, tags).
+#    If absent, PO auto-creates <formula>-manual from the formula's flow
+#    object on first --at use and prints: "auto-created deployment: <name>"
 
 # 2. Start a worker so scheduled runs execute
 prefect worker start --pool po        # create with --type process/k8s/docker
 
-# 3. Trigger a manual scheduled run (auto-applies the deployment if absent)
+# 3. Trigger a manual scheduled run (auto-creates the deployment if missing)
 po run <formula> --at 2h --issue-id <id> --rig <name> --rig-path <path>
-# or via po retry:
+# or via po retry (archives run_dir, then schedules):
 po retry <issue-id> --at 2h
+# or via po resume (keeps run_dir intact, then schedules):
+po resume <issue-id> --at 2h
+
+# --at accepts: relative (2h, 30m, 1d, +30m), strict ISO-8601 with offset
+# (2026-04-30T19:00:00-04:00), or space-separated date/time with named tz:
+#   po resume <issue-id> --at "2026-04-30 19:00 EDT"
+#   po resume <issue-id> --at "19:00 EDT"        # today, named tz
+#   po resume <issue-id> --at "2026-04-30 19:00" # local tz assumed
 
 # Low-level Prefect-native form (requires po deploy --apply first):
 prefect deployment run <flow>/<deployment-name> \
@@ -589,6 +619,12 @@ in-process. Refuses when a `Running` flow-run for the issue already exists
 `--rig NAME` overrides the default rig (rig_path basename); `--formula NAME`
 picks a non-default entry-point.
 
+**Stale lock auto-cleanup.** Both `po retry` and `po resume` auto-delete a
+`.retry.lock` file when it is older than `PO_RETRY_LOCK_STALE_SECS` seconds
+(default 600) AND no live process matching `po retry|po resume` for that
+issue is detected. A warning is printed when auto-cleanup fires. A fresh lock
+held by a live process still blocks as before.
+
 ### `PO_FORMULA_MODE` — legacy vs graph dispatch (7vs.5)
 
 `software_dev_full` ships two implementations behind one entry point.
@@ -630,11 +666,13 @@ Background and rationale: `engdocs/formula-modes.md`. Migration plan
 | Show per-role Claude session UUIDs for a run | `po sessions <issue-id> [--resume <role>]` |
 | Attach to an issue's tmux session (k8s pod or host) | `po attach <issue-id> [--role <role>] [--list] [--print-argv]` |
 | Archive a run_dir and relaunch its formula | `po retry <issue-id> [--keep-sessions] [--force] [--rig NAME] [--formula NAME]` |
+| Resume a failed flow without archiving run_dir | `po resume <issue-id> [--at <when>] [--force] [--rig NAME] [--formula NAME]` |
 | Live merged feed of flow state + run_dir artifacts | `po watch <issue-id> [--replay] [--replay-n N]` |
-| List active / recent runs grouped by bead `issue_id` tag | `po status [--issue-id ID] [--since 24h] [--state Running] [--all]` |
+| List active / recent runs grouped by bead `issue_id` tag; annotates RUNNING flows silent ≥5 min with `(stale: Nm)` and auto-Fails + clears bead assignee for flows silent ≥10 min with no live process (`PO_WATCHDOG_STALE_SECS`, default 600s) | `po status [--issue-id ID] [--since 24h] [--state Running] [--all]` |
 | List pack-declared deployments | `po deploy` |
 | Apply pack-declared deployments to server | `po deploy --apply` |
 | Check PO wiring (bd, Prefect API, pool, entry points) | `po doctor` |
+| List stale `.retry.lock` files; `--fix` removes them | `po doctor --check=locks [--fix]` |
 | List deployments currently on server | `prefect deployment ls` |
 | Trigger a deployment (now or future) | `prefect deployment run <name> --start-in 2h` |
 | Start server / worker | `prefect server start`, `prefect worker start --pool po` |
@@ -814,6 +852,43 @@ installed but the install command exits non-zero — fix the pack's
 
 Run `po packs update` after registering a new command so `importlib.metadata`
 sees the new entry-point.
+
+### Pack overlays (`overlay/CLAUDE-<name>.md`)
+
+Packs can ship a short discovery summary that agents read up front — without
+spelunking through formula source or agent folders:
+
+```
+my-pack/
+  overlay/
+    CLAUDE-<pack-name>.md   # ~150-word: what the pack does, key verbs, when to use
+```
+
+`po packs install <pack> --rig-path <rig>` copies every `overlay/CLAUDE-*.md`
+to `<rig>/.claude/packs/`. `materialize_packs()` (called at `AgentSession` start)
+also populates `.claude/packs/` automatically for rigs that haven't run `po packs
+install`. Reference files via `@.claude/packs/CLAUDE-<pack-name>.md` in a rig's
+CLAUDE.md for progressive disclosure.
+
+`po doctor` warns when an installed pack has no `overlay/CLAUDE-*.md`.
+
+Overlay shape:
+
+```markdown
+# <pack-name>
+
+**What it provides:** <one-liner>
+
+**When to use:**
+- <scenario>
+
+**Key verbs:** `<formula-or-cmd>`, ...
+**Key paths:** `packs/<pack>/agents/<role>`, ...
+
+**Skip if:** <when not relevant>
+
+**Read more:** `po show <verb>`, `<pack>/README.md`
+```
 
 ## Graph-mode / per_role_step patterns (from 7vs.5)
 
@@ -1013,5 +1088,8 @@ register) any `po.formulas` entry-point.
 - `9cn` OpenTelemetry / Logfire spans (open)
 - `pw4` rig-path vs pack-path split (shipped — see README §"Rig path vs pack path")
 - `7jr` `po run --at` for future-scheduled runs (shipped; `--time` kept as deprecated alias per 40y)
+- `c34` `--at` auto-creates manual deployments + `po resume --at` (shipped)
 - `7vs` graph-mode software-dev-full (shipped — see §"Graph-mode / per_role_step patterns")
 - `dgr` po-formulas-prompt deprecation (shipped — see §"Deprecating a `po.formulas` pack")
+- `au5` pack-level CLAUDE overlay convention + `po doctor` check + `po packs install --rig-path` (shipped — see §"Pack overlays")
+- `gv0` stale `.retry.lock` auto-cleanup on resume/retry + `po doctor --check=locks` (shipped — see §"Debugging a run")
