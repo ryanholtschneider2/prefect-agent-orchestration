@@ -127,6 +127,41 @@ def _detect_rate_limit_in_pane(pane_text: str) -> str | None:
     return _extract_reset_time(pane_text)
 
 
+def _has_429_envelope(text: str) -> bool:
+    """Return True iff `text` contains a real Claude 429 envelope.
+
+    A real rate-limit success envelope has BOTH `is_error: true` AND
+    `api_error_status: 429` in the same JSON object. Plain substring
+    matches on `"api_error_status":429` or rate-limit prose are
+    unreliable: any agent reading code that handles rate limits (e.g.
+    this file) emits the literal strings without any actual API error.
+
+    We try line-by-line JSON first (stream-json shape), then fall back
+    to whole-text parse, then to a strict conjunction of substrings as
+    a last-resort. False negatives here just defer 429 detection to the
+    JSONL-based `_detect_rate_limit_in_jsonl`; false positives strand
+    successful runs as RateLimitError, so prefer false negatives.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("is_error") is True and obj.get("api_error_status") == 429:
+            return True
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    else:
+        if isinstance(obj, dict) and obj.get("is_error") is True and obj.get("api_error_status") == 429:
+            return True
+    return '"is_error":true' in text and '"api_error_status":429' in text
+
+
 def _detect_rate_limit_in_jsonl(jsonl_path: Path) -> str | None:
     """Scan a Claude JSONL transcript for the synthetic rate_limit event.
 
@@ -335,10 +370,9 @@ class ClaudeCliBackend:
         # `result` string as if it were normal output and the caller
         # proceeds with a junk result.
         combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        reset = _detect_rate_limit_in_pane(combined)
-        if reset is not None or '"api_error_status":429' in combined:
+        if _has_429_envelope(combined):
             raise RateLimitError(
-                reset_time=reset or None,
+                reset_time=_detect_rate_limit_in_pane(combined) or None,
                 message=combined[-1000:],
             )
 
@@ -757,10 +791,9 @@ class TmuxClaudeBackend:
             # for the observed payload). Hoisted check ensures a
             # rate-limit always surfaces as RateLimitError, never as a
             # silent junk result.
-            reset = _detect_rate_limit_in_pane(stdout)
-            if reset is not None or '"api_error_status":429' in stdout:
+            if _has_429_envelope(stdout):
                 raise RateLimitError(
-                    reset_time=reset or None,
+                    reset_time=_detect_rate_limit_in_pane(stdout) or None,
                     message=stdout[-1000:],
                 )
             if rc != 0:
