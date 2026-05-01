@@ -84,6 +84,41 @@ def my_pipeline(issue_id, rig, rig_path):
             break
     # ...
 ```
+
+# Failure modes
+
+`agent_step` calls into `AgentSession.prompt`, which can fail in two
+typed ways the orchestrator is expected to handle:
+
+- `RateLimitError` — Claude returned a real 429 (either as a transport
+  exception or as a success-shaped envelope with
+  `is_error: true, api_error_status: 429` — both shapes are detected
+  by `_has_429_envelope` in `agent_session.py`). When OAuth-pool
+  rotation is wired (see `auth_rotation.oauth_failover_budget`),
+  `agent_step` retries on a fresh slot up to the budget. When the
+  budget is exhausted (or rotation is disabled), the error propagates
+  so Prefect marks the flow Failed and the operator can `po retry`
+  after the limit resets.
+- `StepTimeoutError` — the Claude subprocess exceeded the wall-clock
+  budget without producing a terminal envelope (subprocess alive at
+  ~0 CPU, no stdout activity, role-session.json static). The single
+  global cap `DEFAULT_AGENT_TIMEOUT_S` (60 min) is the safety net;
+  per-role-step budgets (triage=5min, build=30min, …) are tracked
+  in `prefect-orchestration-8e3`. `agent_step` does NOT retry on
+  timeout — it propagates to Prefect so the operator sees the wedge
+  and can `po retry` after diagnosing.
+
+Both are re-raised through the bare `except Exception: raise` at the
+turn-level try block; `_persist_session` still runs in `finally` so
+the role's session UUID survives the failure for resume.
+
+This is layered defense: 429 detection at the SDK envelope layer
+(catches the failure mode that hung nanocorps-0k8 +
+prefect-orchestration-gub for 15-50min before the fix), wall-clock
+timeout at the subprocess layer (catches the failure mode where the
+SDK never emits any envelope at all), and the OAuth-rotation retry
+loop at the session layer (recovers from transient rate-limits
+without operator intervention).
 """
 
 from __future__ import annotations

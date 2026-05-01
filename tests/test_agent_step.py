@@ -13,10 +13,13 @@ from typing import Any
 import pytest
 
 import prefect_orchestration.agent_step as agent_step_mod
+from prefect_orchestration.agent_session import StepTimeoutError
 from prefect_orchestration.agent_step import agent_step
 
 
-def _write_prompt(agents_dir: Path, role: str, body: str = "You are {{seed_id}}.") -> Path:
+def _write_prompt(
+    agents_dir: Path, role: str, body: str = "You are {{seed_id}}."
+) -> Path:
     role_dir = agents_dir / role
     role_dir.mkdir(parents=True, exist_ok=True)
     (role_dir / "prompt.md").write_text(body)
@@ -26,8 +29,7 @@ def _write_prompt(agents_dir: Path, role: str, body: str = "You are {{seed_id}}.
 class _FakeSession:
     """Minimal AgentSession-like stub. Records prompts; returns a canned reply."""
 
-    def __init__(self, replies: list[str] | None = None,
-                 session_id: str | None = None):
+    def __init__(self, replies: list[str] | None = None, session_id: str | None = None):
         self.prompts: list[str] = []
         self._replies = list(replies or ["[stub] ack"])
         # Mimic AgentSession.session_id (None → fresh; str → resumed)
@@ -49,8 +51,12 @@ def fake_bd(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     def fake_create_child_bead(parent, child_id, **_kw):
         if child_id not in state:
             state[child_id] = {
-                "id": child_id, "status": "open", "title": _kw.get("title", ""),
-                "metadata": {}, "closure_reason": "", "notes": "",
+                "id": child_id,
+                "status": "open",
+                "title": _kw.get("title", ""),
+                "metadata": {},
+                "closure_reason": "",
+                "notes": "",
             }
         return child_id
 
@@ -88,8 +94,12 @@ def test_agent_step_seed_only_agent_closes(
     """Agent runs against the seed, closes the bead → return verdict 'complete'."""
     _write_prompt(tmp_path / "agents", "summarizer")
     fake_bd["bead-1"] = {
-        "id": "bead-1", "status": "open", "title": "x",
-        "metadata": {}, "closure_reason": "", "notes": "",
+        "id": "bead-1",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
     }
 
     # Simulate the agent closing the bead during prompt().
@@ -119,8 +129,14 @@ def test_agent_step_iter_creates_child_bead(
 ) -> None:
     """`iter_n=1` + `step='plan'` → operates on `<seed>.plan.iter1`."""
     _write_prompt(tmp_path / "agents", "planner")
-    fake_bd["seed"] = {"id": "seed", "status": "open", "title": "s",
-                       "metadata": {}, "closure_reason": "", "notes": ""}
+    fake_bd["seed"] = {
+        "id": "seed",
+        "status": "open",
+        "title": "s",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
 
     # Agent closes the iter bead with a verdict keyword.
     original = fake_session.prompt
@@ -156,8 +172,12 @@ def test_agent_step_skips_when_bead_already_closed(
     """Already-closed bead → return verdict from cache, don't run agent."""
     _write_prompt(tmp_path / "agents", "x")
     fake_bd["bead-c"] = {
-        "id": "bead-c", "status": "closed", "title": "x",
-        "metadata": {}, "closure_reason": "approved: prior run", "notes": "",
+        "id": "bead-c",
+        "status": "closed",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "approved: prior run",
+        "notes": "",
     }
     result = agent_step(
         agent_dir=tmp_path / "agents" / "x",
@@ -181,8 +201,12 @@ def test_agent_step_nudges_when_agent_forgot_to_close(
     """Agent didn't close → nudge turn fires → agent closes on nudge."""
     _write_prompt(tmp_path / "agents", "x")
     fake_bd["bead-n"] = {
-        "id": "bead-n", "status": "open", "title": "x",
-        "metadata": {}, "closure_reason": "", "notes": "",
+        "id": "bead-n",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
     }
     # First prompt: agent forgets to close. Second prompt (nudge): agent closes.
     call_count = {"n": 0}
@@ -216,8 +240,12 @@ def test_agent_step_force_closes_when_nudge_fails(
     """Bead still open after nudge → force-close with failure-coded reason."""
     _write_prompt(tmp_path / "agents", "x")
     fake_bd["bead-f"] = {
-        "id": "bead-f", "status": "open", "title": "x",
-        "metadata": {}, "closure_reason": "", "notes": "",
+        "id": "bead-f",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
     }
 
     # Both turns leave the bead open; orchestrator force-closes.
@@ -249,12 +277,17 @@ def test_agent_step_uses_short_prompt_on_resumed_session(
     identity from turn 1's conversation).
     """
     _write_prompt(
-        tmp_path / "agents", "x",
+        tmp_path / "agents",
+        "x",
         body="You are X — full identity preamble that should NOT be re-sent.",
     )
     fake_bd["bead-r"] = {
-        "id": "bead-r", "status": "open", "title": "x",
-        "metadata": {}, "closure_reason": "", "notes": "",
+        "id": "bead-r",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
     }
     sess = _FakeSession(session_id="prior-uuid-from-turn-1")
 
@@ -284,3 +317,47 @@ def test_agent_step_uses_short_prompt_on_resumed_session(
     # Should be much shorter than the full identity prompt (which is
     # ~15 lines / 600+ chars in real agent prompt files).
     assert len(sent) < 500
+
+
+# ─── failure mode: StepTimeoutError propagates (prefect-orchestration-hlk) ─
+
+
+def test_agent_step_step_timeout_propagates(
+    tmp_path: Path, fake_bd: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """StepTimeoutError from session.prompt bubbles out without nudge or
+    force-close — the bead stays open for the operator to see + `po retry`.
+
+    Regression for prefect-orchestration-hlk: pre-fix, a wedged Claude
+    subprocess hung indefinitely with no timeout; post-fix, the typed
+    StepTimeoutError must propagate so Prefect marks the run Failed.
+    """
+    _write_prompt(tmp_path / "agents", "builder")
+    fake_bd["bead-to"] = {
+        "id": "bead-to",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+    sess = _FakeSession()
+
+    def wedging_prompt(text: str, **_kw: Any) -> str:
+        sess.prompts.append(text)
+        raise StepTimeoutError(timeout_s=1800.0)
+
+    sess.prompt = wedging_prompt  # type: ignore[assignment]
+    monkeypatch.setattr(agent_step_mod, "_build_session", lambda **_kw: sess)
+
+    with pytest.raises(StepTimeoutError) as exc:
+        agent_step(
+            agent_dir=tmp_path / "agents" / "builder",
+            task="build it",
+            seed_id="bead-to",
+            rig_path=str(tmp_path),
+        )
+
+    assert exc.value.timeout_s == 1800.0
+    assert len(sess.prompts) == 1  # no nudge — single turn, then bubble
+    assert fake_bd["bead-to"]["status"] == "open"  # not force-closed
