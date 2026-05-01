@@ -11,9 +11,14 @@ Keep this module free of Typer imports — it's the reusable seam.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Iterable
 
 ISSUE_TAG_PREFIX = "issue_id:"
@@ -76,6 +81,7 @@ class IssueGroup:
     latest: Any  # FlowRun (Prefect client schema) — duck-typed in tests
     extras: list[Any]
     current_step: str | None = None
+    stale_secs: int | None = None  # seconds since last run-dir write; None if unknown
 
     @property
     def extra_count(self) -> int:
@@ -275,6 +281,92 @@ def _is_zombie(fr: Any) -> bool:
     return not _P(rp).exists()
 
 
+PO_WATCHDOG_STALE_SECS: int = int(os.environ.get("PO_WATCHDOG_STALE_SECS", "600"))
+_STALE_WARN_SECS: int = 300  # show (stale: Nm) annotation before auto-failing
+
+
+def _run_dir_max_mtime(run_dir: Path) -> float | None:
+    """Max mtime across all files under run_dir. None if no files exist."""
+    mtimes = [p.stat().st_mtime for p in run_dir.rglob("*") if p.is_file()]
+    return max(mtimes) if mtimes else None
+
+
+def _has_live_process(issue_id: str) -> bool:
+    """True if any tmux session or pgrep match for issue_id exists."""
+    safe = issue_id.replace(".", "_")
+    prefix = f"po-{safe}-"
+    if shutil.which("tmux"):
+        r = subprocess.run(["tmux", "ls"], capture_output=True, text=True, check=False)
+        if r.returncode == 0 and prefix in r.stdout:
+            return True
+    if shutil.which("pgrep"):
+        r = subprocess.run(["pgrep", "-f", issue_id], capture_output=True, check=False)
+        if r.returncode == 0:
+            return True
+    return False
+
+
+def compute_stale_secs(issue_id: str) -> int | None:
+    """Seconds since last run-dir write via bead metadata. None if not computable."""
+    from prefect_orchestration.run_lookup import RunDirNotFound, _bd_show_json
+
+    try:
+        row = _bd_show_json(issue_id)
+    except (RunDirNotFound, Exception):
+        return None
+    run_dir_s = (row.get("metadata") or {}).get("po.run_dir")
+    if not run_dir_s:
+        return None
+    run_dir = Path(run_dir_s)
+    if not run_dir.exists():
+        return None
+    mtime = _run_dir_max_mtime(run_dir)
+    if mtime is None:
+        return None
+    return int(time.time() - mtime)
+
+
+async def watchdog_fail_stale_runs(
+    client: Any,
+    groups: list[IssueGroup],
+    *,
+    fail_after_secs: int = PO_WATCHDOG_STALE_SECS,
+) -> list[str]:
+    """Auto-Fail RUNNING flows that are stale + have no live process.
+
+    Returns list of issue_ids that were failed. Best-effort; never raises.
+    """
+    from prefect.states import Failed as PrefectFailed
+
+    failed_ids: list[str] = []
+    for g in groups:
+        state = (getattr(g.latest, "state_name", None) or "").lower()
+        if state != "running":
+            continue
+        stale = g.stale_secs
+        if stale is None or stale < fail_after_secs:
+            continue
+        if _has_live_process(g.issue_id):
+            continue
+        # Both stale + no live process: mark as Failed.
+        try:
+            await client.set_flow_run_state(
+                g.latest.id,
+                PrefectFailed(message="Worker silent kill (watchdog)"),
+                force=True,
+            )
+            subprocess.run(
+                ["bd", "update", g.issue_id, "--assignee", ""],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            failed_ids.append(g.issue_id)
+        except Exception:  # noqa: BLE001 — best-effort; po status always exits 0
+            pass
+    return failed_ids
+
+
 def partition_zombies(groups: list[IssueGroup]) -> tuple[list[IssueGroup], int]:
     """Split groups into (live, zombie_count). Zombies are 'Running' rows
     whose rig_path no longer exists on disk — usually leaked pytest runs."""
@@ -315,6 +407,7 @@ def to_json_list(groups: list[IssueGroup]) -> list[dict]:
                 "ended": end.isoformat() if end is not None else None,
                 "current_step": g.current_step,
                 "run_count": 1 + g.extra_count,
+                "stale_secs": g.stale_secs,
             }
         )
     return rows
@@ -357,13 +450,17 @@ def render_table(groups: list[IssueGroup]) -> str:
             fr, "expected_start_time", None
         )
         end = getattr(fr, "end_time", None)
+        state_str = str(state)
+        if g.stale_secs is not None and g.stale_secs >= _STALE_WARN_SECS:
+            mins = g.stale_secs // 60
+            state_str = f"{state_str} (stale: {mins}m)"
         rows.append(
             (
                 g.issue_id,
                 _rig_label(fr),
                 _flow_run_id_short(fr),
                 str(getattr(fr, "name", None) or getattr(fr, "flow_name", "-")),
-                str(state),
+                state_str,
                 _fmt_dt(start),
                 _fmt_duration(start, end),
                 g.current_step or "-",

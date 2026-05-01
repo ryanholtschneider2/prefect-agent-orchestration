@@ -899,7 +899,14 @@ def trace(
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    check: str | None = typer.Option(
+        None, "--check", help="Run only a named check (e.g. 'locks')."
+    ),
+    fix: bool = typer.Option(
+        False, "--fix", help="For --check=locks: delete stale lock files."
+    ),
+) -> None:
     """Read-only health check of the full PO wiring.
 
     Runs core checks (`bd` CLI, Prefect server reachability, at least one
@@ -908,10 +915,28 @@ def doctor() -> None:
     installed packs via the `po.doctor_checks` entry-point group. Each
     pack check is wrapped in a 5s soft timeout (yellow on timeout). Exits
     1 if any check is red; warnings never affect the exit code.
+
+    Pass --check=locks to scan for stale .retry.lock files only.
+    Add --fix to delete any stale locks found.
     """
-    report = _doctor.run_doctor()
-    typer.echo(_doctor.render_table(report))
-    raise typer.Exit(report.exit_code)
+    if check == "locks":
+        result = _doctor.check_stale_locks()
+        report = _doctor.DoctorReport(results=[result])
+        typer.echo(_doctor.render_table(report))
+        if fix:
+            removed = _doctor.clean_stale_locks()
+            for p in removed:
+                typer.echo(f"  removed: {p}", err=True)
+            if removed:
+                typer.echo(f"Removed {len(removed)} stale lock(s).", err=True)
+        raise typer.Exit(0)
+    elif check is not None:
+        typer.echo(f"Unknown --check value: {check!r}. Supported: 'locks'", err=True)
+        raise typer.Exit(1)
+    else:
+        report = _doctor.run_doctor()
+        typer.echo(_doctor.render_table(report))
+        raise typer.Exit(report.exit_code)
 
 
 @app.command()
@@ -969,6 +994,7 @@ def status(
             return
 
     async def _main() -> None:
+        watchdog_failed: list[str] = []
         try:
             async with get_client() as client:
                 runs = await _status.find_runs_by_issue_id(
@@ -983,6 +1009,12 @@ def status(
                     g.current_step = await _status.current_step_for_flow_run(
                         client, g.latest.id
                     )
+                # Compute staleness for RUNNING flows (bd subprocess per run).
+                for g in groups:
+                    g_state = (getattr(g.latest, "state_name", None) or "").lower()
+                    if g_state == "running":
+                        g.stale_secs = _status.compute_stale_secs(g.issue_id)
+                watchdog_failed = await _status.watchdog_fail_stale_runs(client, groups)
         except Exception as exc:  # noqa: BLE001 — AC3: observation, no tracebacks
             api_url = os.environ.get("PREFECT_API_URL", "<unset>")
             typer.echo(
@@ -1007,6 +1039,12 @@ def status(
                 )
         else:
             typer.echo(_status.render_table(groups))
+        if watchdog_failed:
+            typer.echo(
+                f"\n  (watchdog: {len(watchdog_failed)} run(s) auto-Failed: "
+                f"{', '.join(watchdog_failed)})",
+                err=True,
+            )
 
     anyio.run(_main)
 

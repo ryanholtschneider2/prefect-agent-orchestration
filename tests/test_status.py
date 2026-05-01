@@ -211,7 +211,9 @@ def test_render_table_rig_falls_back_to_rig_path_basename() -> None:
     g = _status.IssueGroup(
         issue_id="x",
         latest=FakeFlowRun(
-            id="abc-123", name="x", tags=["issue_id:x"],
+            id="abc-123",
+            name="x",
+            tags=["issue_id:x"],
             parameters={"rig_path": "/some/path/my-rig"},
         ),
         extras=[],
@@ -226,7 +228,9 @@ def test_render_table_rig_dash_when_absent() -> None:
     g = _status.IssueGroup(
         issue_id="ad-hoc",
         latest=FakeFlowRun(
-            id="abc", name="ad-hoc", tags=["issue_id:ad-hoc"],
+            id="abc",
+            name="ad-hoc",
+            tags=["issue_id:ad-hoc"],
             parameters=None,
         ),
         extras=[],
@@ -254,7 +258,9 @@ def test_partition_zombies_hides_running_with_missing_rig_path(tmp_path) -> None
     g = _status.IssueGroup(
         issue_id="rig-zzz",
         latest=FakeFlowRun(
-            id="x", name="rig-zzz", tags=["issue_id:rig-zzz"],
+            id="x",
+            name="rig-zzz",
+            tags=["issue_id:rig-zzz"],
             state_name="Running",
             parameters={"rig_path": str(missing)},
         ),
@@ -270,7 +276,9 @@ def test_partition_zombies_keeps_running_when_rig_path_exists(tmp_path) -> None:
     g = _status.IssueGroup(
         issue_id="alive",
         latest=FakeFlowRun(
-            id="x", name="alive", tags=["issue_id:alive"],
+            id="x",
+            name="alive",
+            tags=["issue_id:alive"],
             state_name="Running",
             parameters={"rig_path": str(tmp_path)},
         ),
@@ -289,7 +297,9 @@ def test_partition_zombies_keeps_cancelled_with_missing_rig_path(tmp_path) -> No
     g = _status.IssueGroup(
         issue_id="done",
         latest=FakeFlowRun(
-            id="x", name="done", tags=["issue_id:done"],
+            id="x",
+            name="done",
+            tags=["issue_id:done"],
             state_name="Cancelled",
             parameters={"rig_path": str(tmp_path / "gone")},
         ),
@@ -307,7 +317,9 @@ def test_partition_zombies_keeps_runs_with_no_rig_path() -> None:
     g = _status.IssueGroup(
         issue_id="ad-hoc",
         latest=FakeFlowRun(
-            id="x", name="ad-hoc", tags=["issue_id:ad-hoc"],
+            id="x",
+            name="ad-hoc",
+            tags=["issue_id:ad-hoc"],
             state_name="Running",
             parameters=None,
         ),
@@ -372,7 +384,9 @@ async def test_find_runs_uses_expected_start_time_filter() -> None:
     assert flt.expected_start_time is not None, (
         "expected_start_time filter not set — newly dispatched PENDING runs would be invisible"
     )
-    assert flt.start_time is None, "start_time filter must not be set (excludes null-start_time runs)"
+    assert flt.start_time is None, (
+        "start_time filter must not be set (excludes null-start_time runs)"
+    )
 
 
 def test_group_by_issue_null_start_time_run_visible() -> None:
@@ -422,3 +436,269 @@ def test_status_cli_bad_since_exits_zero() -> None:
     result = runner.invoke(app, ["status", "--since", "yesterday"])
     assert result.exit_code == 0
     assert "error:" in (result.stderr if result.stderr else result.output)
+
+
+# ─── watchdog helpers ─────────────────────────────────────────────────
+
+
+def test_run_dir_max_mtime_returns_max(tmp_path) -> None:
+    f1 = tmp_path / "a.txt"
+    f1.write_text("x")
+    f2 = tmp_path / "sub" / "b.txt"
+    f2.parent.mkdir()
+    f2.write_text("y")
+    # Touch f1 to a fixed time in the past, f2 to now.
+    import os
+
+    os.utime(f1, (1000.0, 1000.0))
+    result = _status._run_dir_max_mtime(tmp_path)
+    assert result is not None
+    assert result >= f2.stat().st_mtime
+
+
+def test_run_dir_max_mtime_empty_dir(tmp_path) -> None:
+    assert _status._run_dir_max_mtime(tmp_path) is None
+
+
+def test_has_live_process_tmux_match(monkeypatch: pytest.MonkeyPatch) -> None:
+
+    def fake_run(cmd, **kw):
+        class R:
+            returncode = 0
+            stdout = "po-my_issue-builder: 1 windows\n"
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(_status.shutil, "which", lambda x: "/usr/bin/" + x)
+    monkeypatch.setattr(_status.subprocess, "run", fake_run)
+    assert _status._has_live_process("my.issue") is True
+
+
+def test_has_live_process_pgrep_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    call_log: list[list] = []
+
+    def fake_run(cmd, **kw):
+        call_log.append(cmd)
+
+        class R:
+            returncode = 0 if cmd[0] == "pgrep" else 1
+            stdout = "12345\n" if cmd[0] == "pgrep" else ""
+            stderr = ""
+
+        return R()
+
+    # tmux not found, pgrep found
+    monkeypatch.setattr(
+        _status.shutil, "which", lambda x: None if x == "tmux" else "/usr/bin/" + x
+    )
+    monkeypatch.setattr(_status.subprocess, "run", fake_run)
+    assert _status._has_live_process("my-issue") is True
+
+
+def test_has_live_process_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(cmd, **kw):
+        class R:
+            returncode = 1
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(_status.shutil, "which", lambda x: "/usr/bin/" + x)
+    monkeypatch.setattr(_status.subprocess, "run", fake_run)
+    assert _status._has_live_process("my-issue") is False
+
+
+def test_compute_stale_secs_no_bd(monkeypatch: pytest.MonkeyPatch) -> None:
+    from prefect_orchestration.run_lookup import RunDirNotFound
+
+    monkeypatch.setattr(
+        "prefect_orchestration.status._bd_show_json_for_stale",
+        lambda _: (_ for _ in ()).throw(RunDirNotFound("no bd")),
+        raising=False,
+    )
+    # Patch at the import site inside compute_stale_secs
+    import prefect_orchestration.run_lookup as _rl
+
+    monkeypatch.setattr(
+        _rl,
+        "_bd_show_json",
+        lambda *a, **k: (_ for _ in ()).throw(RunDirNotFound("no bd")),
+    )
+    result = _status.compute_stale_secs("missing-issue")
+    assert result is None
+
+
+def test_compute_stale_secs_no_run_dir_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import prefect_orchestration.run_lookup as _rl
+
+    monkeypatch.setattr(_rl, "_bd_show_json", lambda *a, **k: {"metadata": {}})
+    assert _status.compute_stale_secs("some-issue") is None
+
+
+def test_compute_stale_secs_returns_elapsed(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import time as _time
+
+    f = tmp_path / "artifact.md"
+    f.write_text("done")
+    known_mtime = _time.time() - 120  # 2 min ago
+    os.utime(f, (known_mtime, known_mtime))
+
+    import prefect_orchestration.run_lookup as _rl
+
+    monkeypatch.setattr(
+        _rl,
+        "_bd_show_json",
+        lambda *a, **k: {"metadata": {"po.run_dir": str(tmp_path)}},
+    )
+    result = _status.compute_stale_secs("test-issue")
+    assert result is not None
+    assert 110 <= result <= 130  # ~120s ± tolerance
+
+
+# ─── watchdog_fail_stale_runs ─────────────────────────────────────────
+
+
+@dataclass
+class _FakeFlowRunWatchdog:
+    id: str
+    state_name: str = "Running"
+    tags: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.tags is None:
+            self.tags = []
+
+
+class _FakeWatchdogClient:
+    def __init__(self):
+        self.set_flow_run_state_calls: list[tuple] = []
+
+    async def set_flow_run_state(self, run_id, state, *, force=False):
+        self.set_flow_run_state_calls.append((run_id, state, force))
+
+
+@pytest.mark.asyncio
+async def test_watchdog_skips_non_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _FakeWatchdogClient()
+    g = _status.IssueGroup(
+        issue_id="x",
+        latest=_FakeFlowRunWatchdog(id="r1", state_name="Completed"),
+        extras=[],
+        stale_secs=700,
+    )
+    failed = await _status.watchdog_fail_stale_runs(client, [g], fail_after_secs=600)
+    assert failed == []
+    assert client.set_flow_run_state_calls == []
+
+
+@pytest.mark.asyncio
+async def test_watchdog_skips_when_live_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_status, "_has_live_process", lambda _: True)
+    client = _FakeWatchdogClient()
+    g = _status.IssueGroup(
+        issue_id="po-live",
+        latest=_FakeFlowRunWatchdog(id="r2", state_name="Running"),
+        extras=[],
+        stale_secs=700,
+    )
+    failed = await _status.watchdog_fail_stale_runs(client, [g], fail_after_secs=600)
+    assert failed == []
+    assert client.set_flow_run_state_calls == []
+
+
+@pytest.mark.asyncio
+async def test_watchdog_skips_when_not_stale_enough(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_status, "_has_live_process", lambda _: False)
+    client = _FakeWatchdogClient()
+    g = _status.IssueGroup(
+        issue_id="po-fresh",
+        latest=_FakeFlowRunWatchdog(id="r3", state_name="Running"),
+        extras=[],
+        stale_secs=300,  # below 600 threshold
+    )
+    failed = await _status.watchdog_fail_stale_runs(client, [g], fail_after_secs=600)
+    assert failed == []
+    assert client.set_flow_run_state_calls == []
+
+
+@pytest.mark.asyncio
+async def test_watchdog_fails_stale_dead_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_status, "_has_live_process", lambda _: False)
+    bd_calls: list[list] = []
+
+    def fake_run(cmd, **kw):
+        bd_calls.append(cmd)
+
+        class R:
+            returncode = 0
+
+        return R()
+
+    monkeypatch.setattr(_status.subprocess, "run", fake_run)
+    client = _FakeWatchdogClient()
+    g = _status.IssueGroup(
+        issue_id="po-dead",
+        latest=_FakeFlowRunWatchdog(id="run-uuid-1", state_name="Running"),
+        extras=[],
+        stale_secs=700,
+    )
+    failed = await _status.watchdog_fail_stale_runs(client, [g], fail_after_secs=600)
+    assert failed == ["po-dead"]
+    # Prefect state transition was called
+    assert len(client.set_flow_run_state_calls) == 1
+    run_id, state, force = client.set_flow_run_state_calls[0]
+    assert run_id == "run-uuid-1"
+    assert force is True
+    assert "Worker silent kill" in state.message
+    # bd assignee clear was called
+    assert any(cmd[:4] == ["bd", "update", "po-dead", "--assignee"] for cmd in bd_calls)
+
+
+# ─── render_table stale annotation ───────────────────────────────────
+
+
+def test_render_table_shows_stale_annotation() -> None:
+    t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
+    g = _status.IssueGroup(
+        issue_id="po-stale",
+        latest=FakeFlowRun(
+            id="x",
+            name="software_dev_full",
+            tags=["issue_id:po-stale"],
+            state_name="Running",
+            start_time=t0,
+        ),
+        extras=[],
+        stale_secs=360,  # 6 minutes — above STALE_WARN_SECS=300
+    )
+    out = _status.render_table([g])
+    assert "(stale: 6m)" in out
+
+
+def test_render_table_no_annotation_below_warn_threshold() -> None:
+    t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
+    g = _status.IssueGroup(
+        issue_id="po-fresh2",
+        latest=FakeFlowRun(
+            id="y",
+            name="software_dev_full",
+            tags=["issue_id:po-fresh2"],
+            state_name="Running",
+            start_time=t0,
+        ),
+        extras=[],
+        stale_secs=240,  # below 300 threshold
+    )
+    out = _status.render_table([g])
+    assert "stale" not in out
