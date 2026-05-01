@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -539,7 +541,6 @@ def test_run_pack_check_red_to_fail_with_hint(monkeypatch):
 
 def test_run_pack_check_yellow_on_timeout(monkeypatch):
     """AC 4: per-check timeout, yellow on timeout."""
-    import time
 
     def _slow() -> DoctorCheck:
         time.sleep(5)  # well past our 0.05s ceiling
@@ -656,3 +657,44 @@ def test_render_table_includes_source_column():
     assert "SOURCE" in out
     assert "core" in out
     assert "example-pack" in out
+
+
+# ─── check_stale_locks / clean_stale_locks ────────────────────────────
+
+
+def test_check_stale_locks_no_planning_dir(tmp_path):
+    result = doctor_mod.check_stale_locks(rig_path=tmp_path)
+    assert result.status is Status.OK
+    assert "no .planning/" in result.message
+
+
+def test_check_stale_locks_no_stale_locks(tmp_path):
+    lock = tmp_path / ".planning" / "software-dev-full" / "iss-1.retry.lock"
+    lock.parent.mkdir(parents=True)
+    lock.touch()
+    result = doctor_mod.check_stale_locks(rig_path=tmp_path)
+    assert result.status is Status.OK
+
+
+def test_check_stale_locks_reports_stale(tmp_path, monkeypatch):
+    monkeypatch.setenv("PO_RETRY_LOCK_STALE_SECS", "60")
+    lock = tmp_path / ".planning" / "software-dev-full" / "iss-2.retry.lock"
+    lock.parent.mkdir(parents=True)
+    lock.touch()
+    old_time = time.time() - 300  # 5 min > 60s threshold
+    os.utime(lock, (old_time, old_time))
+    result = doctor_mod.check_stale_locks(rig_path=tmp_path)
+    assert result.status is Status.WARN
+    assert "iss-2" in result.message
+
+
+def test_clean_stale_locks_removes_stale(tmp_path, monkeypatch):
+    monkeypatch.setenv("PO_RETRY_LOCK_STALE_SECS", "60")
+    lock = tmp_path / ".planning" / "software-dev-full" / "iss-3.retry.lock"
+    lock.parent.mkdir(parents=True)
+    lock.touch()
+    old_time = time.time() - 300
+    os.utime(lock, (old_time, old_time))
+    removed = doctor_mod.clean_stale_locks(rig_path=tmp_path)
+    assert len(removed) == 1
+    assert not lock.exists()

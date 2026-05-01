@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -497,3 +500,76 @@ def test_retry_with_at_formula_missing_errors(tmp_path, monkeypatch):
 
     assert exc.value.exit_code == 5
     assert "schedule" in str(exc.value)
+
+
+# ─── stale lock auto-cleanup ──────────────────────────────────────────
+
+
+def test_stale_lock_auto_cleared(tmp_path, monkeypatch):
+    """Stale lock with no live process → deleted with warning, retry proceeds."""
+    rig_path, run_dir = _seed_run(tmp_path)
+    _patch_resolve(monkeypatch, rig_path, run_dir)
+    monkeypatch.setattr(retry.subprocess, "run", _BdFake(status="open"))
+    monkeypatch.setattr(retry.shutil, "which", lambda _n: "/usr/bin/bd")
+    spy = _FormulaSpy()
+    _patch_formula(monkeypatch, spy)
+    monkeypatch.setattr(retry, "_any_po_process_for_issue", lambda _i: False)
+
+    lock_path = run_dir.with_name(run_dir.name + retry.LOCK_SUFFIX)
+    lock_path.touch()
+    old_time = time.time() - 1200  # 20 min > default 600s threshold
+    os.utime(lock_path, (old_time, old_time))
+
+    warnings: list[str] = []
+    result = retry.retry_issue(
+        "beads-xyz", _in_flight_probe=lambda _i: 0, warn=warnings.append
+    )
+
+    assert result.launched
+    assert any("stale" in w for w in warnings)
+    # _exclusive_lock recreates the file; verify it was cleaned before the lock by
+    # confirming the warning was emitted and the retry succeeded end-to-end.
+    assert len(spy.calls) == 1
+
+
+def test_fresh_lock_still_refuses(tmp_path, monkeypatch):
+    """Lock file with mtime < threshold → _exclusive_lock raises as before."""
+    rig_path, run_dir = _seed_run(tmp_path)
+    _patch_resolve(monkeypatch, rig_path, run_dir)
+    monkeypatch.setattr(retry.subprocess, "run", _BdFake(status="open"))
+    monkeypatch.setattr(retry.shutil, "which", lambda _n: "/usr/bin/bd")
+
+    lock_path = run_dir.with_name(run_dir.name + retry.LOCK_SUFFIX)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(retry.RetryError) as exc:
+            retry.retry_issue("beads-xyz", _in_flight_probe=lambda _i: 0)
+        assert exc.value.exit_code == 3
+        assert lock_path.exists()
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def test_stale_lock_with_live_process_not_cleared(tmp_path, monkeypatch):
+    """Stale mtime but live process detected → _maybe_clear_stale_lock does NOT delete."""
+    rig_path, run_dir = _seed_run(tmp_path)
+    _patch_resolve(monkeypatch, rig_path, run_dir)
+    monkeypatch.setattr(retry.subprocess, "run", _BdFake(status="open"))
+    monkeypatch.setattr(retry.shutil, "which", lambda _n: "/usr/bin/bd")
+    monkeypatch.setattr(retry, "_any_po_process_for_issue", lambda _i: True)
+
+    lock_path = run_dir.with_name(run_dir.name + retry.LOCK_SUFFIX)
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    old_time = time.time() - 1200
+    os.utime(lock_path, (old_time, old_time))
+    try:
+        with pytest.raises(retry.RetryError) as exc:
+            retry.retry_issue("beads-xyz", _in_flight_probe=lambda _i: 0)
+        assert exc.value.exit_code == 3
+        assert lock_path.exists()
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)

@@ -18,9 +18,11 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from importlib.metadata import entry_points
+from pathlib import Path
 from typing import Callable, Literal
 
 from prefect_orchestration import deployments as _deployments
@@ -493,6 +495,64 @@ def check_pack_overlays() -> CheckResult:
     )
 
 
+def check_stale_locks(rig_path: Path | None = None) -> CheckResult:
+    """Scan .planning/*/*.retry.lock sibling files; report stale ones (WARN)."""
+    from prefect_orchestration.retry import LOCK_SUFFIX
+
+    name = "stale retry locks"
+    root = (rig_path or Path.cwd()) / ".planning"
+    if not root.is_dir():
+        return CheckResult(
+            name=name, status=Status.OK, message="no .planning/ in cwd; skipping"
+        )
+
+    stale_secs = float(os.environ.get("PO_RETRY_LOCK_STALE_SECS", "600"))
+    now = time.time()
+    stale: list[Path] = []
+    for lock_file in root.glob(f"*/*{LOCK_SUFFIX}"):
+        try:
+            age = now - lock_file.stat().st_mtime
+        except OSError:
+            continue
+        if age > stale_secs:
+            stale.append(lock_file)
+
+    if not stale:
+        return CheckResult(name=name, status=Status.OK, message="no stale locks found")
+
+    files = ", ".join(str(p) for p in sorted(stale))
+    return CheckResult(
+        name=name,
+        status=Status.WARN,
+        message=f"{len(stale)} stale lock(s): {files}",
+        remediation="po doctor --check=locks --fix  OR  rm <path>.retry.lock",
+    )
+
+
+def clean_stale_locks(rig_path: Path | None = None) -> list[Path]:
+    """Delete stale .retry.lock files; return list of deleted paths."""
+    from prefect_orchestration.retry import LOCK_SUFFIX
+
+    root = (rig_path or Path.cwd()) / ".planning"
+    if not root.is_dir():
+        return []
+    stale_secs = float(os.environ.get("PO_RETRY_LOCK_STALE_SECS", "600"))
+    now = time.time()
+    removed: list[Path] = []
+    for lock_file in root.glob(f"*/*{LOCK_SUFFIX}"):
+        try:
+            age = now - lock_file.stat().st_mtime
+        except OSError:
+            continue
+        if age > stale_secs:
+            try:
+                lock_file.unlink()
+                removed.append(lock_file)
+            except OSError:
+                pass
+    return removed
+
+
 # -- aggregator ---------------------------------------------------------
 
 
@@ -508,6 +568,7 @@ ALL_CHECKS: list[Callable[[], CheckResult]] = [
     check_beads_dolt_mode,
     check_logfire_token,
     check_pack_overlays,
+    check_stale_locks,
 ]
 
 

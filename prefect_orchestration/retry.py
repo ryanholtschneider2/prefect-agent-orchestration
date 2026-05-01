@@ -30,10 +30,12 @@ Failure surface (raised as `RetryError` with a numeric `exit_code`):
 from __future__ import annotations
 
 import fcntl
+import glob
 import json
 import os
 import shutil
 import subprocess
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -45,6 +47,56 @@ from prefect_orchestration import run_lookup, status as _status
 
 FORMULA_STAMP = ".po-formula"
 LOCK_SUFFIX = ".retry.lock"
+PO_RETRY_LOCK_STALE_SECS: float = float(
+    os.environ.get("PO_RETRY_LOCK_STALE_SECS", "600")
+)
+
+
+def _any_po_process_for_issue(issue_id: str) -> bool:
+    """Best-effort: return True if any live proc looks like `po retry/resume` for issue_id."""
+    try:
+        for cmdline_file in glob.glob("/proc/*/cmdline"):
+            try:
+                raw = Path(cmdline_file).read_bytes()
+                cmd = raw.replace(b"\x00", b" ").decode("utf-8", errors="replace")
+                if (
+                    issue_id in cmd
+                    and "po" in cmd
+                    and ("retry" in cmd or "resume" in cmd)
+                ):
+                    return True
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def _maybe_clear_stale_lock(
+    lock_path: Path,
+    issue_id: str,
+    warn: Callable[[str], None],
+    stale_secs: float = PO_RETRY_LOCK_STALE_SECS,
+) -> None:
+    """Delete lock_path if it is stale (mtime > stale_secs) AND no live holder detected."""
+    if not lock_path.exists():
+        return
+    try:
+        age = time.time() - lock_path.stat().st_mtime
+    except OSError:
+        return
+    if age <= stale_secs:
+        return
+    if _any_po_process_for_issue(issue_id):
+        return
+    try:
+        lock_path.unlink()
+    except OSError:
+        return
+    warn(
+        f"po: removed stale .retry.lock for {issue_id} "
+        f"(age {age:.0f}s > {stale_secs:.0f}s, no live holder detected): {lock_path}"
+    )
 
 
 class RetryError(RuntimeError):
@@ -316,6 +368,7 @@ def retry_issue(
             )
 
     lock_path = run_dir.with_name(run_dir.name + LOCK_SUFFIX)
+    _maybe_clear_stale_lock(lock_path, issue_id, warn)
 
     with _exclusive_lock(lock_path):
         # Kill any tmux artifacts left behind by the prior crashed run

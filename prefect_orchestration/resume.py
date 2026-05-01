@@ -29,6 +29,7 @@ Failure surface (raised as `ResumeError` with a numeric `exit_code`):
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -41,6 +42,7 @@ from prefect_orchestration.retry import (
     _exclusive_lock,
     _in_flight_count,
     _load_formula,
+    _maybe_clear_stale_lock,
 )
 
 DEFAULT_FORMULA = "software-dev-full"
@@ -157,6 +159,9 @@ def resume_issue(
 
     completed = _list_completed_steps(run_dir)
     lock_path = run_dir.with_name(run_dir.name + LOCK_SUFFIX)
+    _maybe_clear_stale_lock(
+        lock_path, issue_id, lambda msg: print(msg, file=sys.stderr)
+    )
 
     with _exclusive_lock(lock_path):
         reopened = False
