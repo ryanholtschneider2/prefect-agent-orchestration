@@ -73,6 +73,27 @@ class RateLimitError(RuntimeError):
         )
 
 
+class StepTimeoutError(RuntimeError):
+    """Claude subprocess exceeded its wall-clock budget without exiting.
+
+    Distinct from RateLimitError: the SDK never produced a terminal
+    envelope at all (rate-limit or otherwise). Symptom in the wild:
+    subprocess alive, ~0 CPU, no stdout activity, role-session.json
+    static. Without this typed error the orchestrator would wait forever
+    on `subprocess.run` and Prefect would report the flow as `Running`
+    indefinitely (prefect-orchestration-hlk root cause).
+
+    `timeout_s` is the budget that was exceeded; callers can include it
+    in retry / defer logic.
+    """
+
+    def __init__(self, timeout_s: float, message: str | None = None):
+        self.timeout_s = timeout_s
+        super().__init__(
+            message or f"Claude subprocess exceeded {timeout_s}s wall-clock budget"
+        )
+
+
 # `resets <time>` capture stops at end-of-line, closing-paren, or middle-dot
 # so we don't slurp trailing punctuation. Claude's exact format is
 # `You've hit your limit · resets 1:30am (America/New_York)`.
@@ -272,29 +293,53 @@ class ClaudeCliBackend:
         model: str = "opus",
         effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
+        timeout: float | None = DEFAULT_AGENT_TIMEOUT_S,
     ) -> tuple[str, str]:
         cmd = _build_claude_argv(self.start_command, session_id, fork, model, effort)
 
-        proc = subprocess.run(
-            cmd,
-            input=prompt,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=_clean_env(extra_env),
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=_clean_env(extra_env),
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Subprocess never returned within the wall-clock budget. The
+            # SDK is wedged (silent retry-loop / network stuck). Surface
+            # as a typed StepTimeoutError so Prefect marks the flow Failed
+            # and the operator can `po retry`. Without this, the run sits
+            # in `Running` forever and the operator has to ps + kill.
+            raise StepTimeoutError(
+                timeout_s=timeout or 0.0,
+                message=(
+                    f"claude CLI did not return within {timeout}s\n"
+                    f"argv: {cmd}\n"
+                    f"stdout-tail: {(exc.stdout or b'')[-2000:]!r}\n"
+                    f"stderr-tail: {(exc.stderr or b'')[-2000:]!r}"
+                ),
+            ) from exc
+
+        # Detect rate-limit *regardless of returncode*. The Claude CLI can
+        # exit 0 with a success-shaped envelope whose body contains
+        # `is_error:true,api_error_status:429,terminal_reason:completed`
+        # (observed in nanocorps-0k8 + prefect-orchestration-gub today).
+        # Without this hoisted check, _parse_envelope returns the 429
+        # `result` string as if it were normal output and the caller
+        # proceeds with a junk result.
+        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        reset = _detect_rate_limit_in_pane(combined)
+        if reset is not None or '"api_error_status":429' in combined:
+            raise RateLimitError(
+                reset_time=reset or None,
+                message=combined[-1000:],
+            )
+
         if proc.returncode != 0:
-            # Distinguish rate-limit (typed RateLimitError) from generic
-            # failure (RuntimeError) so callers can defer the bead vs
-            # crash + retry.
-            combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-            reset = _detect_rate_limit_in_pane(combined)
-            if reset is not None or '"api_error_status":429' in combined:
-                raise RateLimitError(
-                    reset_time=reset or None,
-                    message=combined[-1000:],
-                )
             raise RuntimeError(
                 f"claude CLI exited {proc.returncode}\n"
                 f"argv: {cmd}\n"
@@ -704,19 +749,18 @@ class TmuxClaudeBackend:
             _wait_for_rc(rc_path, target, timeout=self.timeout_s)
             rc = int(rc_path.read_text().strip() or "-1")
             stdout = out_path.read_text() if out_path.exists() else ""
+            # Detect rate-limit *regardless of rc*. Claude CLI can exit 0
+            # with a 429-shaped success envelope (see ClaudeCliBackend.run
+            # for the observed payload). Hoisted check ensures a
+            # rate-limit always surfaces as RateLimitError, never as a
+            # silent junk result.
+            reset = _detect_rate_limit_in_pane(stdout)
+            if reset is not None or '"api_error_status":429' in stdout:
+                raise RateLimitError(
+                    reset_time=reset or None,
+                    message=stdout[-1000:],
+                )
             if rc != 0:
-                # Claude CLI returns rc=1 with an api_error_status:429 +
-                # "You've hit your limit · resets <time>" payload when the
-                # account hits its rate cap. Detect that and raise a
-                # typed RateLimitError so callers (agent_step, retry
-                # logic) can handle it specifically rather than treat
-                # it as a generic failure.
-                reset = _detect_rate_limit_in_pane(stdout)
-                if reset is not None or '"api_error_status":429' in stdout:
-                    raise RateLimitError(
-                        reset_time=reset or None,
-                        message=stdout[-1000:],
-                    )
                 raise RuntimeError(
                     f"claude CLI exited {rc}\nstdout tail: {stdout[-2000:]}"
                 )

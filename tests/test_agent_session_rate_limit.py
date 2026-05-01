@@ -232,3 +232,85 @@ def test_rate_limit_error_unknown_reset() -> None:
     err = RateLimitError()
     assert err.reset_time is None
     assert "?" in str(err)
+
+
+# --- 429-success-envelope + StepTimeoutError (prefect-orchestration-hlk) -----
+#
+# Two regressions for the silent-hang failure mode that wedged
+# nanocorps-0k8 and prefect-orchestration-gub: (1) Claude CLI exits 0
+# with a success-shaped envelope whose body contains
+# `is_error:true,api_error_status:429,terminal_reason:completed` —
+# previously slipped past the rc-gated rate-limit check and produced a
+# junk result downstream; (2) Claude subprocess never returns within
+# the wall-clock budget — previously hung forever in subprocess.run.
+
+
+def test_run_raises_rate_limit_on_429_success_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rc=0 + api_error_status:429 in stdout → RateLimitError, not a junk return."""
+    from prefect_orchestration.agent_session import ClaudeCliBackend
+
+    # Verbatim shape observed in nanocorps-0k8's first PO log.
+    success_429_envelope = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": True,
+            "api_error_status": 429,
+            "result": "You've hit your limit · resets 12:50pm (America/New_York)",
+            "stop_reason": "stop_sequence",
+            "session_id": "3abf140e-d5b9-4007-9dc1-a837de33c8de",
+            "terminal_reason": "completed",
+        }
+    )
+
+    class _FakeProc:
+        returncode = 0
+        stdout = success_429_envelope
+        stderr = ""
+
+    def _fake_run(*_args: Any, **_kwargs: Any) -> _FakeProc:
+        return _FakeProc()
+
+    monkeypatch.setattr("prefect_orchestration.agent_session.subprocess.run", _fake_run)
+
+    backend = ClaudeCliBackend()
+    with pytest.raises(RateLimitError) as exc:
+        backend.run(
+            prompt="x",
+            session_id="prior-sid",
+            cwd=tmp_path,
+        )
+    assert exc.value.reset_time is not None
+    assert "12:50pm" in exc.value.reset_time
+
+
+def test_run_raises_step_timeout_on_subprocess_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """subprocess.TimeoutExpired → StepTimeoutError carrying the budget."""
+    import subprocess as _sp
+
+    from prefect_orchestration.agent_session import ClaudeCliBackend, StepTimeoutError
+
+    def _fake_run(*_args: Any, **kwargs: Any) -> Any:
+        raise _sp.TimeoutExpired(
+            cmd=_args[0] if _args else ["claude"],
+            timeout=kwargs.get("timeout") or 0.0,
+            output=b"partial stdout before hang",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr("prefect_orchestration.agent_session.subprocess.run", _fake_run)
+
+    backend = ClaudeCliBackend()
+    with pytest.raises(StepTimeoutError) as exc:
+        backend.run(
+            prompt="x",
+            session_id=None,
+            cwd=tmp_path,
+            timeout=1.0,
+        )
+    assert exc.value.timeout_s == 1.0
+    assert "1.0s" in str(exc.value) or "1s" in str(exc.value)
