@@ -105,7 +105,6 @@ _RATE_LIMIT_RESET_RE = re.compile(r"resets\s+([^\n·]+)", re.IGNORECASE)
 _RATE_LIMIT_MARKERS = (
     "you've hit your limit",
     "you have hit your limit",
-    "rate limit",
 )
 
 
