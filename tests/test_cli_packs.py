@@ -93,3 +93,59 @@ def test_install_missing_uv_prints_pointer(monkeypatch: pytest.MonkeyPatch) -> N
     result = runner.invoke(app, ["packs", "install", "po-pack"])
     assert result.exit_code == 2
     assert "astral.sh/uv" in result.output
+
+
+def test_install_copies_overlay_to_rig_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _fake_ok(monkeypatch)
+    from prefect_orchestration.pack_overlay import Pack
+
+    pack_root = tmp_path / "po-mypack"
+    pack_root.mkdir()
+    overlay_dir = pack_root / "overlay"
+    overlay_dir.mkdir()
+    (overlay_dir / "CLAUDE-mypack.md").write_text("# mypack")
+    module_root = pack_root / "po_mypack"
+    module_root.mkdir()
+    (module_root / "__init__.py").write_text("")
+    fake_pack = Pack(name="po-mypack", root=pack_root, module_root=module_root)
+
+    import prefect_orchestration.pack_overlay as po_mod
+
+    monkeypatch.setattr(po_mod, "discover_packs", lambda: [fake_pack])
+
+    rig = tmp_path / "rig"
+    rig.mkdir()
+    result = runner.invoke(
+        app, ["packs", "install", "po-mypack", "--rig-path", str(rig)]
+    )
+    assert result.exit_code == 0, result.output
+    assert (rig / ".claude" / "packs" / "CLAUDE-mypack.md").exists()
+    assert "overlay ->" in result.output
+
+
+def test_install_no_overlay_no_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _fake_ok(monkeypatch)
+    from prefect_orchestration.pack_overlay import Pack
+
+    pack_root = tmp_path / "po-nooverlay"
+    pack_root.mkdir()
+    module_root = pack_root / "po_nooverlay"
+    module_root.mkdir()
+    (module_root / "__init__.py").write_text("")
+    fake_pack = Pack(name="po-nooverlay", root=pack_root, module_root=module_root)
+
+    import prefect_orchestration.pack_overlay as po_mod
+
+    monkeypatch.setattr(po_mod, "discover_packs", lambda: [fake_pack])
+
+    rig = tmp_path / "rig"
+    rig.mkdir()
+    result = runner.invoke(
+        app, ["packs", "install", "po-nooverlay", "--rig-path", str(rig)]
+    )
+    assert result.exit_code == 0, result.output
+    assert "overlay ->" not in result.output

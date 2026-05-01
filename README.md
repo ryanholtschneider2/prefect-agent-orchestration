@@ -242,6 +242,46 @@ core formulas — run `po packs install <pack>` (or `po packs install --editable
 currently installed and `po packs update` if you change a pack's
 `pyproject.toml` entry points and need the metadata refreshed.
 
+### Pack overlays
+
+Each pack can ship a short (~150-word) discovery summary that agents read
+up front — without spelunking through formula source or agent folders:
+
+```
+my-pack/
+  overlay/
+    CLAUDE-<pack-name>.md   # one-pager: what the pack does, key verbs, when to use
+```
+
+When `po packs install <pack> --rig-path <rig>` runs, every
+`overlay/CLAUDE-*.md` file in installed packs is copied to
+`<rig>/.claude/packs/CLAUDE-<pack-name>.md`. Agents can reference these
+files with `@.claude/packs/CLAUDE-<pack-name>.md` in their CLAUDE.md for
+progressive disclosure — enough to triage, not enough to bloat context.
+`materialize_packs()` (called at `AgentSession` start) also populates
+`.claude/packs/` automatically, so rigs that never had `po packs install`
+run still get the index files.
+
+`po doctor` warns when an installed pack has no `overlay/CLAUDE-*.md`.
+
+Overlay shape (~150 words max):
+
+```markdown
+# <pack-name>
+
+**What it provides:** <one-liner>
+
+**When to use:**
+- <scenario>
+
+**Key verbs:** `<formula-or-cmd>`, ...
+**Key paths:** `packs/<pack>/agents/<role>`, ...
+
+**Skip if:** <when not relevant>
+
+**Read more:** `po show <verb>`, `<pack>/README.md`
+```
+
 ## Containerized runs (k8s / docker)
 
 `Dockerfile` (ubuntu:24.04 + node22 + tmux + uv + bd + Claude Code +

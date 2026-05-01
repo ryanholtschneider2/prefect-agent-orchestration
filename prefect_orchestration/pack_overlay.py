@@ -205,21 +205,38 @@ def apply_skills(pack: Pack, rig_path: Path) -> list[Path]:
     return written
 
 
+def apply_pack_index(pack: Pack, rig_path: Path) -> list[Path]:
+    """Copy ``overlay/CLAUDE-*.md`` files to ``<rig>/.claude/packs/``, overwriting."""
+    dest = rig_path / ".claude" / "packs"
+    written: list[Path] = []
+    for src in _candidate_overlay_dirs(pack):
+        if not src.is_dir():
+            continue
+        for f in src.glob("CLAUDE-*.md"):
+            target = dest / f.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, target)
+            written.append(target)
+    return written
+
+
 def materialize_packs(
     cwd: Path,
     *,
     role: str | None,
     overlay: bool = True,
     skills: bool = True,
+    index: bool = True,
     packs: Iterable[Pack] | None = None,
 ) -> dict[str, list[Path]]:
-    """Apply overlay + skills for every installed pack into ``cwd``.
+    """Apply overlay + skills + pack index for every installed pack into ``cwd``.
 
     Returns a dict mapping ``"<pack-name>:overlay"`` /
-    ``"<pack-name>:skills"`` to the files written, mainly for tests.
+    ``"<pack-name>:skills"`` / ``"<pack-name>:index"`` to the files
+    written, mainly for tests.
     """
     results: dict[str, list[Path]] = {}
-    if not overlay and not skills:
+    if not overlay and not skills and not index:
         return results
     pack_list = list(packs) if packs is not None else discover_packs()
     for pack in pack_list:
@@ -227,4 +244,6 @@ def materialize_packs(
             results[f"{pack.name}:overlay"] = apply_overlay(pack, cwd, role=role)
         if skills:
             results[f"{pack.name}:skills"] = apply_skills(pack, rig_path=cwd)
+        if index:
+            results[f"{pack.name}:index"] = apply_pack_index(pack, rig_path=cwd)
     return results

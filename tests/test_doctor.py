@@ -306,6 +306,69 @@ def test_logfire_unset(monkeypatch):
     assert r.remediation
 
 
+# -- check_pack_overlays -----------------------------------------------
+
+
+def _make_fake_pack(tmp_path, name: str, *, with_overlay: bool = True):
+    from prefect_orchestration.pack_overlay import Pack
+
+    root = tmp_path / name
+    root.mkdir(parents=True)
+    module_root = root / name.replace("-", "_")
+    module_root.mkdir()
+    (module_root / "__init__.py").write_text("")
+    if with_overlay:
+        overlay_dir = root / "overlay"
+        overlay_dir.mkdir()
+        (overlay_dir / f"CLAUDE-{name}.md").write_text(f"# {name}")
+    return Pack(name=name, root=root, module_root=module_root)
+
+
+def test_check_pack_overlays_no_packs(monkeypatch, tmp_path):
+    import prefect_orchestration.doctor as dm
+
+    monkeypatch.setattr(dm, "check_pack_overlays", doctor_mod.check_pack_overlays)
+    import prefect_orchestration.pack_overlay as po_mod
+
+    monkeypatch.setattr(po_mod, "discover_packs", lambda: [])
+    r = doctor_mod.check_pack_overlays()
+    assert r.status is Status.OK
+    assert "no packs" in r.message
+
+
+def test_check_pack_overlays_all_present(monkeypatch, tmp_path):
+    import prefect_orchestration.pack_overlay as po_mod
+
+    packs = [_make_fake_pack(tmp_path, "po-mypack", with_overlay=True)]
+    monkeypatch.setattr(po_mod, "discover_packs", lambda: packs)
+    r = doctor_mod.check_pack_overlays()
+    assert r.status is Status.OK
+    assert "1 pack(s)" in r.message
+
+
+def test_check_pack_overlays_missing(monkeypatch, tmp_path):
+    import prefect_orchestration.pack_overlay as po_mod
+
+    packs = [_make_fake_pack(tmp_path, "po-mypack", with_overlay=False)]
+    monkeypatch.setattr(po_mod, "discover_packs", lambda: packs)
+    r = doctor_mod.check_pack_overlays()
+    assert r.status is Status.WARN
+    assert "po-mypack" in r.message
+    assert r.remediation
+
+
+def test_check_pack_overlays_core_excluded(monkeypatch, tmp_path):
+    """prefect-orchestration itself is not checked for an overlay."""
+    import prefect_orchestration.pack_overlay as po_mod
+    from prefect_orchestration.pack_overlay import Pack
+
+    core = Pack(name="prefect-orchestration", root=tmp_path, module_root=tmp_path)
+    monkeypatch.setattr(po_mod, "discover_packs", lambda: [core])
+    r = doctor_mod.check_pack_overlays()
+    assert r.status is Status.OK
+    assert "no packs" in r.message
+
+
 # -- aggregator / exit code --------------------------------------------
 
 

@@ -458,6 +458,38 @@ def check_logfire_token() -> CheckResult:
     )
 
 
+def check_pack_overlays() -> CheckResult:
+    """Warn when an installed pack ships no ``overlay/CLAUDE-*.md``."""
+    from prefect_orchestration.pack_overlay import _candidate_overlay_dirs, discover_packs
+    from prefect_orchestration.packs import CORE_DISTRIBUTION
+
+    name = "pack overlays"
+    packs = [p for p in discover_packs() if p.name != CORE_DISTRIBUTION]
+    if not packs:
+        return CheckResult(name=name, status=Status.OK, message="no packs installed")
+    missing = [
+        p.name
+        for p in packs
+        if not any(
+            list(d.glob("CLAUDE-*.md"))
+            for d in _candidate_overlay_dirs(p)
+            if d.is_dir()
+        )
+    ]
+    if missing:
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message=f"{len(missing)} pack(s) missing overlay/CLAUDE-*.md: {', '.join(missing)}",
+            remediation="add overlay/CLAUDE-<pack-name>.md to the pack (see po README § Pack overlays)",
+        )
+    return CheckResult(
+        name=name,
+        status=Status.OK,
+        message=f"{len(packs)} pack(s) have overlays",
+    )
+
+
 # -- aggregator ---------------------------------------------------------
 
 
@@ -472,6 +504,7 @@ ALL_CHECKS: list[Callable[[], CheckResult]] = [
     check_uv_tool_fresh,
     check_beads_dolt_mode,
     check_logfire_token,
+    check_pack_overlays,
 ]
 
 

@@ -10,6 +10,7 @@ import pytest
 from prefect_orchestration.pack_overlay import (
     Pack,
     apply_overlay,
+    apply_pack_index,
     apply_skills,
     materialize_packs,
 )
@@ -312,3 +313,104 @@ def test_skill_destination_uses_distribution_name(
     apply_skills(pack, cwd)
 
     assert (cwd / ".claude" / "skills" / expected).is_dir()
+
+
+# -- apply_pack_index ---------------------------------------------------
+
+
+def test_apply_pack_index_copies_claude_md(tmp_path: Path) -> None:
+    pack = _make_pack(
+        tmp_path / "src",
+        name="po-mypack",
+        overlay_files={"CLAUDE-mypack.md": "# mypack\nwhat it does"},
+    )
+    rig = tmp_path / "rig"
+    rig.mkdir()
+
+    written = apply_pack_index(pack, rig)
+
+    target = rig / ".claude" / "packs" / "CLAUDE-mypack.md"
+    assert target.read_text() == "# mypack\nwhat it does"
+    assert written == [target]
+
+
+def test_apply_pack_index_ignores_non_matching_files(tmp_path: Path) -> None:
+    pack = _make_pack(
+        tmp_path / "src",
+        name="po-mypack",
+        overlay_files={
+            "CLAUDE-mypack.md": "relevant",
+            "CLAUDE.md": "should not go to packs/",
+            "readme.md": "ignored",
+        },
+    )
+    rig = tmp_path / "rig"
+    rig.mkdir()
+
+    written = apply_pack_index(pack, rig)
+
+    packs_dir = rig / ".claude" / "packs"
+    assert [f.name for f in written] == ["CLAUDE-mypack.md"]
+    assert not (packs_dir / "CLAUDE.md").exists()
+    assert not (packs_dir / "readme.md").exists()
+
+
+def test_apply_pack_index_overwrites_existing(tmp_path: Path) -> None:
+    pack = _make_pack(
+        tmp_path / "src",
+        name="po-mypack",
+        overlay_files={"CLAUDE-mypack.md": "new"},
+    )
+    rig = tmp_path / "rig"
+    target = rig / ".claude" / "packs" / "CLAUDE-mypack.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("old")
+
+    apply_pack_index(pack, rig)
+
+    assert target.read_text() == "new"
+
+
+def test_apply_pack_index_no_overlay_returns_empty(tmp_path: Path) -> None:
+    pack_root = tmp_path / "po-empty"
+    pack_root.mkdir()
+    module_root = pack_root / "po_empty"
+    module_root.mkdir()
+    (module_root / "__init__.py").write_text("")
+    pack = Pack(name="po-empty", root=pack_root, module_root=module_root)
+    rig = tmp_path / "rig"
+    rig.mkdir()
+
+    written = apply_pack_index(pack, rig)
+
+    assert written == []
+    assert not (rig / ".claude" / "packs").exists()
+
+
+def test_materialize_packs_populates_packs_dir(tmp_path: Path) -> None:
+    pack = _make_pack(
+        tmp_path / "src",
+        name="po-mypack",
+        overlay_files={"CLAUDE-mypack.md": "summary"},
+    )
+    rig = tmp_path / "rig"
+    rig.mkdir()
+
+    results = materialize_packs(rig, role=None, packs=[pack])
+
+    assert (rig / ".claude" / "packs" / "CLAUDE-mypack.md").read_text() == "summary"
+    assert results["po-mypack:index"] != []
+
+
+def test_materialize_packs_opt_out_index(tmp_path: Path) -> None:
+    pack = _make_pack(
+        tmp_path / "src",
+        name="po-mypack",
+        overlay_files={"CLAUDE-mypack.md": "summary"},
+    )
+    rig = tmp_path / "rig"
+    rig.mkdir()
+
+    materialize_packs(rig, role=None, index=False, packs=[pack])
+
+    assert not (rig / ".claude" / "packs").exists()

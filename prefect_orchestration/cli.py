@@ -1569,6 +1569,12 @@ def packs_install(
         "-e",
         help="Treat `spec` as a local path and install editable (dev workflow).",
     ),
+    rig_path: Path | None = typer.Option(
+        None,
+        "--rig-path",
+        help="Rig root to copy overlay/CLAUDE-*.md files into (defaults to cwd).",
+        exists=False,
+    ),
 ) -> None:
     """Install a pack into po's tool env (delegates to `uv tool`).
 
@@ -1582,6 +1588,14 @@ def packs_install(
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
     typer.echo(f"installed {spec}")
+    from prefect_orchestration.pack_overlay import apply_pack_index
+    from prefect_orchestration.pack_overlay import discover_packs as _discover_overlay_packs
+
+    effective_rig = rig_path or Path.cwd()
+    for pack in _discover_overlay_packs():
+        written = apply_pack_index(pack, effective_rig)
+        for f in written:
+            typer.echo(f"  overlay -> {f.relative_to(effective_rig)}")
 
 
 @packs_app.command("update")
