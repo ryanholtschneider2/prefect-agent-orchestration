@@ -26,6 +26,9 @@ registers itself via entry points.
 
 A pack is a regular Python package with `@flow`s and entry points:
 
+For concrete naming and behavior examples for non-standard formulas,
+see [`engdocs/example-formulas.md`](engdocs/example-formulas.md).
+
 ```toml
 # my-pack/pyproject.toml
 [project]
@@ -135,7 +138,7 @@ po run software-dev-full \
   --issue-id prefect-orchestration-pw4 \
   --rig prefect-orchestration \
   --rig-path /home/me/prefect-orchestration \
-  --pack-path /home/me/software-dev/po-formulas
+  --pack-path /home/me/prefect-orchestration/packs/po-formulas-software-dev
 ```
 
 The flow:
@@ -153,7 +156,7 @@ Worktree-per-run isolation is a separate concern (deferred).
 
 ## Reference pack
 
-[`../software-dev/po-formulas/`](../software-dev/po-formulas/) — actor-critic
+[`packs/po-formulas-software-dev/`](packs/po-formulas-software-dev/) — actor-critic
 software-dev pipeline (16 steps, 5 loops) + `epic` fan-out. Read that
 if you want a concrete template to copy.
 
@@ -204,6 +207,35 @@ Install these before `uv sync` / `uv tool install`:
   when tmux is missing.
 
 ## Install
+
+### Claude Code plugin (recommended for Claude Code users)
+
+This repo ships a Claude Code plugin manifest at `.claude-plugin/plugin.json`
+and a marketplace at `.claude-plugin/marketplace.json`, so the `po` skill can
+be installed with two slash commands inside Claude Code.
+
+**Local checkout** (after `git clone`):
+
+```
+/plugin marketplace add /absolute/path/to/prefect-orchestration
+/plugin install po@prefect-orchestration
+```
+
+**Remote** (once the repo is on a git host):
+
+```
+/plugin marketplace add owner/prefect-orchestration
+/plugin install po@prefect-orchestration
+```
+
+The skill appears as `/po:po`. Run `/help` to confirm. To update later,
+`/plugin update po@prefect-orchestration`. The plugin is namespaced so it
+cannot collide with other skills you have installed.
+
+For non-Claude-Code agents (Cursor, Aider) or to install just the `po` CLI
+without the skill, use `make install AGENT=...` below.
+
+### CLI install
 
 **One-liner** (clones the repo to `~/.local/share/prefect-orchestration/`,
 installs prerequisites if missing, symlinks the agent skill into every

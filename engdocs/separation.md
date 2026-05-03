@@ -5,8 +5,9 @@ rigs (git repos) it operates against. There is no monolithic "everything
 pack" — there are **domain packs** that a deployment composes.
 
 > **Vocabulary.** *Core* is this repo (`prefect-orchestration`). *Packs*
-> are siblings that ship formulas, deployments, commands, doctor checks,
-> or skills via PO entry points. *Rigs* are the working repos a flow runs
+> live under `prefect-orchestration/packs/` and ship formulas, deployments,
+> commands, doctor checks, or skills via PO entry points. *Rigs* are the
+> working repos a flow runs
 > against. *Deployments* are the install — N rigs + M installed packs +
 > C configured Prefect deployments + a Prefect server.
 
@@ -14,17 +15,15 @@ pack" — there are **domain packs** that a deployment composes.
 
 ```
 <workspace>/
-├── prefect-orchestration/                ← core, no domain logic
-│   ├── prefect_orchestration/            (agent_session, cli, deployments,
-│   │                                      doctor, templates, telemetry, …)
-│   └── engdocs/, CLAUDE.md, ...
-│
-├── po-formulas-software-dev/             ← first-party pack: software-dev
-│   └── po_formulas/                      (software_dev, epic, mail,
-│                                          deployments, agents/*/prompt.md)
-│
-└── (additional packs)                    ← any number of sibling packs
-                                            (po-stripe, po-gmail, …)
+└── prefect-orchestration/                ← core + bundled first-party packs
+    ├── prefect_orchestration/            (agent_session, cli, deployments,
+    │                                      doctor, templates, telemetry, …)
+    ├── packs/
+    │   ├── po-formulas-software-dev/
+    │   ├── po-formulas-software-dev-wts/
+    │   ├── software-dev-pack/
+    │   └── software-dev-pack-wts/
+    └── engdocs/, CLAUDE.md, ...
 ```
 
 The core package has been kept domain-free through every release. Every
@@ -107,12 +106,16 @@ One pack per operational competency. Named by function:
 |---|---|---|
 | `po-formulas-intake` | receiving + triaging inbound | `triage-inbox` (Gmail → classify → route), `website-form-to-bead`, `cold-outreach-dedupe` |
 | `po-formulas-ops` | back-office operations | `invoice-reconcile`, `vendor-payment-approve`, `weekly-bookkeeping`, `calendar-audit` |
-| `po-formulas-retro` | org-level reflection + planning | `weekly-kpi-digest`, `update-prompts-from-lessons` (the feedback loop), `quarterly-plan-generate` |
+| `po-formulas-retro` | org-level reflection + planning | `builder-heartbeat`, `weekly-kpi-digest`, `update-prompts-from-lessons` (the feedback loop), `quarterly-plan-generate` |
 | `po-formulas-growth` | outreach + content | `linkedin-dm-draft`, `content-calendar-plan`, `seo-audit-run` |
 
 Not every deployment needs all of them. A recruiting-focused install
 might run `intake` + `ops` + a domain-specific `po-formulas-recruiting`.
 A content-focused one might run `growth` heavily and `ops` sparingly.
+
+See [`engdocs/example-formulas.md`](example-formulas.md) for concrete
+example shapes for `builder-heartbeat`, `triage-inbox`, and
+`on-bd-close`.
 
 ### Primitive-implementation packs (as needs appear)
 
