@@ -37,8 +37,10 @@ from prefect import flow, get_run_logger
 from prefect_orchestration.agent_session import (
     AgentSession,
     ClaudeCliBackend,
+    CodexCliBackend,
     StubBackend,
     TmuxClaudeBackend,
+    TmuxCodexBackend,
 )
 from prefect_orchestration.skill_evals_schema import (
     CaseResult,
@@ -409,7 +411,7 @@ async def _claude_judge_one_pair(
         raise RuntimeError(
             "install `claude-agent-sdk` to run skill-evals with the "
             "claude-code judge backend (default), or pass "
-            "`judge_backend=\"pydantic-evals\"` to use the API-key path."
+            '`judge_backend="pydantic-evals"` to use the API-key path.'
         ) from e
 
     from prefect_orchestration.templates import render_template
@@ -431,7 +433,8 @@ async def _claude_judge_one_pair(
         async for message in query(prompt=judge_prompt, options=options):
             if hasattr(message, "result") and message.result:
                 result_text = (
-                    message.result if isinstance(message.result, str)
+                    message.result
+                    if isinstance(message.result, str)
                     else str(message.result)
                 )
             content = getattr(message, "content", None)
@@ -582,6 +585,8 @@ def _select_backend(dry_run: bool, *, issue_id: str | None = None) -> Any:
     choice = (os.environ.get("PO_BACKEND") or "").lower()
     if choice == "cli":
         return ClaudeCliBackend()
+    if choice == "codex-cli":
+        return CodexCliBackend()
     if choice == "stub":
         return StubBackend()
     tmux_kwargs = {"issue": issue_id or "skill-evals", "role": "skill-evals"}
@@ -589,6 +594,10 @@ def _select_backend(dry_run: bool, *, issue_id: str | None = None) -> Any:
         if shutil.which("tmux") is None:
             raise RuntimeError("PO_BACKEND=tmux but tmux not on PATH")
         return TmuxClaudeBackend(**tmux_kwargs)
+    if choice in {"codex-tmux", "codex-tmux-stream"}:
+        if shutil.which("tmux") is None:
+            raise RuntimeError(f"PO_BACKEND={choice} but tmux not on PATH")
+        return TmuxCodexBackend(**tmux_kwargs)
     if shutil.which("tmux"):
         return TmuxClaudeBackend(**tmux_kwargs)
     return ClaudeCliBackend()

@@ -27,8 +27,10 @@ from prefect.runtime import flow_run
 from prefect_orchestration.agent_session import (
     AgentSession,
     ClaudeCliBackend,
+    CodexCliBackend,
     StubBackend,
     TmuxClaudeBackend,
+    TmuxCodexBackend,
     TmuxInteractiveClaudeBackend,
 )
 
@@ -60,12 +62,18 @@ def _bd_create(rig: Path, slug: str, prompt: str, role: str, model: str) -> str 
     )
     proc = subprocess.run(
         [
-            "bd", "create",
-            "--title", title,
-            "--description", description,
-            "--type", "task",
-            "--priority", "3",
-            "--label", _BD_LABEL,
+            "bd",
+            "create",
+            "--title",
+            title,
+            "--description",
+            description,
+            "--type",
+            "task",
+            "--priority",
+            "3",
+            "--label",
+            _BD_LABEL,
             "--json",
         ],
         cwd=rig,
@@ -95,14 +103,18 @@ def _bd_set_metadata(rig: Path, bd_id: str, **kv: str) -> None:
 def _bd_claim(rig: Path, bd_id: str, assignee: str) -> None:
     subprocess.run(
         ["bd", "update", bd_id, "--status", "in_progress", "--assignee", assignee],
-        cwd=rig, capture_output=True, check=False,
+        cwd=rig,
+        capture_output=True,
+        check=False,
     )
 
 
 def _bd_close(rig: Path, bd_id: str, reason: str) -> None:
     subprocess.run(
         ["bd", "close", bd_id, "--reason", reason],
-        cwd=rig, capture_output=True, check=False,
+        cwd=rig,
+        capture_output=True,
+        check=False,
     )
 
 
@@ -112,16 +124,26 @@ def _pick_backend_factory(dry_run: bool) -> Any:
     choice = os.environ.get("PO_BACKEND", "").lower()
     if choice == "cli":
         return ClaudeCliBackend
+    if choice == "codex-cli":
+        return CodexCliBackend
     if choice == "stub":
         return StubBackend
     if choice == "tmux-stream":
         if shutil.which("tmux") is None:
             raise RuntimeError("PO_BACKEND=tmux-stream but tmux not on PATH")
         return TmuxClaudeBackend
+    if choice == "codex-tmux-stream":
+        if shutil.which("tmux") is None:
+            raise RuntimeError("PO_BACKEND=codex-tmux-stream but tmux not on PATH")
+        return TmuxCodexBackend
     if choice == "tmux":
         if shutil.which("tmux") is None:
             raise RuntimeError("PO_BACKEND=tmux but tmux not on PATH")
         return TmuxInteractiveClaudeBackend
+    if choice == "codex-tmux":
+        if shutil.which("tmux") is None:
+            raise RuntimeError("PO_BACKEND=codex-tmux but tmux not on PATH")
+        return TmuxCodexBackend
     return TmuxInteractiveClaudeBackend if shutil.which("tmux") else ClaudeCliBackend
 
 
@@ -151,7 +173,7 @@ def _bead_prelude(bd_id: str) -> str:
         f"\n"
         f"**Self-management**:\n"
         f"- Stamp progress / findings on the bead as you work:\n"
-        f"  `bd update {bd_id} --notes \"...\"` (appends; use freely)\n"
+        f'  `bd update {bd_id} --notes "..."` (appends; use freely)\n'
         f"- File any unresolved follow-ups (paid data, license blockers, MOU\n"
         f"  asks, format conversions, future work) as NEW beads with\n"
         f"  `bd create --title ... --description ...` and reference\n"
@@ -204,7 +226,9 @@ def prompt_run(
     scope = rig_path_p.name
     factory = _pick_backend_factory(dry_run)
     backend = _make_backend(factory, issue=issue_handle, role=role, scope=scope)
-    session = AgentSession(role=role, repo_path=rig_path_p, backend=backend, model=model)
+    session = AgentSession(
+        role=role, repo_path=rig_path_p, backend=backend, model=model
+    )
 
     safe_scope = scope.replace(".", "_")
     safe_handle = issue_handle.replace(".", "_")
@@ -214,12 +238,18 @@ def prompt_run(
     tmux_attach = f"tmux attach -t {tmux_session} \\; select-window -t {tmux_window}"
     logger.info(
         "dispatching prompt: rig=%s role=%s model=%s handle=%s tmux=%s window=%s",
-        rig_path_p, role, model, issue_handle, tmux_session, tmux_window,
+        rig_path_p,
+        role,
+        model,
+        issue_handle,
+        tmux_session,
+        tmux_window,
     )
 
     if bd_id:
         _bd_set_metadata(
-            rig_path_p, bd_id,
+            rig_path_p,
+            bd_id,
             **{"po.rig_path": str(rig_path_p), "po.run_dir": str(run_dir)},
         )
 
@@ -260,8 +290,7 @@ def prompt_run(
             f"- **bead**: `{bd_id or '(none)'}`\n"
             f"- **tmux**: `{tmux_attach}`\n"
             f"- **reply**: `{reply_path}`\n\n"
-            f"---\n\n{reply[:4000]}"
-            + ("\n\n…(truncated)" if len(reply) > 4000 else "")
+            f"---\n\n{reply[:4000]}" + ("\n\n…(truncated)" if len(reply) > 4000 else "")
         ),
     )
 

@@ -1,4 +1,4 @@
-"""Claude Code CLI session abstraction.
+"""Agent CLI session abstractions.
 
 Designed so a Prefect task — or later a Temporal activity — can:
 
@@ -9,8 +9,8 @@ Designed so a Prefect task — or later a Temporal activity — can:
     flow/workflow state
 
 Uses the `claude` CLI by default (OAuth via the Claude.ai subscription).
-For a commercial deployment, swap `ClaudeCliBackend` for a backend that
-calls the Claude Agent SDK with `ANTHROPIC_API_KEY`.
+Codex backends mirror the same `SessionBackend` contract for PO runs that
+target the local `codex` CLI instead.
 """
 
 from __future__ import annotations
@@ -150,14 +150,22 @@ def _has_429_envelope(text: str) -> bool:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(obj, dict) and obj.get("is_error") is True and obj.get("api_error_status") == 429:
+        if (
+            isinstance(obj, dict)
+            and obj.get("is_error") is True
+            and obj.get("api_error_status") == 429
+        ):
             return True
     try:
         obj = json.loads(text)
     except json.JSONDecodeError:
         pass
     else:
-        if isinstance(obj, dict) and obj.get("is_error") is True and obj.get("api_error_status") == 429:
+        if (
+            isinstance(obj, dict)
+            and obj.get("is_error") is True
+            and obj.get("api_error_status") == 429
+        ):
             return True
     return '"is_error":true' in text and '"api_error_status":429' in text
 
@@ -271,6 +279,28 @@ def _build_claude_argv(
     return argv
 
 
+def _build_codex_exec_argv(
+    start_command: str,
+    session_id: str | None,
+    fork: bool,
+    model: str,
+) -> list[str]:
+    """Construct the `codex exec ... --json` argv shared by Codex backends.
+
+    Codex exposes non-interactive resume via `codex exec resume <sid>`, but
+    does not currently expose a non-interactive fork subcommand. For forked
+    turns we intentionally start a fresh thread: isolation matters more than
+    inheriting parent context, and reusing the parent thread would pollute it.
+    """
+    base = shlex.split(start_command)
+    if session_id and _UUID_RE.match(session_id) and not fork:
+        argv = base + ["resume", session_id]
+    else:
+        argv = base
+    argv += ["--json", "-m", model]
+    return argv
+
+
 def _parse_envelope(stdout: str, prior_sid: str | None) -> tuple[str, str]:
     """Parse a stream-json event log: return (final_result, session_id).
 
@@ -305,6 +335,46 @@ def _parse_envelope(stdout: str, prior_sid: str | None) -> tuple[str, str]:
         return envelope.get("result", stdout), new_sid
     new_sid = last_result.get("session_id") or last_session_id or str(uuid.uuid4())
     return last_result.get("result", stdout), new_sid
+
+
+def _parse_codex_exec_jsonl(stdout: str, prior_sid: str | None) -> tuple[str, str]:
+    """Parse Codex JSONL output into `(final_text, session_id)`.
+
+    `codex exec --json` emits structured events such as:
+      * `thread.started` with `thread_id`
+      * `item.completed` with `item.type == "agent_message"`
+      * `turn.completed`
+
+    Non-JSON noise can be interleaved on stdout/stderr (for example MCP
+    transport warnings), so parsing is best-effort and line-oriented.
+    """
+    last_text = ""
+    last_sid = prior_sid
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "thread.started" and isinstance(
+            event.get("thread_id"), str
+        ):
+            last_sid = event["thread_id"]
+            continue
+        if event.get("type") != "item.completed":
+            continue
+        item = event.get("item")
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "agent_message"
+            and isinstance(item.get("text"), str)
+        ):
+            last_text = item["text"]
+    return last_text or stdout, last_sid or str(uuid.uuid4())
 
 
 @dataclass
@@ -385,6 +455,60 @@ class ClaudeCliBackend:
             )
 
         return _parse_envelope(proc.stdout, session_id)
+
+
+@dataclass
+class CodexCliBackend:
+    """Shells out to `codex exec` with resume support and JSONL parsing."""
+
+    start_command: str = "codex exec --dangerously-bypass-approvals-and-sandbox"
+
+    def run(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None,
+        cwd: Path,
+        fork: bool = False,
+        model: str = "gpt-5-codex",
+        effort: str | None = None,
+        extra_env: Mapping[str, str] | None = None,
+        timeout: float | None = DEFAULT_AGENT_TIMEOUT_S,
+    ) -> tuple[str, str]:
+        del effort  # Codex exec does not currently expose a compatible effort flag.
+        cmd = _build_codex_exec_argv(self.start_command, session_id, fork, model)
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=_clean_env(extra_env),
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise StepTimeoutError(
+                timeout_s=timeout or 0.0,
+                message=(
+                    f"codex exec did not return within {timeout}s\n"
+                    f"argv: {cmd}\n"
+                    f"stdout-tail: {(exc.stdout or b'')[-2000:]!r}\n"
+                    f"stderr-tail: {(exc.stderr or b'')[-2000:]!r}"
+                ),
+            ) from exc
+
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"codex exec exited {proc.returncode}\n"
+                f"argv: {cmd}\n"
+                f"stderr: {proc.stderr[:2000]}\n"
+                f"stdout: {proc.stdout[:2000]}"
+            )
+
+        return _parse_codex_exec_jsonl(proc.stdout, session_id)
 
 
 _STUB_VERDICTS: dict[str, dict] = {
@@ -803,6 +927,120 @@ class TmuxClaudeBackend:
             result, new_sid = _parse_envelope(stdout, session_id)
         finally:
             _cleanup_tmux(target, scoped=window_name is not None)
+            if prompt_path.exists():
+                try:
+                    prompt_path.unlink()
+                except OSError:
+                    pass
+
+        return result, new_sid
+
+
+@dataclass
+class TmuxCodexBackend:
+    """Spawn `codex exec --json` inside a detached tmux session."""
+
+    issue: str
+    role: str
+    start_command: str = "codex exec --dangerously-bypass-approvals-and-sandbox"
+    attach_hint: bool = True
+    timeout_s: float | None = DEFAULT_AGENT_TIMEOUT_S
+    scope: str | None = None
+
+    def _session_name(self, suffix: str = "") -> str:
+        from prefect_orchestration.attach import session_name as _session_name_for
+
+        base = _session_name_for(self.issue, self.role)
+        return f"{base}-{suffix}" if suffix else base
+
+    def _scoped_names(self, suffix: str = "") -> tuple[str, str]:
+        assert self.scope is not None
+        safe_scope = self.scope.replace(".", "_")
+        safe_issue = self.issue.replace(".", "_")
+        safe_role = self.role.replace(".", "_")
+        session = f"po-{safe_scope}"
+        window = f"{safe_issue}-{safe_role}"
+        if suffix:
+            window = f"{window}-{suffix}"
+        return session, window
+
+    def run(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None,
+        cwd: Path,
+        fork: bool = False,
+        model: str = "gpt-5-codex",
+        effort: str | None = None,
+        extra_env: Mapping[str, str] | None = None,
+    ) -> tuple[str, str]:
+        del effort
+        if shutil.which("tmux") is None:
+            raise RuntimeError("TmuxCodexBackend requires the `tmux` binary on PATH")
+
+        suffix = uuid.uuid4().hex[:6] if fork else ""
+        if self.scope:
+            session_name, window_name = self._scoped_names(suffix)
+            file_stem = f"{session_name}-{window_name}"
+        else:
+            session_name = self._session_name(suffix)
+            window_name = None
+            file_stem = session_name
+        workdir = cwd / ".tmux"
+        workdir.mkdir(parents=True, exist_ok=True)
+        out_path = workdir / f"{file_stem}.out"
+        rc_path = workdir / f"{file_stem}.rc"
+        prompt_path = workdir / f"{file_stem}.in"
+
+        for p in (out_path, rc_path):
+            p.unlink(missing_ok=True)
+        prompt_path.write_text(prompt)
+
+        argv = _build_codex_exec_argv(self.start_command, session_id, fork, model)
+        wrapper = (
+            f"cd {shlex.quote(str(cwd))} && "
+            f"{shlex.join(argv)} < {shlex.quote(str(prompt_path))} "
+            f"2>&1 | tee {shlex.quote(str(out_path))}; "
+            f"echo ${{PIPESTATUS[0]}} > {shlex.quote(str(rc_path))}"
+        )
+
+        target = ""
+        try:
+            target = _spawn_tmux(
+                session_name=session_name,
+                window_name=window_name,
+                wrapper=wrapper,
+                env=_clean_env(extra_env),
+                cwd=cwd,
+                geometry=(200, 50),
+            )
+            if self.attach_hint:
+                if window_name:
+                    print(
+                        f"[tmux] attach with: tmux attach -t {session_name} "
+                        f"\\; select-window -t {window_name}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[tmux] attach with: tmux attach -t {session_name}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
+            _wait_for_rc(rc_path, target, timeout=self.timeout_s)
+            rc = int(rc_path.read_text().strip() or "-1")
+            stdout = out_path.read_text() if out_path.exists() else ""
+            if rc != 0:
+                raise RuntimeError(
+                    f"codex exec exited {rc}\nstdout tail: {stdout[-2000:]}"
+                )
+            result, new_sid = _parse_codex_exec_jsonl(stdout, session_id)
+        finally:
+            if target:
+                _cleanup_tmux(target, scoped=window_name is not None)
             if prompt_path.exists():
                 try:
                     prompt_path.unlink()

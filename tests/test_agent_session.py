@@ -1,4 +1,4 @@
-"""Regression tests for ClaudeCliBackend error reporting (issue 7hv)."""
+"""Regression tests for CLI backend error reporting and parsing."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from prefect_orchestration.agent_session import ClaudeCliBackend
+from prefect_orchestration.agent_session import ClaudeCliBackend, CodexCliBackend
 
 
 def test_nonzero_exit_includes_stdout_and_argv(tmp_path: Path) -> None:
@@ -24,7 +24,9 @@ def test_nonzero_exit_includes_stdout_and_argv(tmp_path: Path) -> None:
         stdout="boom-on-stdout-marker",
         stderr="",
     )
-    with patch("prefect_orchestration.agent_session.subprocess.run", return_value=completed):
+    with patch(
+        "prefect_orchestration.agent_session.subprocess.run", return_value=completed
+    ):
         with pytest.raises(RuntimeError) as excinfo:
             ClaudeCliBackend().run(
                 "hello",
@@ -49,7 +51,9 @@ def test_successful_run_unchanged(tmp_path: Path) -> None:
         stdout=envelope,
         stderr="",
     )
-    with patch("prefect_orchestration.agent_session.subprocess.run", return_value=completed):
+    with patch(
+        "prefect_orchestration.agent_session.subprocess.run", return_value=completed
+    ):
         result, sid = ClaudeCliBackend().run(
             "hello",
             session_id=None,
@@ -57,3 +61,53 @@ def test_successful_run_unchanged(tmp_path: Path) -> None:
         )
     assert result == "ok"
     assert sid == "sid-123"
+
+
+def test_codex_nonzero_exit_includes_stdout_and_argv(tmp_path: Path) -> None:
+    completed = subprocess.CompletedProcess(
+        args=["codex"],
+        returncode=3,
+        stdout="codex-stdout-marker",
+        stderr="codex-stderr-marker",
+    )
+    with patch(
+        "prefect_orchestration.agent_session.subprocess.run", return_value=completed
+    ):
+        with pytest.raises(RuntimeError) as excinfo:
+            CodexCliBackend().run(
+                "hello",
+                session_id=None,
+                cwd=tmp_path,
+            )
+    msg = str(excinfo.value)
+    assert "codex-stdout-marker" in msg
+    assert "codex-stderr-marker" in msg
+    assert "argv:" in msg
+    assert "codex exec exited 3" in msg
+
+
+def test_codex_successful_run_parses_jsonl(tmp_path: Path) -> None:
+    stdout = "\n".join(
+        [
+            '{"type":"thread.started","thread_id":"tid-123"}',
+            "transport warning",
+            '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}',
+            '{"type":"turn.completed","usage":{"output_tokens":1}}',
+        ]
+    )
+    completed = subprocess.CompletedProcess(
+        args=["codex"],
+        returncode=0,
+        stdout=stdout,
+        stderr="",
+    )
+    with patch(
+        "prefect_orchestration.agent_session.subprocess.run", return_value=completed
+    ):
+        result, sid = CodexCliBackend().run(
+            "hello",
+            session_id=None,
+            cwd=tmp_path,
+        )
+    assert result == "ok"
+    assert sid == "tid-123"

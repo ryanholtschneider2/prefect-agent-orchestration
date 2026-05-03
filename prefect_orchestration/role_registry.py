@@ -21,8 +21,10 @@ from prefect.runtime import flow_run
 from prefect_orchestration.agent_session import (
     AgentSession,
     ClaudeCliBackend,
+    CodexCliBackend,
     StubBackend,
     TmuxClaudeBackend,
+    TmuxCodexBackend,
     TmuxInteractiveClaudeBackend,
 )
 from prefect_orchestration.beads_meta import (
@@ -251,16 +253,26 @@ def _select_backend_factory(dry_run: bool) -> Any:
     choice = os.environ.get("PO_BACKEND", "").lower()
     if choice == "cli":
         return ClaudeCliBackend
+    if choice == "codex-cli":
+        return CodexCliBackend
     if choice == "stub":
         return StubBackend
     if choice == "tmux-stream":
         if shutil.which("tmux") is None:
             raise RuntimeError("PO_BACKEND=tmux-stream but tmux not on PATH")
         return TmuxClaudeBackend
+    if choice == "codex-tmux-stream":
+        if shutil.which("tmux") is None:
+            raise RuntimeError("PO_BACKEND=codex-tmux-stream but tmux not on PATH")
+        return TmuxCodexBackend
     if choice == "tmux":
         if shutil.which("tmux") is None:
             raise RuntimeError("PO_BACKEND=tmux but tmux not on PATH")
         return TmuxInteractiveClaudeBackend
+    if choice == "codex-tmux":
+        if shutil.which("tmux") is None:
+            raise RuntimeError("PO_BACKEND=codex-tmux but tmux not on PATH")
+        return TmuxCodexBackend
     return TmuxInteractiveClaudeBackend if shutil.which("tmux") else ClaudeCliBackend
 
 

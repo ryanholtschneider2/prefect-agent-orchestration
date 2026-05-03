@@ -1,14 +1,14 @@
 """Default agent-runtime backend picker.
 
 Single seam used by packs and ad-hoc scripts to choose between
-`TmuxClaudeBackend`, `ClaudeCliBackend`, and `StubBackend`. The pack-side
+`TmuxClaudeBackend`, `ClaudeCliBackend`, Codex variants, and `StubBackend`. The pack-side
 default in `software_dev.py` already does `shutil.which("tmux")`; this
 helper hardens it by also requiring stdout to be a TTY, which matters
 inside containers where tmux is installed but no terminal is attached.
 
-Honors `PO_BACKEND=cli|tmux|stub` as an explicit override. `tmux` without
-a tmux binary on PATH raises (no silent fallback when the user asked for
-tmux on purpose).
+Honors `PO_BACKEND=cli|tmux|stub|codex-cli|codex-tmux` as an explicit
+override. `tmux` without a tmux binary on PATH raises (no silent fallback
+when the user asked for tmux on purpose).
 """
 
 from __future__ import annotations
@@ -20,12 +20,16 @@ from typing import Literal, Type
 
 from prefect_orchestration.agent_session import (
     ClaudeCliBackend,
+    CodexCliBackend,
     SessionBackend,
     StubBackend,
     TmuxClaudeBackend,
+    TmuxCodexBackend,
 )
 
-BackendChoice = Literal["cli", "tmux", "stub", "auto"]
+BackendChoice = Literal[
+    "cli", "tmux", "stub", "auto", "codex-cli", "codex-tmux", "codex-tmux-stream"
+]
 
 
 def _stdout_is_tty() -> bool:
@@ -53,10 +57,10 @@ def select_default_backend(
                     explicitly asked for tmux.
     """
     choice = (
-        override
-        if override is not None
-        else os.environ.get("PO_BACKEND", "")
-    ).strip().lower()
+        (override if override is not None else os.environ.get("PO_BACKEND", ""))
+        .strip()
+        .lower()
+    )
 
     if have_tmux is None:
         have_tmux = shutil.which("tmux") is not None
@@ -67,12 +71,16 @@ def select_default_backend(
         return StubBackend
     if choice == "cli":
         return ClaudeCliBackend
+    if choice == "codex-cli":
+        return CodexCliBackend
     if choice == "tmux":
         if not have_tmux:
-            raise RuntimeError(
-                "PO_BACKEND=tmux but `tmux` is not on PATH"
-            )
+            raise RuntimeError("PO_BACKEND=tmux but `tmux` is not on PATH")
         return TmuxClaudeBackend
+    if choice in {"codex-tmux", "codex-tmux-stream"}:
+        if not have_tmux:
+            raise RuntimeError(f"PO_BACKEND={choice} but `tmux` is not on PATH")
+        return TmuxCodexBackend
 
     # auto / unset: tmux only when both available AND interactive.
     if have_tmux and is_tty:
