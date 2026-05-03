@@ -291,13 +291,20 @@ def _build_codex_exec_argv(
     does not currently expose a non-interactive fork subcommand. For forked
     turns we intentionally start a fresh thread: isolation matters more than
     inheriting parent context, and reusing the parent thread would pollute it.
+
+    We intentionally do NOT pass `-m <model>` here. In local testing, Codex
+    authenticated via a ChatGPT account rejects explicit model names such as
+    `gpt-5-codex`, `gpt-5`, and `o3`, while the CLI's own default model works.
+    Callers that truly need a pinned Codex model can still bake it into
+    `start_command`.
     """
+    del model
     base = shlex.split(start_command)
     if session_id and _UUID_RE.match(session_id) and not fork:
         argv = base + ["resume", session_id]
     else:
         argv = base
-    argv += ["--json", "-m", model]
+    argv += ["--json"]
     return argv
 
 

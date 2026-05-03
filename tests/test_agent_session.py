@@ -111,3 +111,24 @@ def test_codex_successful_run_parses_jsonl(tmp_path: Path) -> None:
         )
     assert result == "ok"
     assert sid == "tid-123"
+
+
+def test_codex_run_ignores_model_flag_for_cli_compatibility(tmp_path: Path) -> None:
+    completed = subprocess.CompletedProcess(
+        args=["codex"],
+        returncode=0,
+        stdout='{"type":"thread.started","thread_id":"tid-123"}\n',
+        stderr="",
+    )
+    with patch(
+        "prefect_orchestration.agent_session.subprocess.run", return_value=completed
+    ) as run_mock:
+        CodexCliBackend().run(
+            "hello",
+            session_id=None,
+            cwd=tmp_path,
+            model="gpt-5-codex",
+        )
+    cmd = run_mock.call_args.kwargs.get("args") or run_mock.call_args.args[0]
+    assert "-m" not in cmd
+    assert "gpt-5-codex" not in cmd
