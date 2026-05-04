@@ -56,11 +56,15 @@ def fast_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(beads_meta, "_bd_available", lambda: True)
 
 
-def _row(bid: str, status: str = "open", updated_at: str = "2026-04-28T00:00:00Z") -> dict:
+def _row(
+    bid: str, status: str = "open", updated_at: str = "2026-04-28T00:00:00Z"
+) -> dict:
     return {"id": bid, "status": status, "updated_at": updated_at, "title": ""}
 
 
-def test_watch_returns_close_event(monkeypatch: pytest.MonkeyPatch, fast_poll: None) -> None:
+def test_watch_returns_close_event(
+    monkeypatch: pytest.MonkeyPatch, fast_poll: None
+) -> None:
     fake = _FakeBd(
         {
             "a": [
@@ -82,7 +86,9 @@ def test_watch_returns_close_event(monkeypatch: pytest.MonkeyPatch, fast_poll: N
     assert e.new_status == "closed"
 
 
-def test_watch_status_flip_only(monkeypatch: pytest.MonkeyPatch, fast_poll: None) -> None:
+def test_watch_status_flip_only(
+    monkeypatch: pytest.MonkeyPatch, fast_poll: None
+) -> None:
     """event='status' fires on open->in_progress (no close needed)."""
     fake = _FakeBd(
         {
@@ -102,7 +108,9 @@ def test_watch_status_flip_only(monkeypatch: pytest.MonkeyPatch, fast_poll: None
     assert events[0].new_status == "in_progress"
 
 
-def test_watch_any_fires_on_mutate(monkeypatch: pytest.MonkeyPatch, fast_poll: None) -> None:
+def test_watch_any_fires_on_mutate(
+    monkeypatch: pytest.MonkeyPatch, fast_poll: None
+) -> None:
     """event='any' fires on updated_at advance with no status change."""
     fake = _FakeBd(
         {
@@ -210,7 +218,9 @@ def test_watch_filestore_path_raises_not_implemented(
         watch(["whatever"], event="close")
 
 
-def test_watch_validates_inputs(monkeypatch: pytest.MonkeyPatch, fast_poll: None) -> None:
+def test_watch_validates_inputs(
+    monkeypatch: pytest.MonkeyPatch, fast_poll: None
+) -> None:
     monkeypatch.setattr(beads_meta.subprocess, "run", _FakeBd({}))
 
     with pytest.raises(ValueError, match="non-empty"):

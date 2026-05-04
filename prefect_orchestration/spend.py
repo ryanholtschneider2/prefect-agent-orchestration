@@ -53,7 +53,9 @@ class SpendRecord:
     cost_usd: float
 
 
-def _compute_cost(model: str, in_tok: int, out_tok: int, cache_r: int, cache_w: int) -> float:
+def _compute_cost(
+    model: str, in_tok: int, out_tok: int, cache_r: int, cache_w: int
+) -> float:
     p = _model_pricing(model)
     return (
         in_tok / 1_000_000 * p["in"]
@@ -90,7 +92,7 @@ def _build_records_from_run_dir(
     for key, uuid in metadata.items():
         if not key.startswith("session_"):
             continue
-        role = key[len("session_"):]
+        role = key[len("session_") :]
         jsonl_path = _trace.find_jsonl(uuid, rig_path)
         if jsonl_path is None:
             continue

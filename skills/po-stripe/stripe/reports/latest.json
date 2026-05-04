@@ -1,0 +1,50 @@
+{
+  "skill": "stripe",
+  "pack": "po-stripe",
+  "judge_model": null,
+  "tier": "smoke",
+  "case_filter": null,
+  "pass_threshold": 0.75,
+  "n_cases": 2,
+  "n_passed": 1,
+  "overall_pass": false,
+  "cases": [
+    {
+      "case": "cli-over-sdk",
+      "tier": "smoke",
+      "score": 0.5,
+      "pass": false,
+      "criteria": [
+        {
+          "criterion": "cli-first",
+          "score": 0.0,
+          "reason": "Response shows `po stripe-balance`, not the Stripe CLI (`stripe balance retrieve`); no `stripe` CLI invocation present, so criterion is not met."
+        },
+        {
+          "criterion": "concrete-command",
+          "score": 1.0,
+          "reason": "The response is a concrete, copy-pasteable shell command with no pseudocode or explanation."
+        }
+      ],
+      "output": "```\npo stripe-balance\n```",
+      "elapsed_seconds": 6.972
+    },
+    {
+      "case": "idempotency-key-format",
+      "tier": "smoke",
+      "score": 1.0,
+      "pass": true,
+      "criteria": [
+        {
+          "criterion": "idempotency-format",
+          "score": 1.0,
+          "reason": "Response is exact match to required format `acme-42:charge-customer`."
+        }
+      ],
+      "output": "```\n--idempotency-key \"acme-42:charge-customer\"\n```",
+      "elapsed_seconds": 3.68
+    }
+  ],
+  "started_at": "2026-04-29T13:45:46Z",
+  "finished_at": "2026-04-29T13:46:13Z"
+}

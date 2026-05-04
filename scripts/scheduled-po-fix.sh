@@ -7,7 +7,7 @@ LOG=/tmp/scheduled-po-fix-$(date -u +%Y%m%dT%H%M%SZ).log
 exec >>"$LOG" 2>&1
 
 REPO="${PO_REPO:-/home/ryan-24/Desktop/Code/personal/prefect-orchestration}"
-PACK="${PO_PACK:-/home/ryan-24/Desktop/Code/personal/nanocorps/software-dev/po-formulas}"
+PACK="${PO_PACK:-/home/ryan-24/Desktop/Code/personal/prefect-orchestration/packs/po-formulas-software-dev}"
 SLACK_CH=C08LB4V9ZJ8
 
 # Slack helper — falls back silently if token absent

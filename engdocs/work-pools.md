@@ -30,7 +30,7 @@ top, so per-pack images are one cheap rebuild away from the base.
 docker build -t po-worker:base .
 
 # Base with a sibling pack repo baked in (single image, no overlay):
-docker build --build-context pack=../software-dev/po-formulas \
+docker build --build-context pack=packs/po-formulas-software-dev \
              -t po-worker:dev .
 
 # Or: keep base stable, overlay a published pack:
@@ -79,7 +79,7 @@ Anthropic key. Flip to `cli` when you want a real run.
 
 ```bash
 docker build -t <registry>/po-worker:<tag> \
-    --build-context pack=../software-dev/po-formulas .
+    --build-context pack=packs/po-formulas-software-dev .
 docker push <registry>/po-worker:<tag>
 ```
 
@@ -167,7 +167,7 @@ Claude auth Secret references, optional Ingress) into a single chart.
 ```bash
 # 1. Build + push the worker image (same as the imperative path)
 docker build -t <registry>/po-worker:<tag> \
-    --build-context pack=../software-dev/po-formulas .
+    --build-context pack=packs/po-formulas-software-dev .
 docker push <registry>/po-worker:<tag>
 
 # 2. Pre-create the auth Secret out-of-band (chart never embeds it)

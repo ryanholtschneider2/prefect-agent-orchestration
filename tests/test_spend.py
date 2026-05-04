@@ -7,25 +7,23 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
 
 from prefect_orchestration import spend as _spend
-from prefect_orchestration import watch as _watch
-from prefect_orchestration import status as _status
-from prefect_orchestration import sessions as _sessions
 from prefect_orchestration.spend import (
     FALLBACK_MODEL,
     SpendRecord,
     _compute_cost,
     aggregate,
-    build_records,
     discover_run_dirs,
     render_table,
     to_json,
 )
 from prefect_orchestration.watch import Event, render_ndjson
 from prefect_orchestration.status import IssueGroup, to_json_list as status_to_json_list
-from prefect_orchestration.sessions import SessionRow, to_json_list as sessions_to_json_list
+from prefect_orchestration.sessions import (
+    SessionRow,
+    to_json_list as sessions_to_json_list,
+)
 
 
 # ─── cost math ───────────────────────────────────────────────────────
@@ -59,7 +57,9 @@ def test_cost_zero_tokens():
 # ─── aggregate ───────────────────────────────────────────────────────
 
 
-def _make_record(role: str, day: str = "2026-04-29", formula: str = "f1") -> SpendRecord:
+def _make_record(
+    role: str, day: str = "2026-04-29", formula: str = "f1"
+) -> SpendRecord:
     return SpendRecord(
         formula=formula,
         issue_id="test-1",
@@ -89,7 +89,11 @@ def test_aggregate_by_role_sums_tokens():
 
 
 def test_aggregate_by_role_multiple_roles():
-    records = [_make_record("builder"), _make_record("triager"), _make_record("builder")]
+    records = [
+        _make_record("builder"),
+        _make_record("triager"),
+        _make_record("builder"),
+    ]
     rows = aggregate(records, by="role")
     assert len(rows) == 2
     roles = {r["role"] for r in rows}
@@ -125,8 +129,19 @@ def test_to_json_shape():
     result = to_json(records)
     assert len(result) == 1
     rec = result[0]
-    for field in ("formula", "issue_id", "role", "model", "day", "in_tok", "out_tok",
-                  "cache_r_tok", "cache_w_tok", "cost_usd", "pricing_note"):
+    for field in (
+        "formula",
+        "issue_id",
+        "role",
+        "model",
+        "day",
+        "in_tok",
+        "out_tok",
+        "cache_r_tok",
+        "cache_w_tok",
+        "cost_usd",
+        "pricing_note",
+    ):
         assert field in rec, f"missing field: {field}"
     assert isinstance(rec["in_tok"], int)
     assert isinstance(rec["cost_usd"], float)
@@ -230,8 +245,18 @@ def test_status_to_json_list_serializable():
 
 def test_sessions_to_json_list():
     rows = [
-        SessionRow(role="builder", uuid="uuid-builder", last_iter="2", last_updated="2026-04-29 12:00:00"),
-        SessionRow(role="triager", uuid="uuid-triager", last_iter="-", last_updated="2026-04-29 11:00:00"),
+        SessionRow(
+            role="builder",
+            uuid="uuid-builder",
+            last_iter="2",
+            last_updated="2026-04-29 12:00:00",
+        ),
+        SessionRow(
+            role="triager",
+            uuid="uuid-triager",
+            last_iter="-",
+            last_updated="2026-04-29 11:00:00",
+        ),
     ]
     result = sessions_to_json_list(rows)
     assert len(result) == 2

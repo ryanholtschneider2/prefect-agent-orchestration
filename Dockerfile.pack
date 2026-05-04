@@ -14,7 +14,7 @@
 #
 #   docker build -t po-worker:software-dev \
 #       --build-arg BASE=po-worker:base \
-#       --build-context pack=../software-dev/po-formulas \
+#       --build-context pack=packs/po-formulas-software-dev \
 #       -f Dockerfile.pack .
 
 ARG BASE=po-worker:base

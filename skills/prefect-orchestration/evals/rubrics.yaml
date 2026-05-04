@@ -1,0 +1,112 @@
+# Judging criteria for the `po` skill's eval suite.
+#
+# Schema: prefect_orchestration.skill_evals_schema.RubricsFile
+# Each criterion is one LLMJudge instance at run time.
+#
+# Picked Sonnet 4.6 as the default judge — cheap, fast, and accurate
+# enough for the small set of yes/no checks below. The release-ready
+# run before tagging is expected to bump this to Opus 4.7 via the
+# `--judge-model` flag.
+
+judge_model: anthropic:claude-sonnet-4-6
+pass_threshold: 0.75
+
+criteria:
+
+  - name: responds-with-content
+    rubric: |
+      Did the model produce a non-empty, on-topic response? Score 0.0
+      only if the response is empty, an apology with no content, or
+      completely unrelated to the question.
+    scoring_guide: |
+      1.0 = substantive, on-topic answer.
+      0.5 = on-topic but extremely terse / unhelpful.
+      0.0 = empty, refusal, or off-topic.
+
+  - name: mentions-core-vocabulary
+    rubric: |
+      Does the response correctly use the `po` mental model — beads as
+      the source of truth for work, formulas/packs as the unit of
+      orchestration, rig-path as the on-disk location of the work?
+      We're checking that the model loaded SKILL.md and isn't
+      hallucinating from its prior of generic CLI knowledge.
+
+      The response must reference at least two of: "beads" / "bd",
+      "rig" / "rig-path", "formula" / "pack", "Prefect".
+    scoring_guide: |
+      1.0 = uses the project's vocabulary correctly.
+      0.5 = mentions one of the terms but the framing is generic.
+      0.0 = no PO-specific vocabulary; sounds like generic CLI advice.
+
+  - name: recommends-correct-subcommand
+    rubric: |
+      Did the response recommend the correct `po` subcommand for the
+      user's stated goal?
+
+      Reference mapping:
+        - dispatch a single bead     → `po run software-dev-full`
+        - fan out an epic            → `po run epic` OR `po run graph`
+        - retry a stuck run          → `po retry`
+        - see per-role session UUIDs → `po sessions`
+        - inspect verdict JSON       → `po artifacts ... --verdicts`
+        - inspect any other artifact → `po artifacts` / `po logs` / `po watch`
+
+      Score 1.0 if the primary recommendation matches the reference
+      mapping. Score 0.5 if a reasonable but non-canonical alternative
+      is given (e.g. `po watch` instead of `po artifacts --verdicts`).
+      Score 0.0 if the recommended subcommand doesn't exist or is
+      clearly wrong for the goal.
+    scoring_guide: |
+      1.0 = correct subcommand named exactly.
+      0.5 = adjacent / reasonable alternative.
+      0.0 = wrong subcommand or hallucinated verb.
+
+  - name: includes-rig-flags
+    rubric: |
+      For commands that take `--rig` and `--rig-path`, does the
+      response include both flags with sensible values from the
+      prompt? `po run software-dev-full` and `po run epic` both
+      require these to know where the code lives.
+    scoring_guide: |
+      1.0 = both `--rig <name>` and `--rig-path <abs-path>` present.
+      0.5 = only one of the two is present.
+      0.0 = neither flag mentioned for a command that needs them.
+
+  - name: defers-to-prefect-cli
+    rubric: |
+      Does the response correctly defer to the `prefect` CLI for
+      operations that PO doesn't wrap (cancelling flow runs, listing
+      deployments by Prefect-side state, work-pool config, etc.)?
+
+      The skill explicitly documents this division of labor: PO wraps
+      things Prefect doesn't know about; pure-Prefect ops use the
+      `prefect` CLI directly.
+    scoring_guide: |
+      1.0 = clearly recommends `prefect flow-run cancel` (or
+            equivalent prefect-side command) and explains why.
+      0.5 = mentions the prefect CLI but doesn't make the deference
+            explicit.
+      0.0 = invents a `po cancel` (or similar) instead of deferring.
+
+  - name: no-invented-po-verbs
+    rubric: |
+      Negative check: did the response invent a `po` subcommand that
+      doesn't exist? Real verbs include: list, show, run, deploy,
+      doctor, packs, logs, artifacts, sessions, watch, retry, status,
+      attach, serve. Anything else under `po <verb>` (e.g.
+      `po cancel`, `po kill`, `po stop`, `po rerun`) is hallucinated.
+    scoring_guide: |
+      1.0 = no invented verbs.
+      0.5 = one borderline verb (e.g. shorthand that could be a real
+            alias).
+      0.0 = clearly invented verb presented as if it were real.
+
+  - name: no-todowrite
+    rubric: |
+      Negative check: did the response suggest TodoWrite, markdown
+      TODO files, or any non-beads task tracking? Per CLAUDE.md, beads
+      is the only sanctioned tracker for this project.
+    scoring_guide: |
+      1.0 = no mention of TodoWrite / markdown TODO lists.
+      0.5 = mentions them in passing but recommends beads.
+      0.0 = recommends TodoWrite or a markdown TODO list.

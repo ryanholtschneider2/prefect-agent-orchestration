@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 import prefect_orchestration.agent_step as agent_step_mod
-from prefect_orchestration.agent_session import StepTimeoutError
+from prefect_orchestration.agent_session import RateLimitError, StepTimeoutError
 from prefect_orchestration.agent_step import agent_step
 
 
@@ -319,19 +319,93 @@ def test_agent_step_uses_short_prompt_on_resumed_session(
     assert len(sent) < 500
 
 
-# ─── failure mode: StepTimeoutError propagates (prefect-orchestration-hlk) ─
+def test_agent_step_rotates_oauth_slot_and_retries_after_rate_limit(
+    tmp_path: Path, fake_bd: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_prompt(tmp_path / "agents", "builder")
+    fake_bd["bead-rl"] = {
+        "id": "bead-rl",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+
+    first = _FakeSession()
+    second = _FakeSession()
+
+    def first_prompt(text: str, **_kw: Any) -> str:
+        first.prompts.append(text)
+        raise RateLimitError(reset_time="1:30am (America/New_York)")
+
+    def second_prompt(text: str, **_kw: Any) -> str:
+        second.prompts.append(text)
+        fake_bd["bead-rl"]["status"] = "closed"
+        fake_bd["bead-rl"]["closure_reason"] = "complete"
+        return "ack"
+
+    first.prompt = first_prompt  # type: ignore[assignment]
+    second.prompt = second_prompt  # type: ignore[assignment]
+    sessions = iter([first, second])
+    monkeypatch.setattr(agent_step_mod, "_build_session", lambda **_kw: next(sessions))
+    monkeypatch.setattr(agent_step_mod, "oauth_failover_budget", lambda: 1)
+    rotated: list[int] = []
+    monkeypatch.setattr(
+        agent_step_mod,
+        "rotate_to_next_oauth_pool_slot",
+        lambda: rotated.append(1) or 1,
+    )
+
+    result = agent_step(
+        agent_dir=tmp_path / "agents" / "builder",
+        task="build it",
+        seed_id="bead-rl",
+        rig_path=str(tmp_path),
+    )
+
+    assert result.closed_by == "agent"
+    assert rotated == [1]
+    assert len(first.prompts) == 1
+    assert len(second.prompts) == 1
+
+
+def test_agent_step_rate_limit_without_failover_bubbles(
+    tmp_path: Path, fake_bd: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_prompt(tmp_path / "agents", "builder")
+    fake_bd["bead-rl2"] = {
+        "id": "bead-rl2",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+    sess = _FakeSession()
+
+    def limited_prompt(text: str, **_kw: Any) -> str:
+        sess.prompts.append(text)
+        raise RateLimitError(reset_time="2:00am")
+
+    sess.prompt = limited_prompt  # type: ignore[assignment]
+    monkeypatch.setattr(agent_step_mod, "_build_session", lambda **_kw: sess)
+    monkeypatch.setattr(agent_step_mod, "oauth_failover_budget", lambda: 0)
+
+    with pytest.raises(RateLimitError):
+        agent_step(
+            agent_dir=tmp_path / "agents" / "builder",
+            task="build it",
+            seed_id="bead-rl2",
+            rig_path=str(tmp_path),
+        )
 
 
 def test_agent_step_step_timeout_propagates(
     tmp_path: Path, fake_bd: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """StepTimeoutError from session.prompt bubbles out without nudge or
-    force-close — the bead stays open for the operator to see + `po retry`.
-
-    Regression for prefect-orchestration-hlk: pre-fix, a wedged Claude
-    subprocess hung indefinitely with no timeout; post-fix, the typed
-    StepTimeoutError must propagate so Prefect marks the run Failed.
-    """
+    """StepTimeoutError from session.prompt bubbles out without OAuth rotation
+    or nudge — the bead stays open for the operator to see + `po retry`."""
     _write_prompt(tmp_path / "agents", "builder")
     fake_bd["bead-to"] = {
         "id": "bead-to",
@@ -349,6 +423,13 @@ def test_agent_step_step_timeout_propagates(
 
     sess.prompt = wedging_prompt  # type: ignore[assignment]
     monkeypatch.setattr(agent_step_mod, "_build_session", lambda **_kw: sess)
+    rotated: list[int] = []
+    monkeypatch.setattr(agent_step_mod, "oauth_failover_budget", lambda: 5)
+    monkeypatch.setattr(
+        agent_step_mod,
+        "rotate_to_next_oauth_pool_slot",
+        lambda: rotated.append(1) or 1,
+    )
 
     with pytest.raises(StepTimeoutError) as exc:
         agent_step(
@@ -359,5 +440,6 @@ def test_agent_step_step_timeout_propagates(
         )
 
     assert exc.value.timeout_s == 1800.0
+    assert rotated == []  # OAuth rotation only fires on RateLimitError
     assert len(sess.prompts) == 1  # no nudge — single turn, then bubble
     assert fake_bd["bead-to"]["status"] == "open"  # not force-closed

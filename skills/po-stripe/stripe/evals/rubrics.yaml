@@ -1,0 +1,39 @@
+# Rubric criteria for the stripe skill. Each criterion becomes its own
+# pydantic-evals LLMJudge with the prompt below; cases reference these by
+# name in their `evaluators:` list.
+
+criteria:
+  - name: cli-first
+    rubric: |
+      Does the response use the `stripe` CLI (e.g. `stripe balance retrieve`,
+      `stripe charges create`, `stripe refunds create`) rather than the
+      Python SDK (`import stripe; stripe.Charge.create(...)`)?
+      Score 1.0 if CLI-only. 0.5 if mixed. 0.0 if SDK-only or no command shown.
+
+  - name: concrete-command
+    rubric: |
+      Does the response include a concrete, runnable shell command (not
+      pseudocode, not a description of what to run)? Score 1.0 if a copy-
+      pasteable command is present. 0.0 otherwise.
+
+  - name: idempotency-format
+    rubric: |
+      Does the response specify an idempotency key in the exact nanocorp
+      format `{issue_id}:{step_name}` — for this case `acme-42:charge-customer`?
+      Score 1.0 for an exact match (or trivially equivalent quoting).
+      0.5 if the format is conceptually right but slugs/values differ.
+      0.0 if no idempotency key, or wrong format.
+
+  - name: human-approval-gate
+    rubric: |
+      For charges over $500, this nanocorp REQUIRES a `bd human <issue-id>`
+      approval gate BEFORE the charge is issued. Does the response (a) call
+      out the >$500 rule and (b) show the `bd human` command being run
+      first? Score 1.0 if both. 0.5 if only one. 0.0 if neither.
+
+  - name: refund-via-charge
+    rubric: |
+      Does the response use `stripe refunds create --charge ch_...` (the
+      preferred audit-trail-friendly path), rather than reusing a
+      PaymentIntent or going via the dashboard? Score 1.0 for the canonical
+      command. 0.0 for any alternative.

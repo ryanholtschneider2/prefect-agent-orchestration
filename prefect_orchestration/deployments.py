@@ -15,10 +15,15 @@ group. The callable returns one `RunnerDeployment` (built via
 
 from __future__ import annotations
 
+import logging
 import os
+import tomllib
 from dataclasses import dataclass
 from importlib.metadata import entry_points
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -35,11 +40,135 @@ class LoadError:
     error: str
 
 
-def _iter_entry_points() -> list[Any]:
+def _iter_group_entry_points(group: str) -> list[Any]:
     try:
-        return list(entry_points(group="po.deployments"))
+        return list(entry_points(group=group))
     except TypeError:
-        return list(entry_points().get("po.deployments", []))  # type: ignore[attr-defined]
+        return list(entry_points().get(group, []))  # type: ignore[attr-defined]
+
+
+def _iter_entry_points() -> list[Any]:
+    return _iter_group_entry_points("po.deployments")
+
+
+def iter_formula_entry_points() -> list[Any]:
+    """Return all registered `po.formulas` entry points."""
+    return _iter_group_entry_points("po.formulas")
+
+
+def load_formula_flows(
+    *, skip_names: set[str] | frozenset[str] | None = None
+) -> tuple[dict[str, Any], list[LoadError]]:
+    """Load `po.formulas` callables keyed by entry-point name.
+
+    Returns `(flows_by_name, errors)`. A formula pack that fails to load is
+    reported as an error but does not abort the rest.
+    """
+    flows: dict[str, Any] = {}
+    errors: list[LoadError] = []
+    skipped = skip_names or set()
+    for ep in iter_formula_entry_points():
+        if ep.name in skipped:
+            continue
+        try:
+            flows[ep.name] = ep.load()
+        except Exception as exc:
+            errors.append(LoadError(pack=ep.name, error=f"load failed: {exc}"))
+    return flows, errors
+
+
+def build_cron_deployments_from_order_dir(
+    orders_dir: Path,
+    *,
+    tag_prefix: str,
+    default_timezone: str = "UTC",
+    work_pool_name: str = "po",
+    log: logging.Logger | None = None,
+) -> list[Any]:
+    """Build Prefect cron deployments from flat TOML files in `orders_dir`.
+
+    Schema:
+      cron = "<cron expr>"           # required
+      formula = "<po.formulas EP>"   # required
+      description = "..."            # optional
+      tags = ["a", "b"]              # optional; default: [tag_prefix, <formula>]
+      timezone = "UTC"               # optional; default: `default_timezone`
+      [params]                       # optional table -> parameters=
+      key = value
+    """
+    active_logger = log or logger
+    try:
+        from prefect.client.schemas.schedules import CronSchedule
+        from prefect.deployments.runner import EntrypointType
+    except Exception as exc:  # pragma: no cover - prefect missing == bigger problem
+        active_logger.warning("prefect unavailable; skipping deployments (%s)", exc)
+        return []
+
+    flows_by_name, load_errors = load_formula_flows()
+    for err in load_errors:
+        active_logger.warning("failed to load formula %r: %s", err.pack, err.error)
+
+    deployments: list[Any] = []
+    for toml_path in sorted(orders_dir.glob("*.toml")):
+        try:
+            with toml_path.open("rb") as fh:
+                spec = tomllib.load(fh)
+        except Exception as exc:
+            active_logger.warning("failed to parse %s: %s", toml_path.name, exc)
+            continue
+        cron = spec.get("cron")
+        formula_name = spec.get("formula")
+        if not cron or not formula_name:
+            active_logger.warning(
+                "%s missing required keys (cron, formula); skipping", toml_path.name
+            )
+            continue
+        flow_obj = flows_by_name.get(formula_name)
+        if flow_obj is None:
+            active_logger.warning(
+                "formula %r referenced by %s is not registered; skipping",
+                formula_name,
+                toml_path.name,
+            )
+            continue
+        params = spec.get("params") or {}
+        if not isinstance(params, dict):
+            active_logger.warning(
+                "%s [params] must be a table; got %r",
+                toml_path.name,
+                type(params).__name__,
+            )
+            continue
+        to_deployment = getattr(flow_obj, "to_deployment", None)
+        if not callable(to_deployment):
+            active_logger.warning(
+                "formula %r referenced by %s is not a Prefect flow; skipping",
+                formula_name,
+                toml_path.name,
+            )
+            continue
+        try:
+            deployments.append(
+                to_deployment(
+                    name=toml_path.stem,
+                    schedule=CronSchedule(
+                        cron=cron, timezone=spec.get("timezone", default_timezone)
+                    ),
+                    tags=spec.get("tags", [tag_prefix, formula_name]),
+                    description=spec.get(
+                        "description",
+                        f"{formula_name} cron deployment "
+                        f"({cron} {spec.get('timezone', default_timezone)})",
+                    ),
+                    parameters=params,
+                    work_pool_name=work_pool_name,
+                    entrypoint_type=EntrypointType.MODULE_PATH,
+                )
+            )
+        except Exception as exc:
+            active_logger.warning("to_deployment failed for %s: %s", toml_path.name, exc)
+            continue
+    return deployments
 
 
 def load_deployments() -> tuple[list[LoadedDeployment], list[LoadError]]:

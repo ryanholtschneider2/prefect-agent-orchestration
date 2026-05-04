@@ -7,7 +7,6 @@ Skipped automatically if `bd` is not installed.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -94,9 +93,7 @@ def test_critic_to_builder_handoff_demo(beads_repo: Path) -> None:
     Critic sends "fix X" to builder. On the next turn, builder reads the
     inbox and sees the message.
     """
-    critic_sent = mail_mod.send(
-        "builder", "fix X", "see line 42", from_agent="critic"
-    )
+    critic_sent = mail_mod.send("builder", "fix X", "see line 42", from_agent="critic")
 
     # Fresh "turn" — builder looks at inbox.
     builder_inbox = mail_mod.inbox("builder")

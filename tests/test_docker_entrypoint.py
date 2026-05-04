@@ -178,6 +178,42 @@ def test_stub_backend_skips_auth_requirement(home: Path) -> None:
     assert "PO_AUTH_MODE=apikey" in res.stdout
 
 
+def test_token_file_sets_claude_code_oauth_token(home: Path) -> None:
+    token_file = home / "claude_oauth.txt"
+    token_file.write_text("# comment\ntok-a\n\ntok-b\n")
+    res = _run(
+        {
+            "PO_CLAUDE_OAUTH_TOKEN_FILE": str(token_file),
+            "PO_BACKEND": "cli",
+        },
+        home,
+        "/usr/bin/env",
+    )
+    assert res.returncode == 0, res.stderr
+    assert "PO_AUTH_MODE=oauth" in res.stdout
+    assert "PO_AUTH_SOURCE=token-file" in res.stdout
+    assert "CLAUDE_CODE_OAUTH_TOKEN=tok-a" in res.stdout
+    assert "PO_CLAUDE_OAUTH_TOKEN_INDEX=0" in res.stdout
+    assert "PO_CLAUDE_OAUTH_TOKEN_COUNT=2" in res.stdout
+
+
+def test_token_file_index_override(home: Path) -> None:
+    token_file = home / "claude_oauth.txt"
+    token_file.write_text("tok-a\ntok-b\ntok-c\n")
+    res = _run_with_hostname(
+        {
+            "PO_CLAUDE_OAUTH_TOKEN_FILE": str(token_file),
+            "PO_CLAUDE_OAUTH_TOKEN_INDEX": "2",
+            "PO_BACKEND": "cli",
+        },
+        home,
+        hostname="worker-99",
+    )
+    assert res.returncode == 0, res.stderr
+    assert "CLAUDE_CODE_OAUTH_TOKEN=tok-c" in res.stdout
+    assert "PO_CLAUDE_OAUTH_TOKEN_INDEX=2" in res.stdout
+
+
 def test_entrypoint_does_not_set_x() -> None:
     """Guardrail: entrypoint must never enable shell trace mode (`set -x`)
     because it would echo CLAUDE_CREDENTIALS / ANTHROPIC_API_KEY to logs."""

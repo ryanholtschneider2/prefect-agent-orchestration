@@ -194,9 +194,7 @@ def test_load_role_sessions_unioned(tmp_path, monkeypatch):
         )
     )
 
-    out = sessions.load_role_sessions(
-        issue_run, seed_id="seed", seed_run_dir=seed_run
-    )
+    out = sessions.load_role_sessions(issue_run, seed_id="seed", seed_run_dir=seed_run)
     # Prefixed shape — what build_rows/lookup_session consume.
     assert out["session_only_legacy"] == "L"
     assert out["session_only_json"] == "J"
@@ -212,9 +210,7 @@ def test_load_role_sessions_returns_empty_when_all_tiers_empty(tmp_path, monkeyp
     issue_run.mkdir()
     seed_run = tmp_path / "seed"
     seed_run.mkdir()
-    out = sessions.load_role_sessions(
-        issue_run, seed_id="seed", seed_run_dir=seed_run
-    )
+    out = sessions.load_role_sessions(issue_run, seed_id="seed", seed_run_dir=seed_run)
     assert out == {}
 
 

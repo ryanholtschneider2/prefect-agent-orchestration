@@ -34,9 +34,7 @@ class _FakeBd:
         self.shows: dict[str, Any] = shows or {}
         self.updates: list[list[str]] = []
 
-    def __call__(
-        self, cmd: list[str], **kw: Any
-    ) -> subprocess.CompletedProcess:
+    def __call__(self, cmd: list[str], **kw: Any) -> subprocess.CompletedProcess:
         if cmd[:2] == ["bd", "show"]:
             issue = cmd[2]
             payload = self.shows.get(issue)
@@ -88,9 +86,7 @@ def test_get_returns_none_when_all_tiers_empty(
     assert store.get("builder") is None
 
 
-def test_get_reads_legacy_when_only_legacy_present(
-    no_bd: None, tmp_path: Path
-) -> None:
+def test_get_reads_legacy_when_only_legacy_present(no_bd: None, tmp_path: Path) -> None:
     """Migration shim hit: legacy metadata.json read when no other tier has the key."""
     legacy_run = tmp_path / "issue1"
     legacy_run.mkdir()
@@ -125,9 +121,7 @@ def test_json_overrides_legacy(no_bd: None, tmp_path: Path) -> None:
     assert store.get("builder") == "J"
 
 
-def test_beads_overrides_json_and_legacy(
-    fake_bd: _FakeBd, tmp_path: Path
-) -> None:
+def test_beads_overrides_json_and_legacy(fake_bd: _FakeBd, tmp_path: Path) -> None:
     """BeadsStore tier wins outright."""
     legacy = tmp_path / "issue1"
     legacy.mkdir()
@@ -149,9 +143,7 @@ def test_beads_overrides_json_and_legacy(
 # ─────────────────────── set semantics ───────────────────────────────
 
 
-def test_set_writes_to_beads_when_seed_exists(
-    fake_bd: _FakeBd, tmp_path: Path
-) -> None:
+def test_set_writes_to_beads_when_seed_exists(fake_bd: _FakeBd, tmp_path: Path) -> None:
     fake_bd.shows = {"seed": {"id": "seed", "metadata": {}}}
     store = RoleSessionStore(seed_id="seed", seed_run_dir=tmp_path / "seed")
     store.set("builder", "uuid-1")
@@ -211,9 +203,7 @@ def test_set_after_legacy_hit_does_not_mutate_legacy_file(
 # ─────────────────────── all() unioning ──────────────────────────────
 
 
-def test_all_unions_with_beads_winning(
-    fake_bd: _FakeBd, tmp_path: Path
-) -> None:
+def test_all_unions_with_beads_winning(fake_bd: _FakeBd, tmp_path: Path) -> None:
     legacy = tmp_path / "issue1"
     legacy.mkdir()
     (legacy / "metadata.json").write_text(

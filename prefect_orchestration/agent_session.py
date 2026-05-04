@@ -40,16 +40,16 @@ logger = logging.getLogger(__name__)
 MAX_INBOX_MESSAGES = 20
 
 # Default wall-clock cap on a single Claude turn before we declare the
-# session wedged and bail. 60 min is generous enough for deep cogitation,
-# long plans, ralph loops, and verifier passes (which routinely run
-# 15-30 min on substantive changes) — but short enough that a
-# rate-limited / hung session surfaces as an error instead of polling the
-# sentinel forever (sav.1: storybook flow hung 12+ hours after Claude hit
-# Anthropic's rate limit at 02:47Z because timeout_s defaulted to None).
-# Per-step budgets (triage=5min, baseline=10min, plan=15min, build=30min,
-# review=20min, docs=10min, learn=5min) would be tighter; tracked as a
-# follow-up issue. For now this single budget is the safety net.
-DEFAULT_AGENT_TIMEOUT_S = 3600.0
+# session wedged and bail. Bumped from 60 → 90 min after observing that
+# get-data agents (and other research-heavy roles in polymer-dev) were
+# productively working right up against the 60 min wall — JSONL
+# transcripts showed active tool calls within seconds of the kill,
+# meaning the budget was the limiter, not a wedge. 90 min keeps the
+# wedge safety net (sav.1) while giving long-running research roles
+# real headroom. Per-step budgets (triage=5min, baseline=10min,
+# plan=15min, build=30min, review=20min, docs=10min, learn=5min) would
+# be tighter; tracked as a follow-up issue.
+DEFAULT_AGENT_TIMEOUT_S = 5400.0
 
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 

@@ -15,7 +15,9 @@ import pytest
 from prefect_orchestration import skill_evals_doctor as sed
 
 
-def _write_report(reports_dir: Path, *, n_passed: int, n_cases: int, finished_at: str) -> None:
+def _write_report(
+    reports_dir: Path, *, n_passed: int, n_cases: int, finished_at: str
+) -> None:
     reports_dir.mkdir(parents=True, exist_ok=True)
     (reports_dir / "latest.json").write_text(
         json.dumps(

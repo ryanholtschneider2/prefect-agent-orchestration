@@ -27,15 +27,53 @@ which roles they ship. See `discover_agent_dir` for resolution rules.
 
 from __future__ import annotations
 
+import datetime as _dt
+import re as _re
 import shutil
 import subprocess
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from prefect import flow, get_run_logger
 
-from prefect_orchestration.agent_step import AgentStepResult, agent_step
+from prefect_orchestration.agent_session import RateLimitError
+from prefect_orchestration.agent_step import agent_step
+
+
+_RESET_RE = _re.compile(
+    r"(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>am|pm)\s*\((?P<tz>[A-Za-z_]+/[A-Za-z_]+)\)",
+    _re.IGNORECASE,
+)
+
+
+def _compute_retry_time(reset_str: str | None, *, buffer_minutes: int = 2) -> _dt.datetime | None:
+    """Parse Claude's rate-limit reset string to a tz-aware UTC datetime.
+
+    `reset_str` looks like ``"10:50am (America/New_York)"``. Returns
+    ``None`` when the string is missing / unparseable so callers can
+    fall through to "fail loud".
+    """
+    if not reset_str:
+        return None
+    m = _RESET_RE.search(reset_str)
+    if not m:
+        return None
+    try:
+        tz = ZoneInfo(m.group("tz"))
+    except Exception:  # noqa: BLE001
+        return None
+    hour = int(m.group("hour")) % 12
+    if m.group("ampm").lower() == "pm":
+        hour += 12
+    minute = int(m.group("minute"))
+    now_local = _dt.datetime.now(tz)
+    candidate = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now_local:
+        candidate += _dt.timedelta(days=1)
+    candidate += _dt.timedelta(minutes=buffer_minutes)
+    return candidate.astimezone(_dt.timezone.utc)
 
 
 def discover_agent_dir(role: str) -> Path:
@@ -109,7 +147,10 @@ def _read_meta(issue_id: str, key: str, rig_path: str) -> str | None:
         return None
     proc = subprocess.run(
         ["bd", "show", issue_id, "--json"],
-        capture_output=True, text=True, check=False, cwd=str(rig_path),
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(rig_path),
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
@@ -155,22 +196,85 @@ def agent_step_flow(
             f"agent-step formula: bead {issue_id} has no agent. Either "
             "pass --agent=<role> or set bd metadata `po.agent=<role>`."
         )
-    keywords = tuple(
-        k.strip() for k in verdict_keywords.split(",") if k.strip()
-    )
+    keywords = tuple(k.strip() for k in verdict_keywords.split(",") if k.strip())
     agent_dir = discover_agent_dir(role)
-    logger.info(
-        "agent-step: bead=%s role=%s agent_dir=%s", issue_id, role, agent_dir
-    )
+    logger.info("agent-step: bead=%s role=%s agent_dir=%s", issue_id, role, agent_dir)
 
-    result = agent_step(
-        agent_dir=agent_dir,
-        task=None,  # bead description IS the task spec
-        seed_id=issue_id,
-        rig_path=rig_path,
-        verdict_keywords=keywords,
-        dry_run=dry_run,
-    )
+    try:
+        result = agent_step(
+            agent_dir=agent_dir,
+            task=None,  # bead description IS the task spec
+            seed_id=issue_id,
+            rig_path=rig_path,
+            verdict_keywords=keywords,
+            dry_run=dry_run,
+        )
+    except RateLimitError as exc:
+        # OAuth pool exhausted on a hard rate-limit. Reschedule THIS
+        # work as a new flow-run on the agent-step deployment for after
+        # Claude's reset time, then fail loudly so this run terminates.
+        # The bead stays open; the new run picks it up when quota is
+        # back. Without this, every fire during a depleted 5h window
+        # marks Failed and operators have to `po resume` each one.
+        retry_at = _compute_retry_time(exc.reset_time)
+        if retry_at is None:
+            logger.error(
+                "agent-step: bead=%s rate-limit hit but reset_time=%r could not "
+                "be parsed; not rescheduling",
+                issue_id,
+                exc.reset_time,
+            )
+            raise
+        try:
+            import asyncio
+
+            from prefect.client.orchestration import get_client
+
+            from prefect_orchestration import scheduling as _scheduling
+
+            params = {
+                "issue_id": issue_id,
+                "rig": rig,
+                "rig_path": rig_path,
+                "agent": agent,
+                "verdict_keywords": verdict_keywords,
+                "parent_bead": parent_bead,
+                "dry_run": dry_run,
+            }
+
+            async def _resched() -> tuple[Any, str]:
+                async with get_client() as client:
+                    fr, full_name, _warn = await _scheduling.submit_scheduled_run(
+                        client=client,
+                        formula="agent-step",
+                        parameters=params,
+                        scheduled_time=retry_at,
+                        issue_id=issue_id,
+                    )
+                return fr, full_name
+
+            fr, full_name = asyncio.run(_resched())
+            logger.warning(
+                "agent-step: bead=%s rate-limit (resets %s); rescheduled as "
+                "%s @ %s [new run id %s]",
+                issue_id,
+                exc.reset_time,
+                full_name,
+                retry_at.isoformat(),
+                fr.id,
+            )
+            raise RuntimeError(
+                f"rate-limit, rescheduled to {retry_at.isoformat()} (new run {fr.id})"
+            ) from exc
+        except RateLimitError:
+            raise
+        except Exception as resched_exc:  # noqa: BLE001
+            logger.error(
+                "agent-step: bead=%s rate-limit hit AND reschedule failed: %s",
+                issue_id,
+                resched_exc,
+            )
+            raise exc
 
     # Convert dataclass to dict for Prefect's serialisation.
     return {

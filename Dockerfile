@@ -15,7 +15,7 @@
 #       -f Dockerfile.pack .
 #
 # To bake in a sibling-repo pack at base-build time (no overlay needed):
-#   docker build --build-context pack=../software-dev/po-formulas \
+#   docker build --build-context pack=packs/po-formulas-software-dev \
 #                -t po-worker:dev .
 #
 # Auth: workers expect ANTHROPIC_API_KEY at runtime. The entrypoint
@@ -27,7 +27,7 @@ ARG BD_VERSION=1.0.3
 # ----------------------------------------------------------------- pack
 # Default stage so `COPY --from=pack` always resolves. Users supply a real
 # pack source dir by overriding this stage at build time:
-#   docker build --build-context pack=../software-dev/po-formulas …
+#   docker build --build-context pack=packs/po-formulas-software-dev …
 # When unset, the runtime stage detects the empty pack and installs core
 # only.
 FROM scratch AS pack

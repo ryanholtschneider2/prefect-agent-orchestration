@@ -15,7 +15,6 @@ from typing import Any
 
 import pytest
 
-from prefect_orchestration import watch as _watch
 from prefect_orchestration.watch import (
     Event,
     REPLAY_SEPARATOR,
@@ -244,11 +243,7 @@ def _make_run_watch(
 ) -> tuple[list[str], list[str]]:
     lines: list[str] = []
     warns: list[str] = []
-    client = (
-        FakeClient(flow_run, task_scripts or [])
-        if flow_run is not None
-        else None
-    )
+    client = FakeClient(flow_run, task_scripts or []) if flow_run is not None else None
 
     async def factory() -> Any:
         return client

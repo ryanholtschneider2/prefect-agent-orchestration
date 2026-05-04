@@ -49,10 +49,15 @@ def _patch_wait(
 
 
 def test_wait_exits_zero_when_all_closed_cleanly(monkeypatch, runner):
-    _patch_wait(monkeypatch, rows_per_call=[
-        {"a": {"status": "closed", "close_reason": "po simple-mode complete"},
-         "b": {"status": "closed", "close_reason": "no regression: 763 passed"}},
-    ])
+    _patch_wait(
+        monkeypatch,
+        rows_per_call=[
+            {
+                "a": {"status": "closed", "close_reason": "po simple-mode complete"},
+                "b": {"status": "closed", "close_reason": "no regression: 763 passed"},
+            },
+        ],
+    )
     result = runner.invoke(cli.app, ["wait", "a", "b", "--poll", "1", "--quiet"])
     assert result.exit_code == 0, result.output
 
@@ -61,11 +66,18 @@ def test_wait_exits_zero_when_all_closed_cleanly(monkeypatch, runner):
 
 
 def test_wait_exits_one_on_failure_coded_reason(monkeypatch, runner):
-    _patch_wait(monkeypatch, rows_per_call=[
-        {"a": {"status": "closed", "close_reason": "po simple-mode complete"},
-         "b": {"status": "closed",
-               "close_reason": "cap-exhausted: too many critic iters"}},
-    ])
+    _patch_wait(
+        monkeypatch,
+        rows_per_call=[
+            {
+                "a": {"status": "closed", "close_reason": "po simple-mode complete"},
+                "b": {
+                    "status": "closed",
+                    "close_reason": "cap-exhausted: too many critic iters",
+                },
+            },
+        ],
+    )
     result = runner.invoke(cli.app, ["wait", "a", "b", "--poll", "1", "--quiet"])
     assert result.exit_code == 1, result.output
     assert "failure-coded" in result.output or "failure-coded" in (result.stderr or "")
@@ -75,9 +87,12 @@ def test_wait_failure_marker_matches_prefix(monkeypatch, runner):
     """Verdict keywords like `rejected:` / `failed:` are matched as
     prefixes (after lstrip), not anywhere — keeps "no regression:"
     from false-firing on the `regression:` failure marker."""
-    _patch_wait(monkeypatch, rows_per_call=[
-        {"a": {"status": "closed", "close_reason": "rejected: ACs not met"}},
-    ])
+    _patch_wait(
+        monkeypatch,
+        rows_per_call=[
+            {"a": {"status": "closed", "close_reason": "rejected: ACs not met"}},
+        ],
+    )
     result = runner.invoke(cli.app, ["wait", "a", "--poll", "1", "--quiet"])
     assert result.exit_code == 1, result.output
 
@@ -86,9 +101,12 @@ def test_wait_no_regression_is_success(monkeypatch, runner):
     """Regression-gate's `no regression:` close should NOT match the
     failure-prefix `regression:`. Regression bug we caught: the original
     matcher used substring containment."""
-    _patch_wait(monkeypatch, rows_per_call=[
-        {"a": {"status": "closed", "close_reason": "no regression: 763 passed"}},
-    ])
+    _patch_wait(
+        monkeypatch,
+        rows_per_call=[
+            {"a": {"status": "closed", "close_reason": "no regression: 763 passed"}},
+        ],
+    )
     result = runner.invoke(cli.app, ["wait", "a", "--poll", "1", "--quiet"])
     assert result.exit_code == 0, result.output
 
@@ -98,9 +116,12 @@ def test_wait_no_regression_is_success(monkeypatch, runner):
 
 def test_wait_exits_two_on_timeout(monkeypatch, runner):
     """Issue stays open across all polls → timeout fires."""
-    _patch_wait(monkeypatch, rows_per_call=[
-        {"a": {"status": "open", "close_reason": ""}},
-    ])
+    _patch_wait(
+        monkeypatch,
+        rows_per_call=[
+            {"a": {"status": "open", "close_reason": ""}},
+        ],
+    )
     result = runner.invoke(
         cli.app, ["wait", "a", "--timeout", "1", "--poll", "1", "--quiet"]
     )
@@ -128,10 +149,15 @@ def test_wait_exits_three_when_id_not_found(monkeypatch, runner):
 def test_wait_any_returns_when_first_closes(monkeypatch, runner):
     """First issue closes on tick 0; second is still open. `--any`
     should return immediately with exit 0."""
-    _patch_wait(monkeypatch, rows_per_call=[
-        {"a": {"status": "closed", "close_reason": "po simple-mode complete"},
-         "b": {"status": "open", "close_reason": ""}},
-    ])
+    _patch_wait(
+        monkeypatch,
+        rows_per_call=[
+            {
+                "a": {"status": "closed", "close_reason": "po simple-mode complete"},
+                "b": {"status": "open", "close_reason": ""},
+            },
+        ],
+    )
     result = runner.invoke(
         cli.app, ["wait", "a", "b", "--any", "--poll", "1", "--quiet"]
     )

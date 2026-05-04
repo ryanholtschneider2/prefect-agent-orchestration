@@ -274,8 +274,6 @@ def test_resume_with_at_schedules(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(resume, "_schedule_resume", fake_schedule)
 
-    import anyio
-
     # anyio.run can't be monkeypatched cleanly, so we patch _schedule_resume
     # and let the real anyio.run call it.
     res = resume.resume_issue("iss-6", force=True, when="2h")

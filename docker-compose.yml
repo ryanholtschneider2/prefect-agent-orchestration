@@ -39,7 +39,7 @@ services:
         # picks up `additional_contexts`. For plain `docker compose build`
         # users with a pack repo, pass `--build-context pack=…` directly.
         # Default points at the sibling po-formulas repo when present.
-        pack: ../software-dev/po-formulas
+        pack: packs/po-formulas-software-dev
         # User-global Claude context (CLAUDE.md, prompts/, skills/, commands/,
         # sanitized settings.json). Populated by scripts/sync-claude-context.sh.
         # Defaults to the in-tree ./claude-context/ which is `.gitkeep`-only
@@ -81,7 +81,7 @@ services:
       context: .
       dockerfile: Dockerfile
       additional_contexts:
-        pack: ../software-dev/po-formulas
+        pack: packs/po-formulas-software-dev
         claude-context: ./claude-context
     depends_on:
       prefect-server:

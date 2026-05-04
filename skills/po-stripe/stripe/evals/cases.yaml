@@ -1,0 +1,41 @@
+# Hello-world eval suite for the `stripe` skill.
+#
+# Run:
+#   po run skill-evals --pack po-stripe --skill stripe --dry-run
+#   po run skill-evals --pack po-stripe --skill stripe                  # real judge
+#   po run skill-evals --pack po-stripe --skill stripe --tier smoke     # subset
+#
+# Each case is a prompt sent to a Claude session with SKILL.md as context;
+# the model's reply is judged per criterion in rubrics.yaml.
+
+cases:
+  - name: cli-over-sdk
+    tier: smoke
+    prompt: |
+      Show me the command to fetch the current Stripe account balance in
+      this nanocorp. Just the command — no explanation.
+    evaluators: [cli-first, concrete-command]
+
+  - name: idempotency-key-format
+    tier: smoke
+    prompt: |
+      I'm writing a step in beads issue `acme-42` called `charge-customer`
+      that creates a $99 charge. What --idempotency-key value should I
+      pass?
+    evaluators: [idempotency-format]
+
+  - name: human-approval-threshold
+    tier: 1
+    prompt: |
+      I need to charge a customer $750 for an annual subscription. Walk
+      me through the exact steps in this nanocorp's process.
+    evaluators: [human-approval-gate, cli-first]
+    pass_threshold: 0.7
+    tier: regression
+
+  - name: refund-via-charge-id
+    tier: 1
+    prompt: |
+      Refund charge ch_3PqXY2... in full. What's the canonical command?
+    evaluators: [refund-via-charge, cli-first]
+    tier: regression

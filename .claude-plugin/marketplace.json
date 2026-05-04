@@ -1,0 +1,13 @@
+{
+  "name": "prefect-orchestration",
+  "owner": {
+    "name": "Ryan"
+  },
+  "plugins": [
+    {
+      "name": "po",
+      "source": "./",
+      "description": "Prefect Orchestration — dispatch beads issues and epics for autonomous implementation via the po CLI. Actor-critic pipeline orchestrated by Prefect with lurkable tmux agent sessions."
+    }
+  ]
+}

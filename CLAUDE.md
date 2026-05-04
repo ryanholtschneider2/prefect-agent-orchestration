@@ -87,7 +87,7 @@ leave a handoff note.
 ## Working on this repo
 
 This repo is the **core** (`prefect-orchestration` package + `po` CLI).
-Formulas live in sibling packs (e.g. `../software-dev/po-formulas/`).
+Formulas live in sibling packs (e.g. `packs/po-formulas-software-dev/`).
 
 ```bash
 uv sync                                     # install + dev deps
@@ -702,7 +702,7 @@ Python second).
 - **Do** use the `po.deployments` entry-point group for any new
   deployment (`register()` returning `RunnerDeployment`s).
 - **Do** land pack-contrib code in the pack's repo
-  (`../software-dev/po-formulas/po_formulas/`), not in the caller's
+  (`packs/po-formulas-software-dev/po_formulas/`), not in the caller's
   rig-path — see issue `prefect-orchestration-pw4`.
 
 ## Prompt layout (per-pack)
@@ -756,7 +756,7 @@ Install both editable for development — use `po packs install --editable`
 # First time: bootstrap core from PyPI or an editable path, then add
 # the pack(s) you're working on:
 po packs install --editable /path/to/prefect-orchestration
-po packs install --editable /path/to/software-dev/po-formulas
+po packs install --editable /path/to/prefect-orchestration/packs/po-formulas-software-dev
 ```
 
 Run `po packs update` any time a pack's `pyproject.toml` entry points

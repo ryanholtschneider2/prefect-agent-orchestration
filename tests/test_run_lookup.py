@@ -33,7 +33,9 @@ def _fake_bd_show_cwd_required(metadata: dict, expected_cwd: str):
                 cmd, 0, stdout=json.dumps(payload), stderr=""
             )
         return subprocess.CompletedProcess(
-            cmd, 1, stdout="",
+            cmd,
+            1,
+            stdout="",
             stderr=f"Error fetching {cmd[2]}: no issue found matching {cmd[2]!r}",
         )
 
@@ -133,14 +135,17 @@ def test_resolve_run_dir_cross_rig_via_prefect(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_lookup.shutil, "which", lambda _: "/usr/bin/bd")
     monkeypatch.setattr(
-        run_lookup.subprocess, "run",
+        run_lookup.subprocess,
+        "run",
         _fake_bd_show_cwd_required(
             {"po.rig_path": str(rig_a), "po.run_dir": str(run_dir)},
             expected_cwd=str(rig_a),
         ),
     )
     monkeypatch.setattr(
-        run_lookup, "lookup_prefect_run", lambda _: (rig_a, "rig-4lp"),
+        run_lookup,
+        "lookup_prefect_run",
+        lambda _: (rig_a, "rig-4lp"),
     )
 
     loc = run_lookup.resolve_run_dir("rig-4lp")
@@ -149,7 +154,8 @@ def test_resolve_run_dir_cross_rig_via_prefect(tmp_path, monkeypatch):
 
 
 def test_resolve_run_dir_uuid_prefix_resolves_to_canonical_id(
-    tmp_path, monkeypatch,
+    tmp_path,
+    monkeypatch,
 ):
     """User pastes the RUN UUID prefix from `po status` → Prefect lookup
     returns `(rig_path, canonical_bead_id)` and we run `bd show
@@ -164,14 +170,17 @@ def test_resolve_run_dir_uuid_prefix_resolves_to_canonical_id(
     # bd only succeeds for the canonical bead id `rig-4lp` from the
     # right rig. The UUID prefix `60f43185` is never a valid bead.
     monkeypatch.setattr(
-        run_lookup.subprocess, "run",
+        run_lookup.subprocess,
+        "run",
         _fake_bd_show_cwd_required(
             {"po.rig_path": str(rig_a), "po.run_dir": str(run_dir)},
             expected_cwd=str(rig_a),
         ),
     )
     monkeypatch.setattr(
-        run_lookup, "lookup_prefect_run", lambda _: (rig_a, "rig-4lp"),
+        run_lookup,
+        "lookup_prefect_run",
+        lambda _: (rig_a, "rig-4lp"),
     )
 
     loc = run_lookup.resolve_run_dir("60f43185")
@@ -183,7 +192,8 @@ def test_resolve_run_dir_raises_when_prefect_also_misses(tmp_path, monkeypatch):
     bubbles up; user sees the bd-show stderr."""
     monkeypatch.setattr(run_lookup.shutil, "which", lambda _: "/usr/bin/bd")
     monkeypatch.setattr(
-        run_lookup.subprocess, "run",
+        run_lookup.subprocess,
+        "run",
         _fake_bd_show_cwd_required(
             {"po.rig_path": str(tmp_path), "po.run_dir": str(tmp_path)},
             expected_cwd=str(tmp_path / "definitely-not-cwd"),

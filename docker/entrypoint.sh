@@ -23,6 +23,10 @@
 set -euo pipefail
 
 mkdir -p "$HOME/.claude"
+PO_AUTH_POOL_INDEX=""
+PO_AUTH_POOL_SIZE=""
+PO_SELECTED_CLAUDE_OAUTH_TOKEN_INDEX=""
+PO_SELECTED_CLAUDE_OAUTH_TOKEN_COUNT=""
 
 # ----------------------------------------------- Multi-account pool resolution
 # CLAUDE_CREDENTIALS_POOL / ANTHROPIC_API_KEY_POOL — JSON arrays. When the
@@ -30,9 +34,6 @@ mkdir -p "$HOME/.claude"
 # based on HOSTNAME so each replica routes to the same account across restarts.
 # Override with PO_CREDENTIALS_POOL_INDEX / PO_API_KEY_POOL_INDEX (test hook).
 # Single-account envs always win — the pool only fills in when they're absent.
-PO_AUTH_POOL_INDEX=""
-PO_AUTH_POOL_SIZE=""
-
 # Hash a string deterministically into [0, n). Uses sha256 (portable across
 # alpine/ubuntu) and the first 8 hex chars (32-bit). For StatefulSet-style
 # ordinal hostnames (`worker-7`), short-circuit to `7 % n` so spread is exact
@@ -50,6 +51,36 @@ _po_pick_index() {
   echo $(( idx % size ))
 }
 
+if [[ -n "${PO_CLAUDE_OAUTH_TOKEN_FILE:-}" && -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+  if [[ ! -f "${PO_CLAUDE_OAUTH_TOKEN_FILE}" ]]; then
+    echo "error: PO_CLAUDE_OAUTH_TOKEN_FILE does not exist: ${PO_CLAUDE_OAUTH_TOKEN_FILE}" >&2
+    exit 64
+  fi
+  if mapfile -t po_oauth_tokens < <(grep -v '^[[:space:]]*#' "${PO_CLAUDE_OAUTH_TOKEN_FILE}" | sed '/^[[:space:]]*$/d'); then
+    token_count="${#po_oauth_tokens[@]}"
+  else
+    token_count=0
+  fi
+  if (( token_count < 1 )); then
+    echo "error: PO_CLAUDE_OAUTH_TOKEN_FILE must contain at least one non-empty token line" >&2
+    exit 64
+  fi
+  if [[ -n "${PO_CLAUDE_OAUTH_TOKEN_INDEX:-}" ]]; then
+    token_idx="${PO_CLAUDE_OAUTH_TOKEN_INDEX}"
+  else
+    token_idx=$(_po_pick_index "${HOSTNAME:-localhost}" "$token_count")
+  fi
+  if (( token_idx < 0 || token_idx >= token_count )); then
+    echo "error: PO_CLAUDE_OAUTH_TOKEN_INDEX=$token_idx out of range [0,$token_count)" >&2
+    exit 64
+  fi
+  export CLAUDE_CODE_OAUTH_TOKEN="${po_oauth_tokens[$token_idx]}"
+  PO_SELECTED_CLAUDE_OAUTH_TOKEN_INDEX="$token_idx"
+  PO_SELECTED_CLAUDE_OAUTH_TOKEN_COUNT="$token_count"
+  PO_AUTH_POOL_INDEX="$token_idx"
+  PO_AUTH_POOL_SIZE="$token_count"
+fi
+
 if [[ -z "${CLAUDE_CREDENTIALS:-}" && -n "${CLAUDE_CREDENTIALS_POOL:-}" ]]; then
   if ! pool_size=$(printf '%s' "$CLAUDE_CREDENTIALS_POOL" | jq 'length' 2>/dev/null) \
        || [[ -z "$pool_size" || "$pool_size" -lt 1 ]]; then
@@ -65,7 +96,6 @@ if [[ -z "${CLAUDE_CREDENTIALS:-}" && -n "${CLAUDE_CREDENTIALS_POOL:-}" ]]; then
     echo "error: PO_CREDENTIALS_POOL_INDEX=$pool_idx out of range [0,$pool_size)" >&2
     exit 64
   fi
-  # Extract the chosen slot — raw JSON object, not a quoted string.
   CLAUDE_CREDENTIALS=$(printf '%s' "$CLAUDE_CREDENTIALS_POOL" | jq -c ".[$pool_idx]")
   export CLAUDE_CREDENTIALS
   PO_AUTH_POOL_INDEX="$pool_idx"
@@ -102,12 +132,22 @@ unset ANTHROPIC_API_KEY_POOL || true
 # ---------------------------------------------------------------- OAuth
 # Precedence (deliberately on-disk-first so PVC-persisted refreshes are
 # not clobbered by a stale Secret on every pod restart — see tyf.3):
-#   1. existing $HOME/.claude/.credentials.json (PVC mount, bind-mount)
-#   2. CLAUDE_CREDENTIALS env (Secret seed on first boot)
-#   3. ANTHROPIC_API_KEY env (production fallback)
+#   1. CLAUDE_CODE_OAUTH_TOKEN env / token file
+#   2. existing $HOME/.claude/.credentials.json (PVC mount, bind-mount)
+#   3. CLAUDE_CREDENTIALS env (Secret seed on first boot)
+#   4. ANTHROPIC_API_KEY env (production fallback)
 PO_AUTH_MODE="apikey"
 PO_AUTH_SOURCE=""
-if [[ -s "$HOME/.claude/.credentials.json" ]]; then
+if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
+  unset CLAUDE_CREDENTIALS || true
+  unset ANTHROPIC_API_KEY || true
+  PO_AUTH_MODE="oauth"
+  if [[ -n "${PO_CLAUDE_OAUTH_TOKEN_FILE:-}" ]]; then
+    PO_AUTH_SOURCE="token-file"
+  else
+    PO_AUTH_SOURCE="oauth-token"
+  fi
+elif [[ -s "$HOME/.claude/.credentials.json" ]]; then
   # On-disk wins. Either docker-compose bind-mount, k8s PVC at
   # $HOME/.claude/, or a previously-materialized file that the Claude
   # CLI has since refreshed in place. We must NOT overwrite from
@@ -148,7 +188,7 @@ if [[ "$PO_AUTH_MODE" == "apikey" ]]; then
     *)
       if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
         echo "error: no Claude auth configured (PO_BACKEND=${PO_BACKEND:-cli})." >&2
-        echo "       set CLAUDE_CREDENTIALS (OAuth, preferred for dev) or" >&2
+        echo "       set PO_CLAUDE_OAUTH_TOKEN_FILE / CLAUDE_CODE_OAUTH_TOKEN / CLAUDE_CREDENTIALS or" >&2
         echo "       ANTHROPIC_API_KEY (API key, production fallback)." >&2
         echo "       set PO_BACKEND=stub to run without a real Claude key." >&2
         exit 64
@@ -239,6 +279,10 @@ export PO_AUTH_SOURCE
 if [[ -n "$PO_AUTH_POOL_INDEX" ]]; then
   export PO_AUTH_POOL_INDEX
   export PO_AUTH_POOL_SIZE
+fi
+if [[ -n "$PO_SELECTED_CLAUDE_OAUTH_TOKEN_INDEX" ]]; then
+  export PO_CLAUDE_OAUTH_TOKEN_INDEX="$PO_SELECTED_CLAUDE_OAUTH_TOKEN_INDEX"
+  export PO_CLAUDE_OAUTH_TOKEN_COUNT="$PO_SELECTED_CLAUDE_OAUTH_TOKEN_COUNT"
 fi
 
 exec "$@"

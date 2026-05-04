@@ -47,7 +47,7 @@ Walks through:
 1. Spin up a single-node kind cluster + `registry:2` container at
    `127.0.0.1:5001`, wired together via containerd mirror config.
 2. `docker build` `po-worker:smoke` (with `software-dev` pack baked
-   in if `../software-dev/po-formulas` exists) and push it to the
+   in if `packs/po-formulas-software-dev` exists) and push it to the
    local registry.
 3. `helm upgrade --install po ./charts/po -n po-smoke` with the image
    override — exercises the chart's `pre-install` pool-register hook.
@@ -98,7 +98,7 @@ Differences from kind:
 | `SMOKE_RELEASE` | `po` | helm release name (also drives chart-rendered names) |
 | `SMOKE_CLUSTER` | `po-smoke` | kind cluster name |
 | `SMOKE_REGISTRY_PORT` | `5001` | host port for the local registry |
-| `SMOKE_PACK_PATH` | `../software-dev/po-formulas` | absolute / relative path to a pack to bake into the image |
+| `SMOKE_PACK_PATH` | `packs/po-formulas-software-dev` | absolute / relative path to a pack to bake into the image |
 | `SMOKE_TIMEOUT_MIN` | `20` | exit-gate poll budget |
 | `SMOKE_ISSUE_ID` | `smoke-1` | overridden by `seed-rig.sh` to the freshly-created bead's id |
 | `HCLOUD_SSH_KEY` | — | required for Hetzner driver |

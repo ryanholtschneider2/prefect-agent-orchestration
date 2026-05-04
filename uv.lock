@@ -1617,6 +1617,7 @@ source = { editable = "." }
 dependencies = [
     { name = "prefect" },
     { name = "pydantic" },
+    { name = "python-dateutil" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "typer" },
@@ -1657,6 +1658,7 @@ requires-dist = [
     { name = "prefect", specifier = ">=3.0" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pydantic-evals", marker = "extra == 'evals'", specifier = ">=0.1" },
+    { name = "python-dateutil", specifier = ">=2.8" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13" },
     { name = "typer", specifier = ">=0.12" },

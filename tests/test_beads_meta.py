@@ -287,9 +287,4 @@ def test_read_iter_cap_honors_metadata_key_override(
             "metadata": {"po.plan_iter_cap": "2"},
         },
     )
-    assert (
-        beads_meta.read_iter_cap(
-            "parent", 5, metadata_key="po.plan_iter_cap"
-        )
-        == 2
-    )
+    assert beads_meta.read_iter_cap("parent", 5, metadata_key="po.plan_iter_cap") == 2

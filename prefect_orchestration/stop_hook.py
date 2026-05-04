@@ -40,7 +40,13 @@ def main() -> None:
         return
     out = stop_dir()
     out.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps({k: v for k, v in data.items() if isinstance(v, (str, int, float, bool, type(None)))})
+    payload = json.dumps(
+        {
+            k: v
+            for k, v in data.items()
+            if isinstance(v, (str, int, float, bool, type(None)))
+        }
+    )
     (out / f"{sid}.stopped").write_text(payload)
 
 

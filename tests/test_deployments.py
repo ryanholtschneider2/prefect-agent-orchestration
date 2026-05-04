@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -83,6 +85,86 @@ def test_load_deployments_non_callable(patch_eps):
     loaded, errors = deployments_mod.load_deployments()
     assert loaded == []
     assert len(errors) == 1 and "not callable" in errors[0].error
+
+
+def test_load_formula_flows_skip_and_collect_errors(monkeypatch):
+    def good():
+        return "ok"
+
+    class Boom:
+        def load(self):
+            raise RuntimeError("bad formula")
+
+    monkeypatch.setattr(
+        deployments_mod,
+        "iter_formula_entry_points",
+        lambda: [
+            FakeEntryPoint("skip-me", good),
+            FakeEntryPoint("good", good),
+            BoomEP("bad"),
+        ],
+    )
+
+    flows, errors = deployments_mod.load_formula_flows(skip_names={"skip-me"})
+    assert flows == {"good": good}
+    assert len(errors) == 1
+    assert errors[0].pack == "bad"
+    assert "bad formula" in errors[0].error
+
+
+@dataclass
+class BoomEP:
+    name: str
+
+    def load(self) -> Any:
+        raise RuntimeError("bad formula")
+
+
+def test_build_cron_deployments_from_order_dir(tmp_path: Path, monkeypatch):
+    orders = tmp_path / "orders"
+    orders.mkdir()
+    (orders / "nightly.toml").write_text(
+        'cron = "0 9 * * *"\n'
+        'formula = "hello"\n'
+        "timezone = \"America/New_York\"\n"
+        "[params]\n"
+        "x = 42\n"
+    )
+    monkeypatch.setattr(
+        deployments_mod,
+        "load_formula_flows",
+        lambda **kwargs: ({"hello": sample_flow}, []),
+    )
+
+    built = deployments_mod.build_cron_deployments_from_order_dir(
+        orders,
+        tag_prefix="demo-pack",
+    )
+    assert len(built) == 1
+    dep = built[0]
+    assert dep.name == "nightly"
+    assert dep.parameters == {"x": 42}
+    assert list(dep.tags) == ["demo-pack", "hello"]
+    schedule = dep.schedules[0].schedule
+    assert schedule.cron == "0 9 * * *"
+    assert schedule.timezone == "America/New_York"
+
+
+def test_build_cron_deployments_skips_unknown_formula_with_warning(
+    tmp_path: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+):
+    orders = tmp_path / "orders"
+    orders.mkdir()
+    (orders / "nightly.toml").write_text('cron = "0 9 * * *"\nformula = "missing"\n')
+    monkeypatch.setattr(deployments_mod, "load_formula_flows", lambda **kwargs: ({}, []))
+    caplog.set_level(logging.WARNING, logger=deployments_mod.logger.name)
+
+    built = deployments_mod.build_cron_deployments_from_order_dir(
+        orders,
+        tag_prefix="demo-pack",
+    )
+    assert built == []
+    assert any("missing" in rec.message for rec in caplog.records)
 
 
 # -- formatting ---------------------------------------------------------

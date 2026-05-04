@@ -93,14 +93,12 @@ def test_po_sessions_renders_table_and_resume(tmp_path: Path) -> None:
         "id": issue_id,
         "metadata": {
             "po.rig_path": str(rig_path),
-            "po.run_dir": str(
-                rig_path / ".planning" / "software-dev-full" / issue_id
-            ),
+            "po.run_dir": str(rig_path / ".planning" / "software-dev-full" / issue_id),
         },
     }
     shim.write_text(
         "#!/bin/bash\n"
-        "if [ \"$1\" = \"show\" ]; then\n"
+        'if [ "$1" = "show" ]; then\n'
         f"  cat <<'EOF'\n{json.dumps(payload)}\nEOF\n"
         "fi\n"
     )

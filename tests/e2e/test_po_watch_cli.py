@@ -12,8 +12,6 @@ import os
 import signal
 import subprocess
 import tempfile
-import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -92,13 +90,10 @@ def _inject_fake_client(monkeypatch, flow_run, task_runs_script):
     monkeypatch.setattr(_orch, "get_client", lambda: FakeCM())
 
 
-def test_po_watch_replay_and_degrades_gracefully(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_po_watch_replay_and_degrades_gracefully(monkeypatch, tmp_path: Path) -> None:
     """AC3 + AC4: --replay dumps artifacts; terminal flow → still streams
     run-dir, no tracebacks."""
     from dataclasses import dataclass, field
-    from datetime import datetime, timezone
     from typing import Any
 
     run_dir = tmp_path / "run"

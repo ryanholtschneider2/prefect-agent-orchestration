@@ -93,12 +93,11 @@ typed ways the orchestrator is expected to handle:
 - `RateLimitError` — Claude returned a real 429 (either as a transport
   exception or as a success-shaped envelope with
   `is_error: true, api_error_status: 429` — both shapes are detected
-  by `_has_429_envelope` in `agent_session.py`). When OAuth-pool
-  rotation is wired (see `auth_rotation.oauth_failover_budget`),
-  `agent_step` retries on a fresh slot up to the budget. When the
-  budget is exhausted (or rotation is disabled), the error propagates
-  so Prefect marks the flow Failed and the operator can `po retry`
-  after the limit resets.
+  by `_has_429_envelope` in `agent_session.py`). `agent_step` catches
+  this in `_prompt_with_oauth_failover` and rotates OAuth pool slots
+  up to `oauth_failover_budget()` times. When the budget is
+  exhausted, the error propagates so Prefect marks the flow Failed
+  and the operator can `po retry` after the limit resets.
 - `StepTimeoutError` — the Claude subprocess exceeded the wall-clock
   budget without producing a terminal envelope (subprocess alive at
   ~0 CPU, no stdout activity, role-session.json static). The single
@@ -123,13 +122,22 @@ without operator intervention).
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from prefect_orchestration.agent_session import AgentSession, StubBackend
+from prefect_orchestration.agent_session import (
+    AgentSession,
+    RateLimitError,
+    StubBackend,
+)
+from prefect_orchestration.auth_rotation import (
+    oauth_failover_budget,
+    rotate_to_next_oauth_pool_slot,
+)
 from prefect_orchestration.backend_select import select_default_backend
 from prefect_orchestration.beads_meta import (
     _bd_available,
@@ -140,6 +148,8 @@ from prefect_orchestration.beads_meta import (
 from prefect_orchestration.role_config import resolve_role_runtime
 from prefect_orchestration.role_sessions import RoleSessionStore
 from prefect_orchestration.templates import render_template
+
+logger = logging.getLogger(__name__)
 
 
 # Substitution applied to BOTH the agent identity prompt and the task
@@ -317,15 +327,18 @@ def agent_step(
         _stamp_description(target_bead, rendered_task, rig_path)
 
     # Resolve session and run the agent's turn.
-    sess = _build_session(
-        seed_id=seed_id,
-        role=role,
-        rig_path=rig_path,
-        agent_dir=agent_dir,
-        run_dir=run_dir_p,
-        backend=backend,
-        dry_run=dry_run,
-    )
+    def build_session() -> AgentSession:
+        return _build_session(
+            seed_id=seed_id,
+            role=role,
+            rig_path=rig_path,
+            agent_dir=agent_dir,
+            run_dir=run_dir_p,
+            backend=backend,
+            dry_run=dry_run,
+        )
+
+    sess = build_session()
     # Token-efficient resumed-session prompt: when there's a prior
     # session uuid (--resume), the agent already has the identity
     # prompt + role contract from turn 1's conversation. Send only
@@ -339,7 +352,13 @@ def agent_step(
         rendered_prompt = _render_agent_prompt(agent_dir, full_ctx)
 
     try:
-        reply = sess.prompt(rendered_prompt)
+        reply, sess = _prompt_with_oauth_failover(
+            sess,
+            rendered_prompt,
+            role=role,
+            seed_id=seed_id,
+            build_session=build_session,
+        )
     except Exception:
         # Agent turn failed (rate-limit, transport error, etc.). Don't
         # force-close the bead here — let the caller decide. Re-raise
@@ -365,7 +384,13 @@ def agent_step(
     # Nudge: ONE more turn via the same --resume session.
     nudge_text = _build_nudge_prompt(target_bead, verdict_keywords)
     try:
-        sess.prompt(nudge_text)
+        _, sess = _prompt_with_oauth_failover(
+            sess,
+            nudge_text,
+            role=role,
+            seed_id=seed_id,
+            build_session=build_session,
+        )
     except Exception:
         # Nudge failed → fall through to defensive force-close.
         pass
@@ -656,6 +681,42 @@ def _persist_session(sess: AgentSession, role: str) -> None:
             sessions.set(role, sess.session_id)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _prompt_with_oauth_failover(
+    sess: AgentSession,
+    prompt: str,
+    *,
+    role: str,
+    seed_id: str,
+    build_session: callable,
+) -> tuple[str, AgentSession]:
+    """Retry a turn on the next OAuth pool slot after a rate-limit.
+
+    We rebuild the AgentSession after rotating credentials so the retry
+    launches a fresh Claude subprocess / tmux pane while resuming from the
+    latest persisted role session UUID.
+    """
+    failovers_left = oauth_failover_budget()
+    while True:
+        try:
+            return sess.prompt(prompt), sess
+        except RateLimitError as exc:
+            _persist_session(sess, role)
+            if failovers_left <= 0:
+                raise
+            next_index = rotate_to_next_oauth_pool_slot()
+            if next_index is None:
+                raise
+            failovers_left -= 1
+            logger.warning(
+                "agent_step: seed=%s role=%s hit Claude rate limit%s; rotating OAuth slot to %s and retrying",
+                seed_id,
+                role,
+                f" (resets {exc.reset_time})" if exc.reset_time else "",
+                next_index,
+            )
+            sess = build_session()
 
 
 __all__ = ["agent_step", "AgentStepResult"]
