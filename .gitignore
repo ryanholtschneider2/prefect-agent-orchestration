@@ -44,3 +44,13 @@ nohup.out
 # tui/.gitignore already excludes tui/{node_modules,dist}; this covers the
 # convenience copy at bin/po-tui after `make tui-install`.
 bin/po-tui
+.beads/dolt/
+.beads/dolt-server.log
+.beads/dolt-server.pid
+.beads/embeddeddolt/
+.beads/embeddeddolt.bak*/
+.beads/embeddeddolt.preserved-postmigration-*/
+packs/*
+!packs/README.md
+!packs/po-formulas-examples/
+!packs/po-formulas-examples/**
