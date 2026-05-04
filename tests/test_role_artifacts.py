@@ -44,3 +44,29 @@ def test_publish_run_artifacts_publishes_summary_and_manifest(
         call["key"].startswith("prefect-orchestration-eu8-run-artifact-")
         for call in calls
     )
+
+
+def test_publish_run_artifacts_skips_missing_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    calls: list[dict[str, str]] = []
+
+    def fake_create_markdown_artifact(
+        *,
+        key: str,
+        markdown: str,
+        description: str,
+    ) -> None:
+        calls.append({"key": key, "markdown": markdown, "description": description})
+
+    monkeypatch.setattr(mod, "create_markdown_artifact", fake_create_markdown_artifact)
+
+    mod.publish_run_artifacts(
+        run_dir,
+        ["review-artifacts/summary.md", "artifact-manifest.json"],
+    )
+
+    assert calls == []

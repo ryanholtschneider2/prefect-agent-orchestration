@@ -86,6 +86,8 @@ def test_artifacts_missing_files_render_missing(tmp_path, runner, monkeypatch):
     assert result.exit_code == 0
     assert "===== triage.md =====" in result.stdout
     assert "===== plan.md =====" in result.stdout
+    assert "===== review-artifacts/summary.md =====" in result.stdout
+    assert "===== artifact-manifest.json =====" in result.stdout
     assert "(missing)" in result.stdout
 
 
