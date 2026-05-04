@@ -1,4 +1,4 @@
-__pycache__/
+**/__pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
@@ -6,6 +6,10 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+
+**/.beads/
+.claude/settings.json
+
 
 # PO run artifacts — per-issue, regenerable from `po retry`.
 # Whole tree is host-state; only the structure (planning/) ships.
