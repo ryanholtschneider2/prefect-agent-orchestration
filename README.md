@@ -7,6 +7,18 @@ Ships no formulas of its own. Every pipeline — `software-dev-full`,
 future `bio-experiment`, `microcorp`, etc. — lives in a separate pack that
 registers itself via entry points.
 
+Roadmap-first planning now has a pack-shipped scaffold command:
+
+```bash
+po planning-init --kind=product --slug=<product-slug> --title="Product Name"
+po planning-init --kind=epic --slug=<epic-slug> --title="Epic Name"
+```
+
+Use it to create durable planning artifacts under `.planning/products/` or
+`.planning/epics/` before filing beads and dispatching `po` work. See
+[`engdocs/roadmap-first-planning.md`](engdocs/roadmap-first-planning.md) for the
+workflow and dispatch boundary.
+
 ## What's in core
 
 | Module | Purpose |

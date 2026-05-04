@@ -12,12 +12,45 @@ description: Dispatch beads issues and epics for autonomous implementation via t
 `po` is a CLI (installed globally via `po packs install` / `uv tool install`) that dispatches
 beads issues to an actor-critic pipeline and dispatches beads epics as
 DAG-ordered fan-outs. Each role in the pipeline (triager, planner,
-critic, builder, verifier, …) runs as a Claude subprocess inside a
+critic, builder, verifier, …) runs as an agent subprocess inside a
 named tmux session so you can `tmux attach` and watch live.
 
 Use this skill whenever you have a beads issue ready for
 implementation and want it worked autonomously, OR an in-progress
 epic whose ready children should fan out concurrently.
+
+## Roadmap-first planning workflow
+
+Start at the highest useful planning layer before dispatching implementation:
+
+1. Goal or roadmap discussion
+2. Durable planning artifact under `.planning/products/<slug>/` or `.planning/epics/<slug>/`
+3. Beads epic and child issue creation via `bd`
+4. Inline vs subagent vs `po` dispatch choice
+
+Use the scaffold command when the durable artifact does not exist yet:
+
+```bash
+po planning-init --kind=product --slug=<product-slug> --title="Product Name"
+po planning-init --kind=epic --slug=<epic-slug> --title="Epic Name"
+```
+
+Artifact layout:
+
+- Product planning: `.planning/products/<slug>/<slug>-vision.md` and `<slug>-epics.md`
+- Epic planning: `.planning/epics/<slug>/<slug>-brainstorm.md`, `<slug>-design.md`, `<slug>-epic-plan.md`, and `<slug>-issues.md`
+
+After the artifact exists, refine it with the user, then translate it into `bd`
+epics and child beads. Only dispatch `po run epic` or `po run software-dev-full`
+after the work has been decomposed enough that a verifier can judge success.
+
+## Choosing PO vs Inline vs Subagents
+
+- Do it inline for trivial edits, tiny config changes, or one-file fixes.
+- Use local subagents for bounded research or narrow edits where you do not need persistent verification artifacts.
+- Use `po` when the work should run unattended, needs verifier/critic gates, spans multiple beads, or benefits from durable run artifacts and resumability.
+
+Rule of thumb: if manual re-verification would be the expensive part, prefer `po`.
 
 ## Prerequisites
 

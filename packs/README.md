@@ -15,6 +15,7 @@ Intent:
 Current occupants:
 
 - `po-formulas-examples/`
+- `po-formulas-retro/`
 - `software-dev-pack/`
 - `software-dev-pack-wts/`
 - `po-formulas-software-dev/`
