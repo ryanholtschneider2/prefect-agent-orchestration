@@ -209,6 +209,34 @@ def _publish_handles_artifact(
         )
 
 
+def publish_run_artifacts(
+    run_dir: Path,
+    output_files: list[str],
+    *,
+    issue_id: str | None = None,
+) -> None:
+    """Publish shared run-level artifacts such as handoff summaries."""
+    issue_slug = slugify_key(issue_id) if issue_id else ""
+    for fname in output_files:
+        fpath = run_dir / fname
+        if not fpath.exists():
+            logger.debug("expected run artifact missing: %s", fpath)
+            continue
+        body_key = slugify_key(issue_slug, "run-artifact", fpath.stem)
+        try:
+            create_markdown_artifact(
+                key=body_key,
+                markdown=_format_body(fpath),
+                description=f"Run artifact: {fname}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "create_markdown_artifact failed for run artifact %s: %s",
+                body_key,
+                exc,
+            )
+
+
 def publish_role_artifacts(
     run_dir: Path,
     rig_path: Path,

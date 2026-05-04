@@ -34,6 +34,17 @@ workflow and dispatch boundary.
 | `trace.parse_jsonl` + `cli` `po trace <id>` | Structured view of agent activity: per-role token/turn/wall summary, tool-call timeline, transcript navigator, slow-turn finder, JSON output for piping. Reads `~/.claude/projects/<slug>/<uuid>.jsonl`. Works on in-flight runs. |
 | `role_config.RoleRuntime` | Per-role `agents/<role>/config.toml` knobs: `model`, `effort`, `start_command`. Resolution: per-role config > CLI flag (`--model`/`--effort`/`--start-command`) > env (`PO_MODEL`/`PO_EFFORT`/`PO_START_COMMAND`) > AgentSession default. |
 
+## Artifact contract
+
+Substantial `po` runs write proof into one canonical run dir:
+
+- `<rig>/.planning/software-dev-full/<issue>/artifact-manifest.json` — machine-readable proof index for tooling and future UI viewers
+- `<rig>/.planning/software-dev-full/<issue>/review-artifacts/summary.md` — human handoff entry point
+- `<rig>/.planning/software-dev-full/<issue>/verdicts/` — orchestrator verdict JSON
+- `<rig>/.planning/software-dev-full/<issue>/transcripts/` — Claude transcript symlinks
+
+`bd show <issue>` close notes point at the run dir, summary, and manifest. `po artifacts <issue>` renders the same summary and manifest so operators can inspect proof without hunting through the filesystem.
+
 ## Writing a pack
 
 A pack is a regular Python package with `@flow`s and entry points:

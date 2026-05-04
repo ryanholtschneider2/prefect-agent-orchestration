@@ -27,6 +27,12 @@ def _seed_full_run(tmp_path: Path) -> Path:
     (run_dir / "verification-report-iter-2.md").write_text("verify 2\n")
     (run_dir / "critique-iter-10.md").write_text("critique 10\n")
     (run_dir / "verification-report-iter-10.md").write_text("verify 10\n")
+    review_dir = run_dir / "review-artifacts"
+    review_dir.mkdir()
+    (review_dir / "summary.md").write_text("# summary\n")
+    (run_dir / "artifact-manifest.json").write_text(
+        json.dumps({"contract_version": 1, "artifacts": []})
+    )
     (run_dir / "decision-log.md").write_text("decisions\n")
     (run_dir / "lessons-learned.md").write_text("lessons\n")
     verdicts = run_dir / "verdicts"
@@ -58,6 +64,8 @@ def test_artifacts_full_order(tmp_path, runner, monkeypatch):
         "verification-report-iter-2.md",
         "critique-iter-10.md",
         "verification-report-iter-10.md",
+        "review-artifacts/summary.md",
+        "artifact-manifest.json",
         "decision-log.md",
         "lessons-learned.md",
         "verdicts/build-iter-1.json",

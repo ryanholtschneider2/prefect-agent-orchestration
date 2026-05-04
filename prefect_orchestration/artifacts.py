@@ -22,9 +22,12 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from prefect_orchestration.artifact_contract import ARTIFACT_MANIFEST, REVIEW_SUMMARY
+
 ITER_RE = re.compile(r"iter-(\d+)\.md$")
 
 FIXED_SECTIONS: tuple[str, ...] = ("triage.md", "plan.md")
+PROOF_SECTIONS: tuple[str, ...] = (REVIEW_SUMMARY, ARTIFACT_MANIFEST)
 TRAILING_SECTIONS: tuple[str, ...] = ("decision-log.md", "lessons-learned.md")
 
 
@@ -96,6 +99,8 @@ def collect_sections(run_dir: Path, *, verdicts_only: bool = False) -> list[Sect
         sections.append(_read_or_missing(run_dir / name, run_dir))
     for iter_path in _iter_pairs(run_dir):
         sections.append(_read_or_missing(iter_path, run_dir))
+    for name in PROOF_SECTIONS:
+        sections.append(_read_or_missing(run_dir / name, run_dir))
     for name in TRAILING_SECTIONS:
         sections.append(_read_or_missing(run_dir / name, run_dir))
     sections.extend(_collect_verdicts(run_dir))
