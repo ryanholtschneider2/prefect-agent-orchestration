@@ -323,6 +323,18 @@ def run(
         help="Override the claude CLI invocation prefix (default: "
         "'claude --dangerously-skip-permissions'). Stamps PO_START_COMMAND_CLI.",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print what would run (formula, kwargs) and exit 0. "
+        "No Prefect flow run, no bd writes, no filesystem side effects.",
+    ),
+    stub_backend: bool = typer.Option(
+        False,
+        "--stub-backend",
+        help="Run the full formula with StubBackend (fake agent turns). "
+        "Formerly the --dry-run behavior. Full bd side effects apply.",
+    ),
 ) -> None:
     """Run a registered formula or an ad-hoc scratch flow.
 
@@ -336,6 +348,12 @@ def run(
             raise typer.Exit(2)
         typer.echo("warning: --time is deprecated; use --at instead", err=True)
         when = time_compat
+
+    if dry_run and stub_backend:
+        typer.echo(
+            "error: --dry-run and --stub-backend are mutually exclusive", err=True
+        )
+        raise typer.Exit(2)
 
     _autoconfigure_prefect_api()
 
@@ -394,6 +412,13 @@ def run(
         start_command=start_command,
     )
 
+    if dry_run:
+        _print_dry_run_dag(name=name, kwargs=kwargs)
+        raise typer.Exit(0)
+
+    if stub_backend:
+        os.environ["PO_BACKEND"] = "stub"
+
     # SIGINT / SIGTERM cleanup: when the user Ctrl-Cs `po run` (or the
     # process is killed), the spawned tmux sessions are detached so they
     # outlive us. Drain the in-process registry before exiting so we
@@ -440,6 +465,14 @@ _RUNTIME_KNOBS: tuple[tuple[str, str], ...] = (
     ("effort", "PO_EFFORT_CLI"),
     ("start_command", "PO_START_COMMAND_CLI"),
 )
+
+
+def _print_dry_run_dag(name: str | None, kwargs: dict[str, Any]) -> None:
+    """Print a no-effect summary of what `po run` would do."""
+    typer.echo("[dry-run] po run (no Prefect flow run, no bd writes)")
+    typer.echo(f"  formula:  {name or '(ad-hoc --from-file)'}")
+    for k, v in kwargs.items():
+        typer.echo(f"  {k}: {v}")
 
 
 def _apply_runtime_overrides(

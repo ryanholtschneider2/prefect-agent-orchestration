@@ -489,7 +489,8 @@ fetched-at-entry snapshot are closed.
 |---|---|
 | `tmux` on `PATH` (default) | `TmuxClaudeBackend` — each role spawns a named tmux session `po-<issue>-<role>` that you can `tmux attach -t …` mid-turn to watch live |
 | `tmux` absent | `ClaudeCliBackend` — subprocess pipes, no lurking |
-| `--dry-run` flag | `StubBackend` — no Claude calls, fakes verdict files |
+| `--dry-run` flag | No flow run — prints a DAG summary and exits 0. No bd writes, no Prefect flow run, no `run_dir` writes. |
+| `--stub-backend` flag | `StubBackend` — full flow runs with fake agent turns and full bd side effects (formerly `--dry-run`). |
 
 Override with `PO_BACKEND=cli|tmux|stub` on any `po run` invocation.
 `PO_BACKEND=tmux` errors loudly if tmux is missing (refuses silent
@@ -890,195 +891,33 @@ Overlay shape:
 **Read more:** `po show <verb>`, `<pack>/README.md`
 ```
 
-## Graph-mode / per_role_step patterns (from 7vs.5)
+## Graph-mode / per_role_step patterns
 
-### Agent-driven bead closure is the contract; orchestrator is a defensive belt
-
-In graph mode the **agent closes its own role-step bead**; `per_role_step`
-only force-closes (with a sentinel `notes="agent did not close role-step bead"`)
-when the bead is still open after the @task returns. This mirrors the
-7vs.3 lint and 7vs.4 critic patterns. Never make the orchestrator the
-primary close path — that erases the verdict-keyword signal the agent
-writes.
-
-### Failure paths must not share close semantics with success
-
-`_MAX_PASSES` exhaustion and cap-exhaustion must NOT `bd close` with
-`complete` or the same notes as a success. Leave the seed open on
-runaway-loop exhaustion so `bd ready` keeps surfacing it for human
-triage. Only close iterN beads (and their subtree) with a distinct
-`cap-exhausted: …` reason.
-
-### Graph mode: "who creates the iter bead" must be unambiguous
-
-The seed graph creates the role-step iter bead in graph mode; legacy
-tasks (lint, critique_plan, review, …) create their own iter bead in
-legacy mode. Detect the mode via `ctx.get("role_step_bead_id")` and
-reuse the seeded bead — do NOT mint a second one. Two layers both
-creating beads with the same shape breaks verdict-reading causality.
-
-### Cross-task state must be reconstructed from disk
-
-Python scope does not exist across Prefect task boundaries. Every
-`ctx[...]` value consumed in a legacy task must be reconstructed from
-durable artifacts (run_dir files, bead metadata) in graph mode.
-Example: `_rebuild_critic_iter_context` re-reads prior critique
-markdown + seed-bead title. Audit all `ctx[...]` consumers when
-porting a legacy task to graph mode.
-
-### `software_dev_full` must keep explicit kwargs (not `**kwargs`)
-
-`graph.py::_check_formula_signature` validates that named params include
-`issue_id`, `rig`, `rig_path`. Pre-existing tests also assert the
-public signature. A "thin `**kwargs` dispatcher" plan will fail both
-gates. Keep the explicit signature; put the graph-vs-legacy branch in
-the body.
-
-### Use `build_registry` for seed bootstrap, not `claim_issue` directly
-
-`build_registry(claim=True)` wraps `claim_issue` with `po-<flow_run_id>`
-assignee logic AND creates the run_dir and stamps metadata in one call.
-Calling `claim_issue(issue_id, rig_path=...)` bare omits the assignee
-param that bd 1.x requires and misses the metadata stamp.
-
-### Phantom-rejection loop: diagnose, don't churn
-
-The dispatcher will sometimes spawn a follow-on iter (`plan.iter2`,
-`build.iter3`, `review.iterN+1`) even after the prior iter closed
-`approved:`. Symptom: the new iter bead's `{{revision_note}}`
-template renders as `(no summary captured)` (or empty), and there's
-no actual rejection signal in the prior critic's verdict to act on.
-89e hit this three times on one issue (plan iter 2; build iters 2 + 3).
-
-When dispatched on a phantom rejection, the role agent should:
-
-1. **Diagnose** — confirm the prior `<role>.iterN-1` (or
-   `<role>-critic.iterN-1`) closed with `approved:` AND that
-   `revision_note` is empty / `(no summary captured)`. A real
-   rejection without a captured summary is rare but possible; don't
-   skip the check.
-2. **Don't churn** — DO NOT manufacture cosmetic edits (whitespace,
-   ruff-format reflows, no-op refactors, comment tweaks) just to
-   produce an artifact. That re-triggers lint+test, burns tokens,
-   and corrupts the diff history.
-3. **Document** — write a decision-log entry naming the diagnosis
-   and the alternatives considered (no-op edit / `bd human` / clean
-   close). Re-save the cumulative diff to the iter's expected
-   artifact path (`build-iter-N.diff`, etc.) byte-identical to the
-   prior iter so downstream verifiers see the right state.
-4. **Escalate on recurrence** — if a third consecutive phantom iter
-   spawns on the same role, `bd human` to the operator. The
-   dispatcher loop is the bug; agents can't fix it from inside the
-   loop, and a fourth no-op critique is wasted spend.
-
-The next critic in the chain should approve a phantom-rejection
-no-op build with reasoning that explicitly references the prior
-approval and the byte-identical diff (89e iter-2 + iter-3 critiques
-are the canonical examples). This keeps the loop closeable instead
-of inventing fake findings.
-
-**Fast-mode parents are a known phantom source.** When the parent
-bead closes with reason `po fast-mode complete`, graph-mode
-bookkeeping still seeds `plan` / `plan-critic` (and sometimes
-follow-on `build` / `review` iters) even though fast-mode bypassed
-planning entirely — there is no `plan.md` on disk and no rejection
-signal to act on. `prv` hit this 4 times in one run (plan-critic
-iter 1+2, plan iter 2, build iter 3). When you find yourself
-dispatched on a fast-mode parent: confirm parent close-reason +
-absence of `plan.md`, apply the diagnose/don't-churn/document
-protocol, and (planner only) re-save a byte-identical or empty
-`plan.md` so downstream critics see consistent state.
+See [`engdocs/graph-mode-patterns.md`](engdocs/graph-mode-patterns.md).
+Read before touching `graph.py`, `per_role_step`, or any role critic.
+Covers: agent-driven bead closure, failure-vs-success close semantics,
+who creates iter beads, cross-task state reconstruction, explicit
+kwargs in `software_dev_full`, `build_registry` for seed bootstrap,
+and the phantom-rejection diagnose/don't-churn protocol (incl.
+fast-mode parents, superseded parents, `bd human` semantics on the
+`-nanocorps` fork).
 
 ## agent_step adoption patterns (non-bead-driven flows)
 
-Lessons from migrating `po-formulas-retro` (a *scheduled* cron flow,
-no triggering bead) onto `agent_step`. Apply when porting any flow
-whose runs aren't initiated by `po run --issue-id <id>`.
+See [`engdocs/agent-step-adoption.md`](engdocs/agent-step-adoption.md).
+Lessons from porting scheduled cron flows (no triggering bead) onto
+`agent_step`: synthesize a seed bead, fall back to bd auto-id on
+prefix mismatch, short-circuit `dry_run=True` before `agent_step`,
+two-run-dirs is fine, and where to stub the verdict-path discovery
+in tests.
 
-### Mint a real seed bead per run before calling `agent_step`
+## Deprecating a `po.formulas` pack
 
-`agent_step` calls `create_child_bead(seed_id, "<seed>.<step>.iter1", …)`
-which requires the parent to be a real bd bead (`bd create` rejects
-`--deps parent-child:<missing-id>`). For scheduled flows: synthesize
-a `<formula-prefix>-<slug>-<utc-timestamp>` id, `bd create` it at low
-priority (`-p 4`), close it at flow end with a one-line summary.
-Treat `"already exists"` stderr as success (idempotent on retry).
-
-### Fall back to bd auto-id on prefix mismatch
-
-Some bd configs enforce a fixed auto-id prefix per rig and reject
-custom `--id=…`. The seed-bead helper should detect `"prefix mismatch"`
-on stderr, retry without `--id`, and parse the assigned id from
-`bd create` stdout (`Created <id>: <title>`). Caller captures the
-return value — don't assume the requested id was honored.
-
-### `dry_run=True` must short-circuit BEFORE `agent_step`
-
-Under `dry_run=True`, `agent_step` selects `StubBackend`, which by
-contract does NOT write the verdict file → `read_verdict()` raises
-`FileNotFoundError`. Branch on `dry_run` at the top of the task and
-return an empty payload before constructing the agent_step call.
-Bonus: dry-runs become free (no token spend, no agent turn).
-
-### Two run dirs is fine when the flow has a documented operator artifact
-
-`agent_step` hardcodes its run_dir to `<rig>/.planning/agent-step/<seed_id>/`
-(verdicts + per-role session UUIDs). If the flow's pre-existing
-operator-readable summary lives elsewhere (`<rig>/.planning/<formula>/<ts>/`),
-keep both — consolidating breaks operator muscle memory and any
-README example referencing the summary path. Document the split in
-the flow.
-
-### Tests: discover the verdict path from the *stamped bead description*, not the rendered prompt
-
-`agent_step` ships the rendered `task.md` to bd via
-`bd update <iter_bead_id> --description …`; the verdict path lives
-in `task.md` (e.g. `{{verdict_path}}`), not in the agent's identity
-`prompt.md`. The test fake's `subprocess.run` patch should intercept
-the `["bd", "update", <id>, "--description", …]` shellout, capture
-the description string, and regex-extract the verdict path from
-**that**. Patching `agent_step._build_session` to inject a fake
-session (mirrors `tests/test_agent_step.py::fake_bd`) is the
-established stub surface.
-
-## Deprecating a `po.formulas` pack (from dgr)
-
-Lessons from stubbing `po-formulas-prompt` after its functionality
-moved into core's `agent-step`. Apply when retiring (or about to
-register) any `po.formulas` entry-point.
-
-- **EP load-order is last-write-wins, silently.** `cli._load_formulas`
-  iterates `entry_points(group='po.formulas')` and assigns into a
-  dict; whichever distribution loads last wins. There is no collision
-  warning. If you deprecate a pack-level formula but core (or another
-  pack) still ships the *same EP name*, `po run <name>` resolves to
-  the **other** registration — your deprecation stub never fires for
-  the canonical CLI path. When deprecating, also stub (or rename) every
-  parallel registration of that name; `po packs list` shows where each
-  formula is registered.
-- **`bd create` accepts `--metadata '<json>'`, NOT `--set-metadata
-  <k>=<v>`.** `--set-metadata` is `bd update`-only. Migration recipes
-  that need to bake `po.agent` (or any metadata) at creation time must
-  use the JSON form:
-  `bd create … --metadata '{"po.agent":"general"}' --json | jq -r .id`.
-  The `bd create -q` form prints `✓ Created issue: <id> — <title>` —
-  `awk '{print $NF}'` extracts the title, not the id; prefer
-  `--json | jq -r .id` (or the `python3 -c 'import sys, json;
-  print(json.load(sys.stdin)["id"])'` jq-free fallback — `python3`,
-  not `python`, since modern Linux distros don't symlink the latter).
-- **Hatchling wheel discovery is `.py`-centric.** Packs that ship
-  `po_formulas_<name>/agents/<role>/prompt.md` must add
-  `[tool.hatch.build.targets.wheel.force-include]` mapping
-  `"po_formulas_<name>/agents" = "po_formulas_<name>/agents"` so the
-  prompt files survive a wheel install. Without it,
-  `discover_agent_dir(<role>)` resolves at dev time (sdist / editable)
-  but raises after `uv tool install` from the built wheel.
-- **"No legacy imports" tests must check the module namespace, not
-  source text.** Use `dir(module)` / `hasattr(module, name)` rather
-  than `grep`-ing the file: deprecation docstrings legitimately
-  mention retired symbols (e.g. `AgentSession`) by name when
-  explaining what moved where, and a source-text assertion will trip
-  on the docstring itself.
+See [`engdocs/pack-deprecation.md`](engdocs/pack-deprecation.md).
+EP load-order is last-write-wins (silently); `bd create --metadata`
+JSON form is required at creation time; hatchling wheel discovery
+needs `force-include` for non-`.py` assets; "no legacy imports" tests
+must check namespaces not source text.
 
 ## Related beads (read before touching core or prompts)
 
