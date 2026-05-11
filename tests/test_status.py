@@ -366,10 +366,25 @@ def test_status_no_flow_outcome_file_renders_unchanged(
     assert "[exc:" not in out
 
     rows = _status.to_json_list([g])
-    assert rows[0]["work_landed"] is None
-    assert rows[0]["terminal_role"] is None
-    assert rows[0]["terminal_iter"] is None
-    assert rows[0]["exception_class"] is None
+    # Pin the pre-change JSON contract so downstream consumers can rely
+    # on the existing 10 keys staying shaped exactly the same when no
+    # flow_outcome.json is present.
+    assert rows[0] == {
+        "issue_id": "issue-nofo",
+        "rig": "-",
+        "run_id": "x",
+        "flow_name": "x",
+        "state": "Crashed",
+        "started": t0.isoformat(),
+        "ended": None,
+        "current_step": "-",
+        "run_count": 1,
+        "stale_secs": None,
+        "work_landed": None,
+        "terminal_role": None,
+        "terminal_iter": None,
+        "exception_class": None,
+    }
 
 
 def test_status_completed_state_skips_annotation(

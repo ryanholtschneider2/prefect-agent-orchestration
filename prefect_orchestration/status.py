@@ -12,6 +12,7 @@ Keep this module free of Typer imports — it's the reusable seam.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -21,6 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+logger = logging.getLogger(__name__)
 
 ISSUE_TAG_PREFIX = "issue_id:"
 EPIC_TAG_PREFIX = "epic_id:"
@@ -396,7 +399,8 @@ def _load_flow_outcome(run_dir: Path | None) -> dict | None:
         if not p.is_file():
             return None
         data = json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("flow_outcome load failed for %s: %s", run_dir, exc)
         return None
     return data if isinstance(data, dict) else None
 
@@ -442,7 +446,8 @@ def to_json_list(groups: list[IssueGroup]) -> list[dict]:
         if str(state).upper() != "COMPLETED":
             try:
                 outcome = _load_flow_outcome(_run_dir_for_issue(g.issue_id))
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("flow_outcome lookup failed for %s: %s", g.issue_id, exc)
                 outcome = None
         rows.append(
             {
@@ -514,7 +519,8 @@ def render_table(groups: list[IssueGroup]) -> str:
         if state_str.upper().split()[0] != "COMPLETED":
             try:
                 outcome = _load_flow_outcome(_run_dir_for_issue(g.issue_id))
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("flow_outcome lookup failed for %s: %s", g.issue_id, exc)
                 outcome = None
             if outcome:
                 parts: list[str] = []

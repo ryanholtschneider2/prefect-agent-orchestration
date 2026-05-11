@@ -371,6 +371,7 @@ def agent_step(
         # KeyboardInterrupt deliberately NOT caught — preserves Ctrl-C.
         _record_step_failure(
             run_dir=run_dir_p,
+            rig_path=rig_path,
             step=step or "",
             iter_n=iter_n,
             role=role,
@@ -741,6 +742,7 @@ def _prompt_with_oauth_failover(
 def _record_step_failure(
     *,
     run_dir: Path,
+    rig_path: str,
     step: str,
     iter_n: int | None,
     role: str,
@@ -761,7 +763,7 @@ def _record_step_failure(
         )[-2000:]
         bd_state_after: str | None = None
         try:
-            state = _read_bead_status(target_bead, str(run_dir.parent))
+            state = _read_bead_status(target_bead, rig_path)
             if state:
                 bd_state_after = state.get("status")
         except Exception:  # noqa: BLE001
