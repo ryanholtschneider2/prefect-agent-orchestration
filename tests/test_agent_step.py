@@ -13,8 +13,14 @@ from typing import Any
 import pytest
 
 import prefect_orchestration.agent_step as agent_step_mod
-from prefect_orchestration.agent_session import RateLimitError, StepTimeoutError
+from prefect_orchestration.agent_session import (
+    RateLimitError,
+    StepTimeoutError,
+    TmuxClaudeBackend,
+    TmuxCodexBackend,
+)
 from prefect_orchestration.agent_step import agent_step
+from prefect_orchestration.role_config import RoleRuntime
 
 
 def _write_prompt(
@@ -443,3 +449,154 @@ def test_agent_step_step_timeout_propagates(
     assert rotated == []  # OAuth rotation only fires on RateLimitError
     assert len(sess.prompts) == 1  # no nudge — single turn, then bubble
     assert fake_bd["bead-to"]["status"] == "open"  # not force-closed
+
+
+def test_build_session_switches_default_tmux_backend_to_codex_for_codex_start_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent_dir = _write_prompt(tmp_path / "agents", "builder")
+
+    monkeypatch.setattr(
+        agent_step_mod,
+        "select_default_backend",
+        lambda: TmuxClaudeBackend,
+    )
+    monkeypatch.setattr(
+        agent_step_mod,
+        "resolve_role_runtime",
+        lambda _agent_dir: RoleRuntime(
+            start_command="codex exec --dangerously-bypass-approvals-and-sandbox"
+        ),
+    )
+
+    sess = agent_step_mod._build_session(
+        seed_id="pd-test",
+        role="builder",
+        rig_path=str(tmp_path),
+        agent_dir=agent_dir,
+        run_dir=tmp_path / ".planning" / "run",
+        backend=None,
+        dry_run=False,
+    )
+
+    assert isinstance(sess.backend, TmuxCodexBackend)
+    assert sess.backend.start_command == (
+        "codex exec --dangerously-bypass-approvals-and-sandbox"
+    )
+
+
+# ─── nanocorps-6q4: agent_step failure logging ──────────────────────
+
+
+def test_agent_step_failure_writes_jsonl(
+    tmp_path: Path, fake_bd: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing turn writes one parseable row to agent_step_failures.jsonl
+    AND re-raises the original exception."""
+    import json as _json
+
+    _write_prompt(tmp_path / "agents", "builder")
+    fake_bd["bead-fl1"] = {
+        "id": "bead-fl1",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+    sess = _FakeSession()
+
+    def boom(text: str, **_kw: Any) -> str:
+        sess.prompts.append(text)
+        raise RuntimeError("boom from agent turn")
+
+    sess.prompt = boom  # type: ignore[assignment]
+    monkeypatch.setattr(agent_step_mod, "_build_session", lambda **_kw: sess)
+    # No OAuth failover — bubble immediately.
+    monkeypatch.setattr(agent_step_mod, "oauth_failover_budget", lambda: 0)
+
+    run_dir = tmp_path / "run"
+    with pytest.raises(RuntimeError, match="boom from agent turn"):
+        agent_step(
+            agent_dir=tmp_path / "agents" / "builder",
+            task="build it",
+            seed_id="bead-fl1",
+            rig_path=str(tmp_path),
+            run_dir=run_dir,
+            step="build",
+            iter_n=1,
+        )
+
+    failures = run_dir / "agent_step_failures.jsonl"
+    assert failures.is_file(), "agent_step_failures.jsonl was not written"
+    lines = failures.read_text().splitlines()
+    assert len(lines) == 1, f"expected 1 row, got {len(lines)}"
+    row = _json.loads(lines[0])
+    # Required keys
+    for k in (
+        "ts",
+        "step",
+        "iter",
+        "role",
+        "target_bead",
+        "exception_class",
+        "exception_msg",
+        "traceback_tail",
+        "bd_state_after",
+        "session_uuid",
+    ):
+        assert k in row, f"missing key {k!r}"
+    assert row["exception_class"] == "RuntimeError"
+    assert "boom from agent turn" in row["exception_msg"]
+    assert row["role"] == "builder"
+    assert row["step"] == "build"
+    assert row["iter"] == 1
+
+
+def test_agent_step_failure_logger_swallows_own_errors(
+    tmp_path: Path, fake_bd: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A logging failure inside _record_step_failure must NOT mask the
+    original turn exception."""
+    _write_prompt(tmp_path / "agents", "builder")
+    fake_bd["bead-fl2"] = {
+        "id": "bead-fl2",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+    sess = _FakeSession()
+
+    def boom(text: str, **_kw: Any) -> str:
+        sess.prompts.append(text)
+        raise RuntimeError("original")
+
+    sess.prompt = boom  # type: ignore[assignment]
+    monkeypatch.setattr(agent_step_mod, "_build_session", lambda **_kw: sess)
+    monkeypatch.setattr(agent_step_mod, "oauth_failover_budget", lambda: 0)
+
+    # Force the JSONL serializer to raise — _record_step_failure must
+    # swallow it so the original turn exception bubbles cleanly.
+    original_dumps = agent_step_mod.json.dumps
+
+    def explode_on_failure_row(*args: Any, **kwargs: Any) -> str:
+        # Only blow up when serializing the failure row (it carries
+        # `exception_class`). Other json.dumps callers stay intact.
+        if args and isinstance(args[0], dict) and "exception_class" in args[0]:
+            raise PermissionError("simulated logger failure")
+        return original_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(agent_step_mod.json, "dumps", explode_on_failure_row)
+
+    with pytest.raises(RuntimeError, match="original"):
+        agent_step(
+            agent_dir=tmp_path / "agents" / "builder",
+            task="build it",
+            seed_id="bead-fl2",
+            rig_path=str(tmp_path),
+            run_dir=tmp_path / "run-fl2",
+            step="build",
+            iter_n=1,
+        )

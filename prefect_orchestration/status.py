@@ -11,6 +11,7 @@ Keep this module free of Typer imports — it's the reusable seam.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -380,6 +381,46 @@ def partition_zombies(groups: list[IssueGroup]) -> tuple[list[IssueGroup], int]:
     return live, hidden
 
 
+def _load_flow_outcome(run_dir: Path | None) -> dict | None:
+    """Read `<run_dir>/flow_outcome.json` if present; None otherwise.
+
+    Written by `software_dev_full`'s exception guard. Surfaces
+    `work_landed`, `terminal_role`, `terminal_iter`, `exception_class`,
+    `partial_summary` to `po status` so the operator can see whether a
+    Crashed/Failed flow actually produced work.
+    """
+    if run_dir is None:
+        return None
+    try:
+        p = run_dir / "flow_outcome.json"
+        if not p.is_file():
+            return None
+        data = json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _run_dir_for_issue(issue_id: str) -> Path | None:
+    """Resolve the seed bead's `po.run_dir` metadata to a Path.
+
+    Best-effort: returns None on any failure (bd unavailable, missing
+    metadata, etc.) so callers can gracefully degrade.
+    """
+    try:
+        from prefect_orchestration.run_lookup import _bd_show_json
+
+        row = _bd_show_json(issue_id)
+    except Exception:  # noqa: BLE001
+        return None
+    run_dir_s = (
+        (row.get("metadata") or {}).get("po.run_dir") if isinstance(row, dict) else None
+    )
+    if not run_dir_s:
+        return None
+    return Path(run_dir_s)
+
+
 def to_json_list(groups: list[IssueGroup]) -> list[dict]:
     """Stable JSON shape for `po status --json`."""
     rows = []
@@ -394,6 +435,15 @@ def to_json_list(groups: list[IssueGroup]) -> list[dict]:
             fr, "expected_start_time", None
         )
         end = getattr(fr, "end_time", None)
+        # Annotate non-Completed flows with flow_outcome.json data when
+        # the formula's exception guard wrote one. Completed flows skip
+        # the lookup; missing/invalid file → all fields None.
+        outcome: dict | None = None
+        if str(state).upper() != "COMPLETED":
+            try:
+                outcome = _load_flow_outcome(_run_dir_for_issue(g.issue_id))
+            except Exception:  # noqa: BLE001
+                outcome = None
         rows.append(
             {
                 "issue_id": g.issue_id,
@@ -408,6 +458,10 @@ def to_json_list(groups: list[IssueGroup]) -> list[dict]:
                 "current_step": g.current_step,
                 "run_count": 1 + g.extra_count,
                 "stale_secs": g.stale_secs,
+                "work_landed": outcome.get("work_landed") if outcome else None,
+                "terminal_role": outcome.get("terminal_role") if outcome else None,
+                "terminal_iter": outcome.get("terminal_iter") if outcome else None,
+                "exception_class": outcome.get("exception_class") if outcome else None,
             }
         )
     return rows
@@ -454,6 +508,32 @@ def render_table(groups: list[IssueGroup]) -> str:
         if g.stale_secs is not None and g.stale_secs >= _STALE_WARN_SECS:
             mins = g.stale_secs // 60
             state_str = f"{state_str} (stale: {mins}m)"
+        # Append flow_outcome.json annotation for non-Completed flows so
+        # operators can see whether work landed without spelunking the
+        # run-dir. Completed flows render unchanged.
+        if state_str.upper().split()[0] != "COMPLETED":
+            try:
+                outcome = _load_flow_outcome(_run_dir_for_issue(g.issue_id))
+            except Exception:  # noqa: BLE001
+                outcome = None
+            if outcome:
+                parts: list[str] = []
+                wl = outcome.get("work_landed")
+                if wl is True:
+                    parts.append("[work landed: ✓]")
+                elif wl is False:
+                    parts.append("[work landed: ✗]")
+                role = outcome.get("terminal_role")
+                it = outcome.get("terminal_iter")
+                if role and it is not None:
+                    parts.append(f"[last: {role}-iter-{it}]")
+                elif role:
+                    parts.append(f"[last: {role}]")
+                exc_cls = outcome.get("exception_class")
+                if exc_cls:
+                    parts.append(f"[exc: {exc_cls}]")
+                if parts:
+                    state_str = f"{state_str} {' '.join(parts)}"
         rows.append(
             (
                 g.issue_id,

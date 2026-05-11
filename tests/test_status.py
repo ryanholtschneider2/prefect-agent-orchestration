@@ -247,6 +247,172 @@ def test_render_table_empty() -> None:
     assert "no flow runs" in _status.render_table([])
 
 
+# ─── nanocorps-6q4: flow_outcome annotation ─────────────────────────
+
+
+def test_status_render_table_with_flow_outcome(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-Completed flow + flow_outcome.json → row gains annotation."""
+    import json as _json
+
+    run_dir = tmp_path / "run-fo"
+    run_dir.mkdir()
+    (run_dir / "flow_outcome.json").write_text(
+        _json.dumps(
+            {
+                "work_landed": True,
+                "terminal_role": "lint",
+                "terminal_iter": 2,
+                "exception_class": "StepTimeoutError",
+            }
+        )
+    )
+
+    monkeypatch.setattr(
+        _status,
+        "_run_dir_for_issue",
+        lambda iid: run_dir if iid == "issue-fo" else None,
+    )
+
+    t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
+    g = _status.IssueGroup(
+        issue_id="issue-fo",
+        latest=FakeFlowRun(
+            id="x",
+            name="software_dev_full/abc",
+            tags=["issue_id:issue-fo"],
+            state_name="Crashed",
+            start_time=t0,
+        ),
+        extras=[],
+        current_step="-",
+    )
+    out = _status.render_table([g])
+    assert "[work landed: ✓]" in out
+    assert "[last: lint-iter-2]" in out
+    assert "[exc: StepTimeoutError]" in out
+
+
+def test_status_to_json_with_flow_outcome(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-Completed flow + flow_outcome.json → JSON row gains 4 new fields."""
+    import json as _json
+
+    run_dir = tmp_path / "run-fo"
+    run_dir.mkdir()
+    (run_dir / "flow_outcome.json").write_text(
+        _json.dumps(
+            {
+                "work_landed": True,
+                "terminal_role": "lint",
+                "terminal_iter": 2,
+                "exception_class": "StepTimeoutError",
+            }
+        )
+    )
+
+    monkeypatch.setattr(
+        _status,
+        "_run_dir_for_issue",
+        lambda iid: run_dir if iid == "issue-fo" else None,
+    )
+
+    t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
+    g = _status.IssueGroup(
+        issue_id="issue-fo",
+        latest=FakeFlowRun(
+            id="x",
+            name="x",
+            tags=["issue_id:issue-fo"],
+            state_name="Crashed",
+            start_time=t0,
+        ),
+        extras=[],
+        current_step="-",
+    )
+    rows = _status.to_json_list([g])
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["work_landed"] is True
+    assert row["terminal_role"] == "lint"
+    assert row["terminal_iter"] == 2
+    assert row["exception_class"] == "StepTimeoutError"
+
+
+def test_status_no_flow_outcome_file_renders_unchanged(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing flow_outcome.json → renderers degrade gracefully:
+    render_table appends no annotation; to_json_list sets 4 new keys to None."""
+    monkeypatch.setattr(_status, "_run_dir_for_issue", lambda _iid: None)
+
+    t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
+    g = _status.IssueGroup(
+        issue_id="issue-nofo",
+        latest=FakeFlowRun(
+            id="x",
+            name="x",
+            tags=["issue_id:issue-nofo"],
+            state_name="Crashed",
+            start_time=t0,
+        ),
+        extras=[],
+        current_step="-",
+    )
+    out = _status.render_table([g])
+    assert "[work landed:" not in out
+    assert "[exc:" not in out
+
+    rows = _status.to_json_list([g])
+    assert rows[0]["work_landed"] is None
+    assert rows[0]["terminal_role"] is None
+    assert rows[0]["terminal_iter"] is None
+    assert rows[0]["exception_class"] is None
+
+
+def test_status_completed_state_skips_annotation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Completed flows skip the outcome lookup entirely — even if a
+    stale flow_outcome.json lingers in the run-dir."""
+    import json as _json
+
+    called = {"n": 0}
+
+    def fake_lookup(_iid: str):
+        called["n"] += 1
+        return tmp_path  # would point at a real run-dir if called
+
+    (tmp_path / "flow_outcome.json").write_text(
+        _json.dumps({"work_landed": True, "exception_class": "X"})
+    )
+    monkeypatch.setattr(_status, "_run_dir_for_issue", fake_lookup)
+
+    t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
+    g = _status.IssueGroup(
+        issue_id="issue-done",
+        latest=FakeFlowRun(
+            id="x",
+            name="x",
+            tags=["issue_id:issue-done"],
+            state_name="Completed",
+            start_time=t0,
+        ),
+        extras=[],
+        current_step="-",
+    )
+    out = _status.render_table([g])
+    rows = _status.to_json_list([g])
+    assert "[work landed:" not in out
+    assert "[exc:" not in out
+    # COMPLETED short-circuits — lookup must never fire.
+    assert called["n"] == 0
+    assert rows[0]["work_landed"] is None
+    assert rows[0]["exception_class"] is None
+
+
 # ─── partition_zombies ───────────────────────────────────────────────
 
 

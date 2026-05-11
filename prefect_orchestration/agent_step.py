@@ -122,9 +122,12 @@ without operator intervention).
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
+import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -139,6 +142,7 @@ from prefect_orchestration.auth_rotation import (
     rotate_to_next_oauth_pool_slot,
 )
 from prefect_orchestration.backend_select import select_default_backend
+from prefect_orchestration.backend_select import adapt_backend_to_start_command
 from prefect_orchestration.beads_meta import (
     _bd_available,
     _bd_show,
@@ -359,10 +363,21 @@ def agent_step(
             seed_id=seed_id,
             build_session=build_session,
         )
-    except Exception:
+    except Exception as exc:
         # Agent turn failed (rate-limit, transport error, etc.). Don't
-        # force-close the bead here — let the caller decide. Re-raise
-        # so Prefect captures the failure state.
+        # force-close the bead here — let the caller decide. Write a
+        # diagnostic row before re-raising so the operator can see the
+        # exception class on `po status` without spelunking Prefect logs.
+        # KeyboardInterrupt deliberately NOT caught — preserves Ctrl-C.
+        _record_step_failure(
+            run_dir=run_dir_p,
+            step=step or "",
+            iter_n=iter_n,
+            role=role,
+            target_bead=target_bead,
+            exc=exc,
+            sess=sess,
+        )
         raise
     finally:
         # Persist the session UUID after the turn (whether it succeeded
@@ -535,8 +550,13 @@ def _build_session(
     `<rig>/.planning/agent-step/<seed>/` default).
     """
     backend_factory = backend
+    runtime = resolve_role_runtime(agent_dir)
     if backend_factory is None:
         backend_factory = StubBackend if dry_run else select_default_backend()
+        backend_factory = adapt_backend_to_start_command(
+            backend_factory,
+            runtime.start_command,
+        )
 
     rig_path_p = Path(rig_path).expanduser().resolve()
     sessions = RoleSessionStore(
@@ -547,7 +567,6 @@ def _build_session(
     # Resolve the per-role runtime knobs: per-role config.toml > CLI flag
     # (PO_*_CLI env) > shell env (PO_*) > None. Backends fall back to their
     # hardcoded defaults when a knob is None.
-    runtime = resolve_role_runtime(agent_dir)
     backend_kwargs: dict[str, Any] = {}
     if runtime.start_command is not None:
         backend_kwargs["start_command"] = runtime.start_command
@@ -717,6 +736,54 @@ def _prompt_with_oauth_failover(
                 next_index,
             )
             sess = build_session()
+
+
+def _record_step_failure(
+    *,
+    run_dir: Path,
+    step: str,
+    iter_n: int | None,
+    role: str,
+    target_bead: str,
+    exc: BaseException,
+    sess: AgentSession | None,
+) -> None:
+    """Append one JSONL row to `<run_dir>/agent_step_failures.jsonl`.
+
+    Best-effort: wrapped in `try/except Exception: pass` so a logging
+    failure here never masks the original turn exception.
+    """
+    try:
+        # Format the traceback by joining first, then slicing the result
+        # string. Slicing the list of frames would be a no-op.
+        tb_tail = "".join(
+            traceback.format_exception(type(exc), exc, exc.__traceback__)
+        )[-2000:]
+        bd_state_after: str | None = None
+        try:
+            state = _read_bead_status(target_bead, str(run_dir.parent))
+            if state:
+                bd_state_after = state.get("status")
+        except Exception:  # noqa: BLE001
+            bd_state_after = None
+        session_uuid = getattr(sess, "session_id", None) if sess is not None else None
+        row = {
+            "ts": time.time(),
+            "step": step,
+            "iter": iter_n,
+            "role": role,
+            "target_bead": target_bead,
+            "exception_class": type(exc).__name__,
+            "exception_msg": str(exc)[:500],
+            "traceback_tail": tb_tail,
+            "bd_state_after": bd_state_after,
+            "session_uuid": session_uuid,
+        }
+        run_dir.mkdir(parents=True, exist_ok=True)
+        with (run_dir / "agent_step_failures.jsonl").open("a") as fh:
+            fh.write(json.dumps(row, default=str) + "\n")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 __all__ = ["agent_step", "AgentStepResult"]
