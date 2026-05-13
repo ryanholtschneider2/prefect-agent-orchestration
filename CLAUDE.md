@@ -946,3 +946,4 @@ must check namespaces not source text.
 - `dgr` po-formulas-prompt deprecation (shipped — see §"Deprecating a `po.formulas` pack")
 - `au5` pack-level CLAUDE overlay convention + `po doctor` check + `po packs install --rig-path` (shipped — see §"Pack overlays")
 - `gv0` stale `.retry.lock` auto-cleanup on resume/retry + `po doctor --check=locks` (shipped — see §"Debugging a run")
+- `9ws.2` `po.env_drivers` EP group + `EnvDriver` Protocol + `EnvHandle` / `EnvHealth` in `prefect_orchestration/env_drivers.py`; `po doctor` `env drivers registered` row; `po packs list` `env_drivers=...` column (shipped — see [`engdocs/cloud-envs.md`](engdocs/cloud-envs.md) §"Writing a driver"). Drivers ship in separate packs (e.g. `po-cloud-rclaude`); `NoopDriver` in-tree is a test fixture, not a registered driver.
