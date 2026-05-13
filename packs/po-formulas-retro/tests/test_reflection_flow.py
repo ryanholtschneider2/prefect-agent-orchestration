@@ -13,9 +13,12 @@ sys.path.insert(0, str(PACK_ROOT))
 from po_formulas_retro.flows import (  # noqa: E402
     ImprovementProposal,
     collect_run_dirs,
+    extract_codex_log_signals,
+    extract_diagnostics_signals,
     dedupe_proposal,
     extract_signals,
     file_follow_up_bead,
+    gather_reflection_evidence,
     update_prompts_from_lessons,
 )
 
@@ -53,8 +56,16 @@ def _write_run(
 
 
 def test_collect_run_dirs_filters_recent_artifact_runs(tmp_path: Path) -> None:
-    kept = _write_run(tmp_path, "software-dev-full", "issue-a", lessons="Need a workflow guard.")
-    _write_run(tmp_path, "software-dev-full", "issue-old", lessons="Need a workflow guard.", days_ago=20)
+    kept = _write_run(
+        tmp_path, "software-dev-full", "issue-a", lessons="Need a workflow guard."
+    )
+    _write_run(
+        tmp_path,
+        "software-dev-full",
+        "issue-old",
+        lessons="Need a workflow guard.",
+        days_ago=20,
+    )
     unrelated = tmp_path / ".planning" / "misc" / "empty"
     unrelated.mkdir(parents=True)
 
@@ -69,14 +80,80 @@ def test_extract_signals_reads_verdicts_and_explicit_lines(tmp_path: Path) -> No
         "software-dev-full",
         "issue-a",
         lessons="- Missing skill for recurring repo setup\n- We should add a workflow guard",
-        verdict_payload={"verdict": "rejected", "checks": [{"name": "tests", "status": "failed"}]},
+        verdict_payload={
+            "verdict": "rejected",
+            "checks": [{"name": "tests", "status": "failed"}],
+        },
     )
 
     signals = extract_signals(run_dir)
 
     assert any(signal.kind == "skill" for signal in signals)
-    assert any(signal.kind == "workflow" and "critic rejection" in signal.detail.lower() for signal in signals)
-    assert any(signal.kind == "hook" and "test failures" in signal.detail.lower() for signal in signals)
+    assert any(
+        signal.kind == "workflow" and "critic rejection" in signal.detail.lower()
+        for signal in signals
+    )
+    assert any(
+        signal.kind == "hook" and "test failures" in signal.detail.lower()
+        for signal in signals
+    )
+
+
+def test_extract_codex_log_signals_mines_pushback_and_artifact_requests(
+    tmp_path: Path,
+) -> None:
+    log_dir = tmp_path / ".claude" / "logs"
+    log_dir.mkdir(parents=True)
+    event_log = log_dir / "session-events.jsonl"
+    event_log.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "session_id": "sess-1",
+                        "hook_event_name": "UserPromptSubmit",
+                        "prompt": "This is not good enough. You should just do the next obvious step and make a mermaid diagram.",
+                        "captured_at": "2026-05-04T20:00:00Z",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "session_id": "sess-1",
+                        "hook_event_name": "UserPromptSubmit",
+                        "prompt": "Please improve the artifact setup and maybe add a skill for this repeated flow.",
+                        "captured_at": "2026-05-04T20:01:00Z",
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    signals = extract_codex_log_signals(tmp_path, since_days=7)
+
+    assert any("pushback" in signal.detail.lower() for signal in signals)
+    assert any("artifact" in signal.detail.lower() for signal in signals)
+    assert any(signal.kind == "skill" for signal in signals)
+
+
+def test_extract_diagnostics_signals_mines_logfire_failures(tmp_path: Path) -> None:
+    log_dir = tmp_path / ".claude" / "logs"
+    log_dir.mkdir(parents=True)
+    diagnostics_log = log_dir / "diagnostics.jsonl"
+    diagnostics_log.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-05-04T20:00:00Z",
+                "message": "OTLP export failed",
+                "detail": "http_status=500",
+            }
+        )
+        + "\n"
+    )
+
+    signals = extract_diagnostics_signals(tmp_path, since_days=7)
+
+    assert any("logfire export failures" in signal.detail.lower() for signal in signals)
 
 
 def test_dedupe_skips_existing_repo_capability(tmp_path: Path, monkeypatch) -> None:
@@ -165,3 +242,29 @@ def test_flow_writes_report_and_files_new_beads(tmp_path: Path, monkeypatch) -> 
     assert report_dir.exists()
     assert "bd-555" in report_md
     assert report_json["proposals"][0]["dedupe_status"] == "new"
+
+
+def test_gather_reflection_evidence_includes_codex_logs(tmp_path: Path) -> None:
+    _write_run(
+        tmp_path,
+        "software-dev-full",
+        "issue-a",
+        lessons="- Missing skill for recurring repo setup",
+    )
+    log_dir = tmp_path / ".claude" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "session-events.jsonl").write_text(
+        json.dumps(
+            {
+                "session_id": "sess-1",
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "This is not good enough; add a diagram.",
+                "captured_at": "2026-05-04T20:00:00Z",
+            }
+        )
+        + "\n"
+    )
+
+    evidence = gather_reflection_evidence(tmp_path, since_days=7)
+
+    assert any(item.source == ".claude/logs/session-events.jsonl" for item in evidence)

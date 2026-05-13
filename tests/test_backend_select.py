@@ -12,6 +12,7 @@ from prefect_orchestration.agent_session import (
     TmuxCodexBackend,
 )
 from prefect_orchestration.backend_select import select_default_backend
+from prefect_orchestration.backend_select import adapt_backend_to_start_command
 
 
 def test_explicit_stub(monkeypatch):
@@ -82,4 +83,34 @@ def test_empty_override_ignores_env(monkeypatch):
     assert (
         select_default_backend(override="", have_tmux=False, is_tty=False)
         is ClaudeCliBackend
+    )
+
+
+def test_adapt_backend_to_start_command_upgrades_tmux_claude_to_codex():
+    assert (
+        adapt_backend_to_start_command(
+            TmuxClaudeBackend,
+            "codex exec --dangerously-bypass-approvals-and-sandbox",
+        )
+        is TmuxCodexBackend
+    )
+
+
+def test_adapt_backend_to_start_command_upgrades_cli_claude_to_codex():
+    assert (
+        adapt_backend_to_start_command(
+            ClaudeCliBackend,
+            "codex exec --dangerously-bypass-approvals-and-sandbox",
+        )
+        is CodexCliBackend
+    )
+
+
+def test_adapt_backend_to_start_command_keeps_explicit_family_for_unknown_binary():
+    assert (
+        adapt_backend_to_start_command(
+            TmuxClaudeBackend,
+            "python custom_wrapper.py",
+        )
+        is TmuxClaudeBackend
     )

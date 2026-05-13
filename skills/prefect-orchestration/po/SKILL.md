@@ -24,11 +24,21 @@ epic whose ready children should fan out concurrently.
 Start at the highest useful planning layer before dispatching implementation:
 
 1. Goal or roadmap discussion
-2. Durable planning artifact under `.planning/products/<slug>/` or `.planning/epics/<slug>/`
-3. Beads epic and child issue creation via `bd`
-4. Inline vs subagent vs `po` dispatch choice
+2. Product-level planning when the work is still above a single epic
+3. Epic-level planning when a single epic needs deeper shaping
+4. Durable planning artifact under `.planning/products/<slug>/` or `.planning/epics/<slug>/`
+5. Beads epic and child issue creation via `bd`
+6. Inline vs subagent vs `po` dispatch choice
 
-Use the scaffold command when the durable artifact does not exist yet:
+Preferred workflows:
+
+```text
+beads-product           # initiative / epic-of-epics planning
+beads-epic-brainstorm   # collaborative shaping of one epic
+```
+
+Use the scaffold command only when the durable artifact does not exist yet and
+you need to bootstrap the files before continuing the richer workflow:
 
 ```bash
 po planning-init --kind=product --slug=<product-slug> --title="Product Name"
@@ -40,9 +50,10 @@ Artifact layout:
 - Product planning: `.planning/products/<slug>/<slug>-vision.md` and `<slug>-epics.md`
 - Epic planning: `.planning/epics/<slug>/<slug>-brainstorm.md`, `<slug>-design.md`, `<slug>-epic-plan.md`, and `<slug>-issues.md`
 
-After the artifact exists, refine it with the user, then translate it into `bd`
-epics and child beads. Only dispatch `po run epic` or `po run software-dev-full`
-after the work has been decomposed enough that a verifier can judge success.
+After the artifact exists, refine it with the user via the product/epic planning
+workflow, then translate it into `bd` epics and child beads. Only dispatch
+`po run epic` or `po run software-dev-full` after the work has been decomposed
+enough that a verifier can judge success.
 
 ## Choosing PO vs Inline vs Subagents
 

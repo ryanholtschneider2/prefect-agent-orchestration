@@ -19,8 +19,8 @@ The first version writes durable on-disk reports and does not extend
 
 ```bash
 po install --editable /path/to/prefect-orchestration/packs/po-formulas-retro
-po update
-po packs
+po packs update
+po packs list
 ```
 
 ## Manual use

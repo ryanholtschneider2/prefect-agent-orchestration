@@ -1,4 +1,4 @@
-"""Scheduled reflection flow over prior PO artifacts."""
+"""Scheduled reflection flow over prior PO and Codex artifacts."""
 
 from __future__ import annotations
 
@@ -14,6 +14,19 @@ from prefect import flow
 
 KNOWN_ARTIFACTS = ("plan.md", "decision-log.md", "lessons-learned.md")
 REPORT_ROOT = Path(".planning") / "update-prompts-from-lessons"
+CODEX_EVENT_LOG = Path(".claude") / "logs" / "session-events.jsonl"
+CODEX_DIAGNOSTICS_LOG = Path(".claude") / "logs" / "diagnostics.jsonl"
+PUSHBACK_MARKERS = (
+    "not good enough",
+    "too many",
+    "should just",
+    "why didn't",
+    "why did you",
+    "instead",
+    "actually",
+    "no,",
+    "ugh",
+)
 
 
 @dataclass(frozen=True)
@@ -48,8 +61,16 @@ class ReportProposal:
     bead_id: str | None = None
 
 
+@dataclass(frozen=True)
+class ReflectionEvidence:
+    source: str
+    signals: list[ReflectionSignal]
+
+
 def _known_artifact_paths(run_dir: Path) -> list[Path]:
-    artifact_paths = [run_dir / name for name in KNOWN_ARTIFACTS if (run_dir / name).exists()]
+    artifact_paths = [
+        run_dir / name for name in KNOWN_ARTIFACTS if (run_dir / name).exists()
+    ]
     verdict_dir = run_dir / "verdicts"
     if verdict_dir.exists():
         artifact_paths.extend(sorted(verdict_dir.glob("*.json")))
@@ -99,7 +120,10 @@ def _explicit_line(kind: str, line: str) -> ReflectionSignal | None:
     lowered = line.lower()
     if kind not in lowered:
         return None
-    if not any(word in lowered for word in ("need", "missing", "should", "add", "create", "improve")):
+    if not any(
+        word in lowered
+        for word in ("need", "missing", "should", "add", "create", "improve")
+    ):
         return None
     detail = _normalize_line(line.lstrip("-*0123456789. "))
     return ReflectionSignal(
@@ -114,7 +138,9 @@ def extract_signals(run_dir: Path) -> list[ReflectionSignal]:
     signals: list[ReflectionSignal] = []
 
     verdict_dir = run_dir / "verdicts"
-    for verdict_path in sorted(verdict_dir.glob("*.json")) if verdict_dir.exists() else []:
+    for verdict_path in (
+        sorted(verdict_dir.glob("*.json")) if verdict_dir.exists() else []
+    ):
         payload = _load_json(verdict_path)
         haystack = json.dumps(payload).lower()
         if any(word in haystack for word in ("reject", "rejected", "needs_revision")):
@@ -125,7 +151,9 @@ def extract_signals(run_dir: Path) -> list[ReflectionSignal]:
                     evidence=str(verdict_path.relative_to(run_dir)),
                 )
             )
-        if "test" in haystack and any(word in haystack for word in ("fail", "failed", "error")):
+        if "test" in haystack and any(
+            word in haystack for word in ("fail", "failed", "error")
+        ):
             signals.append(
                 ReflectionSignal(
                     kind="hook",
@@ -133,7 +161,9 @@ def extract_signals(run_dir: Path) -> list[ReflectionSignal]:
                     evidence=str(verdict_path.relative_to(run_dir)),
                 )
             )
-        if "lint" in haystack and any(word in haystack for word in ("fail", "failed", "error")):
+        if "lint" in haystack and any(
+            word in haystack for word in ("fail", "failed", "error")
+        ):
             signals.append(
                 ReflectionSignal(
                     kind="hook",
@@ -158,16 +188,191 @@ def extract_signals(run_dir: Path) -> list[ReflectionSignal]:
     return signals
 
 
-def build_proposals(run_dirs: list[Path]) -> list[ImprovementProposal]:
-    grouped: dict[tuple[str, str], list[ReflectionSignal]] = {}
+def _parse_jsonl(path: Path) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    if not path.exists():
+        return payloads
+    for raw_line in path.read_text(errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            payloads.append(parsed)
+    return payloads
+
+
+def _recent_event_payloads(rig_path: Path, since_days: int) -> list[dict[str, Any]]:
+    cutoff = datetime.now(UTC) - timedelta(days=since_days)
+    payloads: list[dict[str, Any]] = []
+    for payload in _parse_jsonl(rig_path / CODEX_EVENT_LOG):
+        captured_at = payload.get("captured_at")
+        if not isinstance(captured_at, str):
+            continue
+        try:
+            captured_dt = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if captured_dt < cutoff:
+            continue
+        payloads.append(payload)
+    return payloads
+
+
+def extract_codex_log_signals(
+    rig_path: Path, since_days: int
+) -> list[ReflectionSignal]:
+    signals: list[ReflectionSignal] = []
+    event_payloads = _recent_event_payloads(rig_path, since_days)
+    if not event_payloads:
+        return signals
+
+    by_session: dict[str, list[dict[str, Any]]] = {}
+    for payload in event_payloads:
+        session_id = str(payload.get("session_id") or "")
+        if not session_id:
+            continue
+        by_session.setdefault(session_id, []).append(payload)
+
+    for session_id, items in by_session.items():
+        sorted_items = sorted(items, key=lambda item: str(item.get("captured_at", "")))
+        prompt_count = 0
+        for payload in sorted_items:
+            if payload.get("hook_event_name") != "UserPromptSubmit":
+                continue
+            prompt_count += 1
+            prompt_text = str(payload.get("prompt") or "")
+            lowered = prompt_text.lower()
+
+            if any(marker in lowered for marker in PUSHBACK_MARKERS):
+                signals.append(
+                    ReflectionSignal(
+                        kind="agent",
+                        detail="User pushback in Codex sessions suggests tightening default agent behavior or references.",
+                        evidence=f"codex-log:{session_id}:prompt-{prompt_count}",
+                    )
+                )
+            if "skill" in lowered and any(
+                word in lowered for word in ("add", "improve", "make", "expand")
+            ):
+                signals.append(
+                    ReflectionSignal(
+                        kind="skill",
+                        detail="Repeated requests to add or improve skills suggest a reusable setup skill gap.",
+                        evidence=f"codex-log:{session_id}:prompt-{prompt_count}",
+                        explicit=True,
+                    )
+                )
+            if any(
+                word in lowered
+                for word in (
+                    "artifact",
+                    "diagram",
+                    "mermaid",
+                    "visual",
+                    "screenshot",
+                    "demo video",
+                )
+            ):
+                signals.append(
+                    ReflectionSignal(
+                        kind="workflow",
+                        detail="User repeatedly asks for easier-to-grok artifacts, diagrams, or proof outputs in closeout.",
+                        evidence=f"codex-log:{session_id}:prompt-{prompt_count}",
+                        explicit=True,
+                    )
+                )
+            if "too many" in lowered and "question" in lowered:
+                signals.append(
+                    ReflectionSignal(
+                        kind="agent",
+                        detail="Codex asks too many minor decision questions when the next step should be obvious.",
+                        evidence=f"codex-log:{session_id}:prompt-{prompt_count}",
+                        explicit=True,
+                    )
+                )
+
+    return signals
+
+
+def extract_diagnostics_signals(
+    rig_path: Path, since_days: int
+) -> list[ReflectionSignal]:
+    signals: list[ReflectionSignal] = []
+    cutoff = datetime.now(UTC) - timedelta(days=since_days)
+    for payload in _parse_jsonl(rig_path / CODEX_DIAGNOSTICS_LOG):
+        ts = payload.get("timestamp")
+        if not isinstance(ts, str):
+            continue
+        try:
+            captured_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if captured_dt < cutoff:
+            continue
+
+        message = str(payload.get("message") or "")
+        detail = str(payload.get("detail") or "")
+        if "OTLP export failed" in message or "curl failed" in message:
+            signals.append(
+                ReflectionSignal(
+                    kind="hook",
+                    detail="Logfire export failures suggest the Codex hook/tracing setup needs hardening.",
+                    evidence=f"codex-diagnostics:{message}:{detail}",
+                )
+            )
+        if "Could not acquire session lock" in message:
+            signals.append(
+                ReflectionSignal(
+                    kind="hook",
+                    detail="Logfire session-lock contention suggests the Codex tracing hook needs concurrency hardening.",
+                    evidence=f"codex-diagnostics:{message}",
+                )
+            )
+
+    return signals
+
+
+def gather_reflection_evidence(
+    rig_path: Path, since_days: int
+) -> list[ReflectionEvidence]:
+    run_dirs = collect_run_dirs(rig_path, since_days=since_days)
+    evidence: list[ReflectionEvidence] = []
     for run_dir in run_dirs:
-        for signal in extract_signals(run_dir):
+        evidence.append(
+            ReflectionEvidence(
+                source=str(run_dir.relative_to(rig_path)),
+                signals=extract_signals(run_dir),
+            )
+        )
+    codex_signals = extract_codex_log_signals(rig_path, since_days)
+    if codex_signals:
+        evidence.append(
+            ReflectionEvidence(source=str(CODEX_EVENT_LOG), signals=codex_signals)
+        )
+    diag_signals = extract_diagnostics_signals(rig_path, since_days)
+    if diag_signals:
+        evidence.append(
+            ReflectionEvidence(source=str(CODEX_DIAGNOSTICS_LOG), signals=diag_signals)
+        )
+    return evidence
+
+
+def build_proposals(
+    evidence_items: list[ReflectionEvidence],
+) -> list[ImprovementProposal]:
+    grouped: dict[tuple[str, str], list[ReflectionSignal]] = {}
+    for evidence in evidence_items:
+        for signal in evidence.signals:
             key = (signal.kind, signal.detail)
             grouped.setdefault(key, []).append(
                 ReflectionSignal(
                     kind=signal.kind,
                     detail=signal.detail,
-                    evidence=f"{run_dir.name}:{signal.evidence}",
+                    evidence=f"{evidence.source}:{signal.evidence}",
                     explicit=signal.explicit,
                 )
             )
@@ -177,7 +382,12 @@ def build_proposals(run_dirs: list[Path]) -> list[ImprovementProposal]:
         explicit = any(signal.explicit for signal in signals)
         if len(signals) < 2 and not explicit:
             continue
-        noun = {"skill": "skill", "hook": "hook", "workflow": "workflow", "agent": "agent behavior"}[kind]
+        noun = {
+            "skill": "skill",
+            "hook": "hook",
+            "workflow": "workflow",
+            "agent": "agent behavior",
+        }[kind]
         proposals.append(
             ImprovementProposal(
                 kind=kind,
@@ -236,7 +446,12 @@ def _query_existing_beads(rig_path: Path, query: str) -> list[dict[str, Any]]:
 def dedupe_proposal(rig_path: Path, proposal: ImprovementProposal) -> DedupeDecision:
     capability_names = _repo_capability_names(rig_path)
     lowered_query = proposal.search_query.lower()
-    if any(token in name for token in lowered_query.split() for name in capability_names if len(token) > 3):
+    if any(
+        token in name
+        for token in lowered_query.split()
+        for name in capability_names
+        if len(token) > 3
+    ):
         return DedupeDecision(
             status="covered",
             reason="A similarly named skill, hook, pack, or doc already exists in the repo.",
@@ -248,7 +463,9 @@ def dedupe_proposal(rig_path: Path, proposal: ImprovementProposal) -> DedupeDeci
             reason="A similar beads issue already exists.",
         )
 
-    return DedupeDecision(status="new", reason="No similar local capability or bead found.")
+    return DedupeDecision(
+        status="new", reason="No similar local capability or bead found."
+    )
 
 
 def file_follow_up_bead(rig_path: Path, proposal: ImprovementProposal) -> str | None:
@@ -284,9 +501,16 @@ def write_report(report_dir: Path, report: dict[str, Any]) -> None:
         "",
         f"- Generated at: {report['generated_at']}",
         f"- Analyzed runs: {len(report['analyzed_runs'])}",
+        f"- Analyzed sources: {len(report.get('analyzed_sources', []))}",
         f"- Candidate proposals: {len(report['proposals'])}",
         "",
     ]
+    if report.get("analyzed_sources"):
+        markdown_lines.append("## Sources")
+        markdown_lines.append("")
+        for source in report["analyzed_sources"]:
+            markdown_lines.append(f"- `{source}`")
+        markdown_lines.append("")
     if report["proposals"]:
         markdown_lines.append("## Proposals")
         markdown_lines.append("")
@@ -294,7 +518,9 @@ def write_report(report_dir: Path, report: dict[str, Any]) -> None:
             markdown_lines.append(f"### {item['title']}")
             markdown_lines.append(f"- Kind: {item['kind']}")
             markdown_lines.append(f"- Count: {item['count']}")
-            markdown_lines.append(f"- Dedupe: {item['dedupe_status']} ({item['dedupe_reason']})")
+            markdown_lines.append(
+                f"- Dedupe: {item['dedupe_status']} ({item['dedupe_reason']})"
+            )
             if item["bead_id"]:
                 markdown_lines.append(f"- Bead: {item['bead_id']}")
             markdown_lines.append("- Evidence:")
@@ -305,7 +531,9 @@ def write_report(report_dir: Path, report: dict[str, Any]) -> None:
         markdown_lines.extend(["No repeated signals crossed the filing threshold.", ""])
 
     (report_dir / "report.md").write_text("\n".join(markdown_lines))
-    (report_dir / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True))
+    (report_dir / "report.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True)
+    )
 
 
 def _serialize_report_proposal(item: ReportProposal) -> dict[str, Any]:
@@ -329,8 +557,11 @@ def update_prompts_from_lessons(
     report_slug: str | None = None,
 ) -> dict[str, Any]:
     rig = Path(rig_path).expanduser().resolve()
-    run_dirs = collect_run_dirs(rig, since_days=lookback_days)
-    proposals = build_proposals(run_dirs)
+    evidence_items = gather_reflection_evidence(rig, since_days=lookback_days)
+    run_sources = [
+        item.source for item in evidence_items if item.source.startswith(".planning/")
+    ]
+    proposals = build_proposals(evidence_items)
 
     reviewed: list[ReportProposal] = []
     for proposal in proposals[:max_proposals]:
@@ -338,13 +569,16 @@ def update_prompts_from_lessons(
         bead_id = None
         if auto_file_beads and decision.status == "new":
             bead_id = file_follow_up_bead(rig, proposal)
-        reviewed.append(ReportProposal(proposal=proposal, dedupe=decision, bead_id=bead_id))
+        reviewed.append(
+            ReportProposal(proposal=proposal, dedupe=decision, bead_id=bead_id)
+        )
 
     slug = report_slug or datetime.now(UTC).strftime("%Y-%m-%d")
     report_dir = rig / REPORT_ROOT / slug
     report = {
         "generated_at": datetime.now(UTC).isoformat(),
-        "analyzed_runs": [str(path.relative_to(rig)) for path in run_dirs],
+        "analyzed_runs": run_sources,
+        "analyzed_sources": [item.source for item in evidence_items],
         "proposals": [_serialize_report_proposal(item) for item in reviewed],
     }
     write_report(report_dir, report)

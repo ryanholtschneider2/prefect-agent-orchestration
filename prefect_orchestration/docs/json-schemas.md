@@ -53,9 +53,18 @@ Returns a JSON array. Each element:
   "started": "2026-04-29T12:00:00+00:00",  // ISO-8601, nullable
   "ended": null,               // ISO-8601 or null
   "current_step": "builder",  // nullable — latest non-terminal task name
-  "run_count": 1               // total flow runs for this issue
+  "run_count": 1,              // total flow runs for this issue
+  "stale_secs": null,          // int seconds since last activity, or null
+  "work_landed": null,         // bool | null — true iff any build-iter-*.diff is non-empty
+  "terminal_role": null,       // str  | null — role at which the flow crashed
+  "terminal_iter": null,       // int  | null — iter number at crash
+  "exception_class": null      // str  | null — Python class name (e.g. "StepTimeoutError")
 }
 ```
+
+The last four fields are read from `<run_dir>/flow_outcome.json` written
+by `software_dev_full`'s exception guard on non-Completed exit; all four
+are `null` for Completed flows or when the outcome file is absent.
 
 ---
 

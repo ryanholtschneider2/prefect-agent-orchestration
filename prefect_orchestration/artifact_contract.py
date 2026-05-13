@@ -73,6 +73,12 @@ def _artifact_specs(work_type: WorkType) -> list[dict[str, object]]:
     if work_type == "backend-code":
         return base + [
             {
+                "artifact_type": "overview",
+                "path": "review-artifacts/overview.md",
+                "producer_role": "review-artifacts",
+                "required": False,
+            },
+            {
                 "artifact_type": "build-diff",
                 "path": "build-iter-1.diff",
                 "producer_role": "build",
@@ -88,6 +94,12 @@ def _artifact_specs(work_type: WorkType) -> list[dict[str, object]]:
     if work_type == "ui":
         return base + [
             {
+                "artifact_type": "overview",
+                "path": "review-artifacts/overview.md",
+                "producer_role": "review-artifacts",
+                "required": False,
+            },
+            {
                 "artifact_type": "smoke-output",
                 "path": "smoke-test-output.txt",
                 "producer_role": "deploy-smoke",
@@ -101,6 +113,12 @@ def _artifact_specs(work_type: WorkType) -> list[dict[str, object]]:
             },
         ]
     return base + [
+        {
+            "artifact_type": "overview",
+            "path": "review-artifacts/overview.md",
+            "producer_role": "review-artifacts",
+            "required": True,
+        },
         {
             "artifact_type": "baseline",
             "path": "baseline.txt",
@@ -160,8 +178,7 @@ def write_artifact_manifest(
             "transcripts": TRANSCRIPTS_DIR,
         },
         "artifacts": [
-            _artifact_entry(run_dir, spec)
-            for spec in _artifact_specs(work_type)
+            _artifact_entry(run_dir, spec) for spec in _artifact_specs(work_type)
         ],
     }
     manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -194,8 +211,9 @@ def ensure_handoff_summary(
                 f"- Work type: `{work_type}`",
                 f"- Run dir: `{run_dir}`",
                 f"- Manifest: `{run_dir / ARTIFACT_MANIFEST}`",
+                f"- Overview: `{run_dir / REVIEW_ARTIFACTS_DIR / 'overview.md'}`",
                 "",
-                "Open this summary first, then follow the manifest for the rest of the proof set.",
+                "Open this summary first, then review the overview/diagram artifact and follow the manifest for the rest of the proof set.",
                 "",
             ]
         )

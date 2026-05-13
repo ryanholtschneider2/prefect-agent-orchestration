@@ -552,6 +552,20 @@ Every `software-dev-full` run leaves a full paper trail at
 - `verdicts/<step>.json` — orchestrator-readable pass/fail artifacts
 - `metadata.json` — per-role Claude `--resume <uuid>` session ids
 - `review-artifacts/` — screenshots, smoke output, etc.
+- `agent_step_failures.jsonl` — appended one row per `agent_step` turn
+  failure (`{ts, step, iter, role, target_bead, exception_class,
+  exception_msg, traceback_tail, bd_state_after, session_uuid}`); written
+  before the original exception re-raises so a Prefect Crashed/Failed
+  flow's terminal cause is still diagnosable on-disk
+- `flow_outcome.json` — written by `software_dev_full`'s
+  `try/except BaseException` body-wrap on any non-Completed exit
+  (`{terminal_role, terminal_iter, work_landed, bd_seed_closed,
+  exception_class, partial_summary}`); the wrap re-raises unconditionally
+  so Prefect's terminal-state semantics are preserved. `BaseException`
+  is deliberate — SIGTERM during Prefect worker shutdown surfaces here
+  too. `work_landed` is true when any `build-iter-*.diff` in the run-dir
+  is non-empty. `po status` reads this file to annotate non-Completed
+  rows (see the `po status` row in §"When to use `po` vs `prefect`").
 
 For live runs: `tail -f /tmp/prefect-orchestration-runs/<run>.log` and
 the Prefect UI at `http://127.0.0.1:4200` (after `prefect server start`).
@@ -669,7 +683,7 @@ Background and rationale: `engdocs/formula-modes.md`. Migration plan
 | Archive a run_dir and relaunch its formula | `po retry <issue-id> [--keep-sessions] [--force] [--rig NAME] [--formula NAME]` |
 | Resume a failed flow without archiving run_dir | `po resume <issue-id> [--at <when>] [--force] [--rig NAME] [--formula NAME]` |
 | Live merged feed of flow state + run_dir artifacts | `po watch <issue-id> [--replay] [--replay-n N]` |
-| List active / recent runs grouped by bead `issue_id` tag; annotates RUNNING flows silent ≥5 min with `(stale: Nm)` and auto-Fails + clears bead assignee for flows silent ≥10 min with no live process (`PO_WATCHDOG_STALE_SECS`, default 600s) | `po status [--issue-id ID] [--since 24h] [--state Running] [--all]` |
+| List active / recent runs grouped by bead `issue_id` tag; annotates RUNNING flows silent ≥5 min with `(stale: Nm)` and auto-Fails + clears bead assignee for flows silent ≥10 min with no live process (`PO_WATCHDOG_STALE_SECS`, default 600s); annotates non-Completed rows with `[work landed: ✓\|✗] [last: <role>-iter-<n>] [exc: <ExceptionClass>]` from `flow_outcome.json` so operators can tell whether a Crashed/Failed flow actually shipped work without spelunking the run-dir. `po status --json` carries the same fields (`work_landed`, `terminal_role`, `terminal_iter`, `exception_class`) on every row — `None` when the outcome file is absent (Completed flows, pre-fix flows, or no exception guard ran). | `po status [--issue-id ID] [--since 24h] [--state Running] [--all]` |
 | List pack-declared deployments | `po deploy` |
 | Apply pack-declared deployments to server | `po deploy --apply` |
 | Check PO wiring (bd, Prefect API, pool, entry points) | `po doctor` |

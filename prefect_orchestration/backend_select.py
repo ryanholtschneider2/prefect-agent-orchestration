@@ -14,6 +14,7 @@ when the user asked for tmux on purpose).
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import sys
 from typing import Literal, Type
@@ -35,6 +36,45 @@ BackendChoice = Literal[
 def _stdout_is_tty() -> bool:
     """Return True iff stdout is attached to a TTY (`isatty()`)."""
     return bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+
+def adapt_backend_to_start_command(
+    backend: Type[SessionBackend],
+    start_command: str | None,
+) -> Type[SessionBackend]:
+    """Swap Claude/Codex backend families to match `start_command`.
+
+    `agent_step._build_session()` historically picked the backend class
+    first, then passed any per-role `start_command` into that backend's
+    constructor. That breaks when the default backend is Claude-flavored
+    but the runtime override is `codex exec ...`: the Claude backend
+    still appends Claude-only flags like `--print`.
+
+    This helper keeps the transport shape stable (tmux stays tmux, cli
+    stays cli) while switching between the Claude and Codex backend
+    families based on the actual executable being invoked.
+    """
+    if not start_command:
+        return backend
+    try:
+        argv = shlex.split(start_command)
+    except ValueError:
+        return backend
+    if not argv:
+        return backend
+
+    executable = os.path.basename(argv[0]).lower()
+    if executable == "codex":
+        if backend is TmuxClaudeBackend:
+            return TmuxCodexBackend
+        if backend is ClaudeCliBackend:
+            return CodexCliBackend
+    if executable == "claude":
+        if backend is TmuxCodexBackend:
+            return TmuxClaudeBackend
+        if backend is CodexCliBackend:
+            return ClaudeCliBackend
+    return backend
 
 
 def select_default_backend(
