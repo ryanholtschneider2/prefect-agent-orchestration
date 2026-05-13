@@ -12,7 +12,7 @@ import os
 import subprocess
 import tarfile
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -78,15 +78,15 @@ def write_env(record: EnvRecord) -> None:
     ENVS_DIR.mkdir(parents=True, exist_ok=True)
     path = ENVS_DIR / f"{record.name}.toml"
     lines = [
-        f'name = {_toml_str(record.name)}',
-        f'driver = {_toml_str(record.driver)}',
-        f'snapshot_tag = {_toml_str(record.snapshot_tag)}',
-        f'pool = {_toml_str(record.pool)}',
-        f'opaque = {_toml_str(record.opaque)}',
-        f'rig_remote = {_toml_str(record.rig_remote)}',
-        f'identity_hash = {_toml_str(record.identity_hash)}',
-        f'created_at = {_toml_str(record.created_at)}',
-        f'last_run_at = {_toml_str(record.last_run_at)}',
+        f"name = {_toml_str(record.name)}",
+        f"driver = {_toml_str(record.driver)}",
+        f"snapshot_tag = {_toml_str(record.snapshot_tag)}",
+        f"pool = {_toml_str(record.pool)}",
+        f"opaque = {_toml_str(record.opaque)}",
+        f"rig_remote = {_toml_str(record.rig_remote)}",
+        f"identity_hash = {_toml_str(record.identity_hash)}",
+        f"created_at = {_toml_str(record.created_at)}",
+        f"last_run_at = {_toml_str(record.last_run_at)}",
     ]
     path.write_text("\n".join(lines) + "\n")
 
@@ -156,9 +156,7 @@ def delete_env(name: str) -> None:
         path.unlink()
 
 
-def _build_identity_tarball(
-    dest: Path, *, with_auth: bool
-) -> tuple[Path, str]:
+def _build_identity_tarball(dest: Path, *, with_auth: bool) -> tuple[Path, str]:
     """Tar the curated ~/.claude/ subset; return (tarball_path, sha256_hex)."""
     claude_dir = Path.home() / ".claude"
     tarball = dest / "claude-identity.tar.gz"
@@ -166,9 +164,13 @@ def _build_identity_tarball(
         if claude_dir.exists():
             for child in sorted(claude_dir.iterdir()):
                 name = child.name
-                if name in _CLAUDE_EXCLUDE and not (name == ".credentials.json" and with_auth):
+                if name in _CLAUDE_EXCLUDE and not (
+                    name == ".credentials.json" and with_auth
+                ):
                     continue
-                if name in _CLAUDE_INCLUDE or (with_auth and name == ".credentials.json"):
+                if name in _CLAUDE_INCLUDE or (
+                    with_auth and name == ".credentials.json"
+                ):
                     tf.add(child, arcname=f".claude/{name}", recursive=True)
     sha256 = hashlib.sha256(tarball.read_bytes()).hexdigest()
     return tarball, sha256
@@ -187,10 +189,14 @@ env_app = typer.Typer(
 
 @env_app.command("up")
 def env_up(
-    driver: str = typer.Option(..., help="Registered driver name (e.g. noop, rclaude)."),
+    driver: str = typer.Option(
+        ..., help="Registered driver name (e.g. noop, rclaude)."
+    ),
     name: str = typer.Option("default", help="Env name (stored in envs/<name>.toml)."),
     snapshot: str = typer.Option("", help="Driver-opaque snapshot tag."),
-    with_auth: bool = typer.Option(False, help="Include ~/.claude/.credentials.json in identity push."),
+    with_auth: bool = typer.Option(
+        False, help="Include ~/.claude/.credentials.json in identity push."
+    ),
     rebuild: bool = typer.Option(False, help="Force rebuild of identity tarball."),
     rig_transport: str = typer.Option("git", help="Rig transport: git or tar."),
 ) -> None:
@@ -372,7 +378,9 @@ def env_attach(
 
 @env_app.command("reap")
 def env_reap(
-    idle_since: str = typer.Option("24h", help="Tear down envs idle for this long (e.g. 24h, 0)."),
+    idle_since: str = typer.Option(
+        "24h", help="Tear down envs idle for this long (e.g. 24h, 0)."
+    ),
     yes: bool = typer.Option(False, "-y", help="Skip confirmation."),
 ) -> None:
     """Tear down idle envs."""

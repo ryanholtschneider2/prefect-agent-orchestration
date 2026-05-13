@@ -686,6 +686,11 @@ Background and rationale: `engdocs/formula-modes.md`. Migration plan
 | List active / recent runs grouped by bead `issue_id` tag; annotates RUNNING flows silent ≥5 min with `(stale: Nm)` and auto-Fails + clears bead assignee for flows silent ≥10 min with no live process (`PO_WATCHDOG_STALE_SECS`, default 600s); annotates non-Completed rows with `[work landed: ✓\|✗] [last: <role>-iter-<n>] [exc: <ExceptionClass>]` from `flow_outcome.json` so operators can tell whether a Crashed/Failed flow actually shipped work without spelunking the run-dir. `po status --json` carries the same fields (`work_landed`, `terminal_role`, `terminal_iter`, `exception_class`) on every row — `None` when the outcome file is absent (Completed flows, pre-fix flows, or no exception guard ran). | `po status [--issue-id ID] [--since 24h] [--state Running] [--all]` |
 | List pack-declared deployments | `po deploy` |
 | Apply pack-declared deployments to server | `po deploy --apply` |
+| Provision a remote cloud env (persists to `~/.config/po/envs/<name>.toml`) | `po env up --driver <name> [--name <ws>] [--snapshot <tag>] [--with-auth] [--rebuild] [--rig-transport=git\|tar]` |
+| List provisioned envs | `po env list [--idle [--threshold 1h]]` |
+| Teardown a remote env | `po env down <name> [-f]` |
+| Attach to the remote env's tmux session for a live issue | `po env attach <name> [--role <role>]` |
+| Bulk-teardown idle envs | `po env reap [--idle-since 24h] [-y]` |
 | Check PO wiring (bd, Prefect API, pool, entry points) | `po doctor` |
 | List stale `.retry.lock` files; `--fix` removes them | `po doctor --check=locks [--fix]` |
 | List deployments currently on server | `prefect deployment ls` |
@@ -947,3 +952,4 @@ must check namespaces not source text.
 - `au5` pack-level CLAUDE overlay convention + `po doctor` check + `po packs install --rig-path` (shipped — see §"Pack overlays")
 - `gv0` stale `.retry.lock` auto-cleanup on resume/retry + `po doctor --check=locks` (shipped — see §"Debugging a run")
 - `9ws.2` `po.env_drivers` EP group + `EnvDriver` Protocol + `EnvHandle` / `EnvHealth` in `prefect_orchestration/env_drivers.py`; `po doctor` `env drivers registered` row; `po packs list` `env_drivers=...` column (shipped — see [`engdocs/cloud-envs.md`](engdocs/cloud-envs.md) §"Writing a driver"). Drivers ship in separate packs (e.g. `po-cloud-rclaude`); `NoopDriver` in-tree is a test fixture, not a registered driver.
+- `9ws.4` `po env` sub-app (shipped) — `up/list/down/attach/reap` verbs + `EnvRecord` TOML store at `~/.config/po/envs/<name>.toml`; identity tarball (`~/.claude/` curated subset) push; `push_credentials` for `ANTHROPIC_API_KEY` + OAuth; Prefect work-pool `po-env-<name>` created idempotently at `up` time. See §"When to use `po` vs `prefect`" for CLI reference.
