@@ -693,6 +693,7 @@ Background and rationale: `engdocs/formula-modes.md`. Migration plan
 | Bulk-teardown idle envs | `po env reap [--idle-since 24h] [-y]` |
 | Check PO wiring (bd, Prefect API, pool, entry points) | `po doctor` |
 | List stale `.retry.lock` files; `--fix` removes them | `po doctor --check=locks [--fix]` |
+| Run per-env health checks (snapshot drift, identity hash, driver health, worker liveness, git push dry-run) | `po doctor --check=envs` |
 | List deployments currently on server | `prefect deployment ls` |
 | Trigger a deployment (now or future) | `prefect deployment run <name> --start-in 2h` |
 | Start server / worker | `prefect server start`, `prefect worker start --pool po` |
@@ -951,5 +952,6 @@ must check namespaces not source text.
 - `dgr` po-formulas-prompt deprecation (shipped — see §"Deprecating a `po.formulas` pack")
 - `au5` pack-level CLAUDE overlay convention + `po doctor` check + `po packs install --rig-path` (shipped — see §"Pack overlays")
 - `gv0` stale `.retry.lock` auto-cleanup on resume/retry + `po doctor --check=locks` (shipped — see §"Debugging a run")
+- `9ws.6` `po doctor --check=envs`: per-env checks (snapshot drift, identity bundle hash drift, driver health, Prefect work-pool worker liveness, git push dry-run); `compute_identity_hash()` helper in `env.py` (shipped)
 - `9ws.2` `po.env_drivers` EP group + `EnvDriver` Protocol + `EnvHandle` / `EnvHealth` in `prefect_orchestration/env_drivers.py`; `po doctor` `env drivers registered` row; `po packs list` `env_drivers=...` column (shipped — see [`engdocs/cloud-envs.md`](engdocs/cloud-envs.md) §"Writing a driver"). Drivers ship in separate packs (e.g. `po-cloud-rclaude`); `NoopDriver` in-tree is a test fixture, not a registered driver.
 - `9ws.4` `po env` sub-app (shipped) — `up/list/down/attach/reap` verbs + `EnvRecord` TOML store at `~/.config/po/envs/<name>.toml`; identity tarball (`~/.claude/` curated subset) push; `push_credentials` for `ANTHROPIC_API_KEY` + OAuth; Prefect work-pool `po-env-<name>` created idempotently at `up` time. See §"When to use `po` vs `prefect`" for CLI reference.
