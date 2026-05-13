@@ -674,12 +674,13 @@ Background and rationale: `engdocs/formula-modes.md`. Migration plan
 | List installed formulas | `po list` |
 | Show a formula's signature / docstring | `po show <formula>` |
 | Run a formula synchronously, now | `po run <formula> --args` |
+| Run a formula on a remote cloud env (push rig, dispatch on env's work pool, mirror run artifacts back) | `po run <formula> --env <name> [--rebuild] --args` |
 | Fan out an arbitrary bd sub-graph rooted at any bead | `po run graph --root-id <id> --rig <name> --rig-path <path> [--traverse=parent-child,blocks] [--formula=software-dev-full]` |
 | Run an ad-hoc `@flow` from a `.py` file (no install required) | `po run --from-file <path> [--name <flow>] --args` |
 | Tail / follow logs for an issue's run | `po logs <issue-id> [-f] [-n N] [--file NAME]` |
 | Dump full forensic trail for a run | `po artifacts <issue-id> [--verdicts] [--open]` |
 | Show per-role Claude session UUIDs for a run | `po sessions <issue-id> [--resume <role>]` |
-| Attach to an issue's tmux session (k8s pod or host) | `po attach <issue-id> [--role <role>] [--list] [--print-argv]` |
+| Attach to an issue's tmux session (local, k8s pod, or remote env) | `po attach <issue-id> [--role <role>] [--list] [--print-argv]` |
 | Archive a run_dir and relaunch its formula | `po retry <issue-id> [--keep-sessions] [--force] [--rig NAME] [--formula NAME]` |
 | Resume a failed flow without archiving run_dir | `po resume <issue-id> [--at <when>] [--force] [--rig NAME] [--formula NAME]` |
 | Live merged feed of flow state + run_dir artifacts | `po watch <issue-id> [--replay] [--replay-n N]` |
@@ -955,3 +956,4 @@ must check namespaces not source text.
 - `9ws.6` `po doctor --check=envs`: per-env checks (snapshot drift, identity bundle hash drift, driver health, Prefect work-pool worker liveness, git push dry-run); `compute_identity_hash()` helper in `env.py` (shipped)
 - `9ws.2` `po.env_drivers` EP group + `EnvDriver` Protocol + `EnvHandle` / `EnvHealth` in `prefect_orchestration/env_drivers.py`; `po doctor` `env drivers registered` row; `po packs list` `env_drivers=...` column (shipped — see [`engdocs/cloud-envs.md`](engdocs/cloud-envs.md) §"Writing a driver"). Drivers ship in separate packs (e.g. `po-cloud-rclaude`); `NoopDriver` in-tree is a test fixture, not a registered driver.
 - `9ws.4` `po env` sub-app (shipped) — `up/list/down/attach/reap` verbs + `EnvRecord` TOML store at `~/.config/po/envs/<name>.toml`; identity tarball (`~/.claude/` curated subset) push; `push_credentials` for `ANTHROPIC_API_KEY` + OAuth; Prefect work-pool `po-env-<name>` created idempotently at `up` time. See §"When to use `po` vs `prefect`" for CLI reference.
+- `9ws.8` `po run --env <name> [--rebuild]` (shipped) — pushes rig (`git push po-env-<name>`), re-uploads identity bundle if hash changed, stamps `po.env_name` on the bead, schedules `<formula>-env-<name>-manual` deployment on the env's work pool, polls to terminal, then mirrors `<rig>/.planning/<formula>/<issue>/` back via `driver.fs_download`; `po attach` resolves env-backed runs to `driver.attach_argv`. `--rebuild` forces snapshot re-provision before dispatch. `--env` on `po retry`/`po resume` is stubbed (warning only) — full wiring is a follow-up.
