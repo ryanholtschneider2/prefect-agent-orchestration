@@ -582,8 +582,11 @@ def _compute_local_pack_hash() -> str:
     from importlib.metadata import version as _ver
 
     _PO_GROUPS = [
-        "po.formulas", "po.commands", "po.doctor_checks",
-        "po.deployments", "po.env_drivers",
+        "po.formulas",
+        "po.commands",
+        "po.doctor_checks",
+        "po.deployments",
+        "po.env_drivers",
     ]
     dist_versions: dict[str, str] = {}
     for group in _PO_GROUPS:
@@ -684,8 +687,11 @@ def run_env_checks() -> list[CheckResult]:
 
     records = list_envs()
     if not records:
-        return [CheckResult(name="registered envs", status=Status.OK,
-                            message="no envs registered")]
+        return [
+            CheckResult(
+                name="registered envs", status=Status.OK, message="no envs registered"
+            )
+        ]
 
     results: list[CheckResult] = []
     drivers = load_drivers()
@@ -695,66 +701,93 @@ def run_env_checks() -> list[CheckResult]:
 
         # 1. snapshot drift
         if not rec.snapshot_tag:
-            results.append(CheckResult(
-                name=f"{prefix}: snapshot", status=Status.OK,
-                message="no snapshot tag; skipping",
-            ))
+            results.append(
+                CheckResult(
+                    name=f"{prefix}: snapshot",
+                    status=Status.OK,
+                    message="no snapshot tag; skipping",
+                )
+            )
         else:
             local_hash = _compute_local_pack_hash()
             if local_hash != rec.snapshot_tag:
-                results.append(CheckResult(
-                    name=f"{prefix}: snapshot", status=Status.FAIL,
-                    message=f"local={local_hash!r} ≠ stored={rec.snapshot_tag!r}",
-                    remediation="po env image build, then po run --env <name> --rebuild",
-                ))
+                results.append(
+                    CheckResult(
+                        name=f"{prefix}: snapshot",
+                        status=Status.FAIL,
+                        message=f"local={local_hash!r} ≠ stored={rec.snapshot_tag!r}",
+                        remediation="po env image build, then po run --env <name> --rebuild",
+                    )
+                )
             else:
-                results.append(CheckResult(
-                    name=f"{prefix}: snapshot", status=Status.OK,
-                    message=local_hash,
-                ))
+                results.append(
+                    CheckResult(
+                        name=f"{prefix}: snapshot",
+                        status=Status.OK,
+                        message=local_hash,
+                    )
+                )
 
         # 2. identity drift
         try:
             current_hash = compute_identity_hash()
         except Exception as exc:
-            results.append(CheckResult(
-                name=f"{prefix}: identity", status=Status.WARN,
-                message=f"hash error: {exc}",
-            ))
+            results.append(
+                CheckResult(
+                    name=f"{prefix}: identity",
+                    status=Status.WARN,
+                    message=f"hash error: {exc}",
+                )
+            )
         else:
             if current_hash != rec.identity_hash:
-                results.append(CheckResult(
-                    name=f"{prefix}: identity", status=Status.WARN,
-                    message="~/.claude/ drift detected",
-                    remediation="will resync at next po run --env",
-                ))
+                results.append(
+                    CheckResult(
+                        name=f"{prefix}: identity",
+                        status=Status.WARN,
+                        message="~/.claude/ drift detected",
+                        remediation="will resync at next po run --env",
+                    )
+                )
             else:
-                results.append(CheckResult(
-                    name=f"{prefix}: identity", status=Status.OK,
-                    message="hash matches",
-                ))
+                results.append(
+                    CheckResult(
+                        name=f"{prefix}: identity",
+                        status=Status.OK,
+                        message="hash matches",
+                    )
+                )
 
         # 3. driver health
         if rec.driver not in drivers:
-            results.append(CheckResult(
-                name=f"{prefix}: driver", status=Status.WARN,
-                message=f"driver '{rec.driver}' not registered",
-            ))
+            results.append(
+                CheckResult(
+                    name=f"{prefix}: driver",
+                    status=Status.WARN,
+                    message=f"driver '{rec.driver}' not registered",
+                )
+            )
         else:
             handle = EnvHandle(driver_name=rec.driver, opaque=rec.opaque)
             try:
                 health = drivers[rec.driver].health(handle)
             except Exception as exc:
-                results.append(CheckResult(
-                    name=f"{prefix}: driver", status=Status.FAIL,
-                    message=str(exc),
-                ))
+                results.append(
+                    CheckResult(
+                        name=f"{prefix}: driver",
+                        status=Status.FAIL,
+                        message=str(exc),
+                    )
+                )
             else:
                 drv_status = Status.OK if health.ok else Status.FAIL
-                results.append(CheckResult(
-                    name=f"{prefix}: driver", status=drv_status,
-                    message=health.summary,
-                ))
+                results.append(
+                    CheckResult(
+                        name=f"{prefix}: driver",
+                        status=drv_status,
+                        message=health.summary,
+                    )
+                )
 
         # 4. pool worker
         results.append(_check_env_pool_worker(rec.pool, prefix))
@@ -763,10 +796,13 @@ def run_env_checks() -> list[CheckResult]:
         if rec.rig_remote:
             results.append(_check_git_push_dry_run(rec.rig_remote, prefix))
         else:
-            results.append(CheckResult(
-                name=f"{prefix}: git-push", status=Status.OK,
-                message="no rig_remote; skipping",
-            ))
+            results.append(
+                CheckResult(
+                    name=f"{prefix}: git-push",
+                    status=Status.OK,
+                    message="no rig_remote; skipping",
+                )
+            )
 
     return results
 

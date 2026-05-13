@@ -783,18 +783,32 @@ def test_run_env_checks_no_envs(monkeypatch):
 
 def test_run_env_checks_snapshot_skipped_empty_tag(monkeypatch):
     rec = _FakeEnvRecord(
-        name="myenv", driver="noop", snapshot_tag="", pool="po-env-myenv",
-        opaque={}, rig_remote="", identity_hash="abc123",
+        name="myenv",
+        driver="noop",
+        snapshot_tag="",
+        pool="po-env-myenv",
+        opaque={},
+        rig_remote="",
+        identity_hash="abc123",
     )
     from prefect_orchestration.env_drivers import NoopDriver
+
     noop = NoopDriver()
     monkeypatch.setattr("prefect_orchestration.env.list_envs", lambda: [rec])
-    monkeypatch.setattr("prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop})
-    monkeypatch.setattr("prefect_orchestration.env.compute_identity_hash", lambda **kw: "abc123")
-    monkeypatch.setattr("prefect_orchestration.doctor._check_env_pool_worker",
-                        lambda pool, prefix: CheckResult(name=f"{prefix}: pool-worker",
-                                                         status=Status.WARN,
-                                                         message="PREFECT_API_URL not set; skipping"))
+    monkeypatch.setattr(
+        "prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop}
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.env.compute_identity_hash", lambda **kw: "abc123"
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.doctor._check_env_pool_worker",
+        lambda pool, prefix: CheckResult(
+            name=f"{prefix}: pool-worker",
+            status=Status.WARN,
+            message="PREFECT_API_URL not set; skipping",
+        ),
+    )
 
     results = doctor_mod.run_env_checks()
     snapshot_rows = [r for r in results if r.name == "myenv: snapshot"]
@@ -805,19 +819,33 @@ def test_run_env_checks_snapshot_skipped_empty_tag(monkeypatch):
 
 def test_run_env_checks_snapshot_mismatch(monkeypatch):
     rec = _FakeEnvRecord(
-        name="myenv", driver="noop", snapshot_tag="stored123", pool="po-env-myenv",
-        opaque={}, rig_remote="", identity_hash="abc123",
+        name="myenv",
+        driver="noop",
+        snapshot_tag="stored123",
+        pool="po-env-myenv",
+        opaque={},
+        rig_remote="",
+        identity_hash="abc123",
     )
     from prefect_orchestration.env_drivers import NoopDriver
+
     noop = NoopDriver()
     monkeypatch.setattr("prefect_orchestration.env.list_envs", lambda: [rec])
-    monkeypatch.setattr("prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop})
-    monkeypatch.setattr("prefect_orchestration.env.compute_identity_hash", lambda **kw: "abc123")
-    monkeypatch.setattr("prefect_orchestration.doctor._compute_local_pack_hash",
-                        lambda: "local999")
-    monkeypatch.setattr("prefect_orchestration.doctor._check_env_pool_worker",
-                        lambda pool, prefix: CheckResult(name=f"{prefix}: pool-worker",
-                                                         status=Status.OK, message="ok"))
+    monkeypatch.setattr(
+        "prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop}
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.env.compute_identity_hash", lambda **kw: "abc123"
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.doctor._compute_local_pack_hash", lambda: "local999"
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.doctor._check_env_pool_worker",
+        lambda pool, prefix: CheckResult(
+            name=f"{prefix}: pool-worker", status=Status.OK, message="ok"
+        ),
+    )
 
     results = doctor_mod.run_env_checks()
     snapshot_rows = [r for r in results if r.name == "myenv: snapshot"]
@@ -828,17 +856,30 @@ def test_run_env_checks_snapshot_mismatch(monkeypatch):
 
 def test_run_env_checks_identity_mismatch(monkeypatch):
     rec = _FakeEnvRecord(
-        name="myenv", driver="noop", snapshot_tag="", pool="po-env-myenv",
-        opaque={}, rig_remote="", identity_hash="oldhash",
+        name="myenv",
+        driver="noop",
+        snapshot_tag="",
+        pool="po-env-myenv",
+        opaque={},
+        rig_remote="",
+        identity_hash="oldhash",
     )
     from prefect_orchestration.env_drivers import NoopDriver
+
     noop = NoopDriver()
     monkeypatch.setattr("prefect_orchestration.env.list_envs", lambda: [rec])
-    monkeypatch.setattr("prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop})
-    monkeypatch.setattr("prefect_orchestration.env.compute_identity_hash", lambda **kw: "newhash")
-    monkeypatch.setattr("prefect_orchestration.doctor._check_env_pool_worker",
-                        lambda pool, prefix: CheckResult(name=f"{prefix}: pool-worker",
-                                                         status=Status.OK, message="ok"))
+    monkeypatch.setattr(
+        "prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop}
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.env.compute_identity_hash", lambda **kw: "newhash"
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.doctor._check_env_pool_worker",
+        lambda pool, prefix: CheckResult(
+            name=f"{prefix}: pool-worker", status=Status.OK, message="ok"
+        ),
+    )
 
     results = doctor_mod.run_env_checks()
     identity_rows = [r for r in results if r.name == "myenv: identity"]
@@ -849,15 +890,25 @@ def test_run_env_checks_identity_mismatch(monkeypatch):
 
 def test_run_env_checks_driver_not_registered(monkeypatch):
     rec = _FakeEnvRecord(
-        name="myenv", driver="ghost", snapshot_tag="", pool="po-env-myenv",
-        opaque={}, rig_remote="", identity_hash="x",
+        name="myenv",
+        driver="ghost",
+        snapshot_tag="",
+        pool="po-env-myenv",
+        opaque={},
+        rig_remote="",
+        identity_hash="x",
     )
     monkeypatch.setattr("prefect_orchestration.env.list_envs", lambda: [rec])
     monkeypatch.setattr("prefect_orchestration.env_drivers.load_drivers", lambda: {})
-    monkeypatch.setattr("prefect_orchestration.env.compute_identity_hash", lambda **kw: "x")
-    monkeypatch.setattr("prefect_orchestration.doctor._check_env_pool_worker",
-                        lambda pool, prefix: CheckResult(name=f"{prefix}: pool-worker",
-                                                         status=Status.OK, message="ok"))
+    monkeypatch.setattr(
+        "prefect_orchestration.env.compute_identity_hash", lambda **kw: "x"
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.doctor._check_env_pool_worker",
+        lambda pool, prefix: CheckResult(
+            name=f"{prefix}: pool-worker", status=Status.OK, message="ok"
+        ),
+    )
 
     results = doctor_mod.run_env_checks()
     driver_rows = [r for r in results if r.name == "myenv: driver"]
@@ -867,10 +918,16 @@ def test_run_env_checks_driver_not_registered(monkeypatch):
 
 def test_run_env_checks_driver_health_fail(monkeypatch):
     rec = _FakeEnvRecord(
-        name="myenv", driver="noop", snapshot_tag="", pool="po-env-myenv",
-        opaque={}, rig_remote="", identity_hash="x",
+        name="myenv",
+        driver="noop",
+        snapshot_tag="",
+        pool="po-env-myenv",
+        opaque={},
+        rig_remote="",
+        identity_hash="x",
     )
     from prefect_orchestration.env_drivers import NoopDriver, EnvHealth
+
     noop = NoopDriver()
 
     def _bad_health(handle):
@@ -878,11 +935,18 @@ def test_run_env_checks_driver_health_fail(monkeypatch):
 
     noop.health = _bad_health  # type: ignore[method-assign]
     monkeypatch.setattr("prefect_orchestration.env.list_envs", lambda: [rec])
-    monkeypatch.setattr("prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop})
-    monkeypatch.setattr("prefect_orchestration.env.compute_identity_hash", lambda **kw: "x")
-    monkeypatch.setattr("prefect_orchestration.doctor._check_env_pool_worker",
-                        lambda pool, prefix: CheckResult(name=f"{prefix}: pool-worker",
-                                                         status=Status.OK, message="ok"))
+    monkeypatch.setattr(
+        "prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop}
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.env.compute_identity_hash", lambda **kw: "x"
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.doctor._check_env_pool_worker",
+        lambda pool, prefix: CheckResult(
+            name=f"{prefix}: pool-worker", status=Status.OK, message="ok"
+        ),
+    )
 
     results = doctor_mod.run_env_checks()
     driver_rows = [r for r in results if r.name == "myenv: driver"]
@@ -892,18 +956,33 @@ def test_run_env_checks_driver_health_fail(monkeypatch):
 
 def test_run_env_checks_no_pool_worker(monkeypatch):
     rec = _FakeEnvRecord(
-        name="myenv", driver="noop", snapshot_tag="", pool="po-env-myenv",
-        opaque={}, rig_remote="", identity_hash="x",
+        name="myenv",
+        driver="noop",
+        snapshot_tag="",
+        pool="po-env-myenv",
+        opaque={},
+        rig_remote="",
+        identity_hash="x",
     )
     from prefect_orchestration.env_drivers import NoopDriver
+
     noop = NoopDriver()
     monkeypatch.setattr("prefect_orchestration.env.list_envs", lambda: [rec])
-    monkeypatch.setattr("prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop})
-    monkeypatch.setattr("prefect_orchestration.env.compute_identity_hash", lambda **kw: "x")
-    monkeypatch.setattr("prefect_orchestration.doctor._check_env_pool_worker",
-                        lambda pool, prefix: CheckResult(
-                            name=f"{prefix}: pool-worker", status=Status.FAIL,
-                            message="none online", remediation="prefect worker start"))
+    monkeypatch.setattr(
+        "prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop}
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.env.compute_identity_hash", lambda **kw: "x"
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.doctor._check_env_pool_worker",
+        lambda pool, prefix: CheckResult(
+            name=f"{prefix}: pool-worker",
+            status=Status.FAIL,
+            message="none online",
+            remediation="prefect worker start",
+        ),
+    )
 
     results = doctor_mod.run_env_checks()
     pool_rows = [r for r in results if r.name == "myenv: pool-worker"]
@@ -912,8 +991,13 @@ def test_run_env_checks_no_pool_worker(monkeypatch):
 
 def test_run_env_checks_git_push_fail(monkeypatch):
     rec = _FakeEnvRecord(
-        name="myenv", driver="noop", snapshot_tag="", pool="po-env-myenv",
-        opaque={}, rig_remote="git@host:repo.git", identity_hash="x",
+        name="myenv",
+        driver="noop",
+        snapshot_tag="",
+        pool="po-env-myenv",
+        opaque={},
+        rig_remote="git@host:repo.git",
+        identity_hash="x",
     )
     from prefect_orchestration.env_drivers import NoopDriver
 
@@ -924,11 +1008,18 @@ def test_run_env_checks_git_push_fail(monkeypatch):
 
     noop = NoopDriver()
     monkeypatch.setattr("prefect_orchestration.env.list_envs", lambda: [rec])
-    monkeypatch.setattr("prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop})
-    monkeypatch.setattr("prefect_orchestration.env.compute_identity_hash", lambda **kw: "x")
-    monkeypatch.setattr("prefect_orchestration.doctor._check_env_pool_worker",
-                        lambda pool, prefix: CheckResult(name=f"{prefix}: pool-worker",
-                                                         status=Status.OK, message="ok"))
+    monkeypatch.setattr(
+        "prefect_orchestration.env_drivers.load_drivers", lambda: {"noop": noop}
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.env.compute_identity_hash", lambda **kw: "x"
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.doctor._check_env_pool_worker",
+        lambda pool, prefix: CheckResult(
+            name=f"{prefix}: pool-worker", status=Status.OK, message="ok"
+        ),
+    )
     monkeypatch.setattr(doctor_mod.subprocess, "run", lambda *a, **k: _FakeProc())
 
     results = doctor_mod.run_env_checks()
@@ -939,8 +1030,13 @@ def test_run_env_checks_git_push_fail(monkeypatch):
 
 def test_doctor_cli_check_envs(monkeypatch, hide_pack_doctor_checks):
     monkeypatch.setattr(
-        doctor_mod, "run_env_checks",
-        lambda: [CheckResult(name="registered envs", status=Status.OK, message="no envs registered")]
+        doctor_mod,
+        "run_env_checks",
+        lambda: [
+            CheckResult(
+                name="registered envs", status=Status.OK, message="no envs registered"
+            )
+        ],
     )
     runner = CliRunner()
     result = runner.invoke(app, ["doctor", "--check=envs"])

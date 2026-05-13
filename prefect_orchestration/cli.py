@@ -970,7 +970,9 @@ def doctor(
         typer.echo(_doctor.render_table(report))
         raise typer.Exit(report.exit_code)
     elif check is not None:
-        typer.echo(f"Unknown --check value: {check!r}. Supported: 'locks', 'envs'", err=True)
+        typer.echo(
+            f"Unknown --check value: {check!r}. Supported: 'locks', 'envs'", err=True
+        )
         raise typer.Exit(1)
     else:
         report = _doctor.run_doctor()
