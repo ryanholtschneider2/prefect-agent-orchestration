@@ -935,7 +935,7 @@ def trace(
 @app.command()
 def doctor(
     check: str | None = typer.Option(
-        None, "--check", help="Run only a named check (e.g. 'locks')."
+        None, "--check", help="Run only a named check ('locks' or 'envs')."
     ),
     fix: bool = typer.Option(
         False, "--fix", help="For --check=locks: delete stale lock files."
@@ -964,8 +964,13 @@ def doctor(
             if removed:
                 typer.echo(f"Removed {len(removed)} stale lock(s).", err=True)
         raise typer.Exit(0)
+    elif check == "envs":
+        results = _doctor.run_env_checks()
+        report = _doctor.DoctorReport(results=results)
+        typer.echo(_doctor.render_table(report))
+        raise typer.Exit(report.exit_code)
     elif check is not None:
-        typer.echo(f"Unknown --check value: {check!r}. Supported: 'locks'", err=True)
+        typer.echo(f"Unknown --check value: {check!r}. Supported: 'locks', 'envs'", err=True)
         raise typer.Exit(1)
     else:
         report = _doctor.run_doctor()

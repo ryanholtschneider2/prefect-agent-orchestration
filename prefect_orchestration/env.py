@@ -156,6 +156,13 @@ def delete_env(name: str) -> None:
         path.unlink()
 
 
+def compute_identity_hash(*, with_auth: bool = False) -> str:
+    """Return the sha256 of the current curated ~/.claude/ tarball."""
+    with tempfile.TemporaryDirectory() as tmp:
+        _, sha256 = _build_identity_tarball(Path(tmp), with_auth=with_auth)
+        return sha256
+
+
 def _build_identity_tarball(dest: Path, *, with_auth: bool) -> tuple[Path, str]:
     """Tar the curated ~/.claude/ subset; return (tarball_path, sha256_hex)."""
     claude_dir = Path.home() / ".claude"
@@ -451,6 +458,7 @@ __all__ = [
     "ENVS_DIR",
     "EnvNotFound",
     "EnvRecord",
+    "compute_identity_hash",
     "delete_env",
     "env_app",
     "list_envs",

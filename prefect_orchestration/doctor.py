@@ -574,6 +574,203 @@ def check_stale_locks(rig_path: Path | None = None) -> CheckResult:
     )
 
 
+def _compute_local_pack_hash() -> str:
+    """12-char hex fingerprint of installed po.* packs + core version."""
+    import hashlib
+    import json as _json
+    from importlib.metadata import entry_points as _eps
+    from importlib.metadata import version as _ver
+
+    _PO_GROUPS = [
+        "po.formulas", "po.commands", "po.doctor_checks",
+        "po.deployments", "po.env_drivers",
+    ]
+    dist_versions: dict[str, str] = {}
+    for group in _PO_GROUPS:
+        try:
+            group_eps = list(_eps(group=group))
+        except TypeError:
+            group_eps = list(_eps().get(group, []))  # type: ignore[attr-defined]
+        for ep in group_eps:
+            dist = getattr(getattr(ep, "dist", None), "name", "") or "?"
+            if dist not in dist_versions:
+                try:
+                    dist_versions[dist] = _ver(dist)
+                except Exception:
+                    dist_versions[dist] = "unknown"
+    try:
+        core_ver = _ver("prefect-orchestration")
+    except Exception:
+        core_ver = "unknown"
+    fingerprint = _json.dumps(
+        {"core": core_ver, "packs": sorted(dist_versions.items())}, sort_keys=True
+    )
+    return hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
+
+
+def _check_env_pool_worker(pool_name: str, env_prefix: str) -> CheckResult:
+    """Return FAIL when the Prefect work pool has no online workers."""
+    name = f"{env_prefix}: pool-worker"
+    if not os.environ.get("PREFECT_API_URL"):
+        return CheckResult(
+            name=name, status=Status.WARN, message="PREFECT_API_URL not set; skipping"
+        )
+    try:
+        from prefect.client.orchestration import get_client
+
+        async def _probe() -> list:
+            async with get_client() as client:
+                return await client.read_workers_for_work_pool(pool_name)
+
+        workers = asyncio.run(asyncio.wait_for(_probe(), timeout=5.0))
+    except Exception as exc:
+        return CheckResult(
+            name=name,
+            status=Status.FAIL,
+            message=f"pool '{pool_name}' query failed: {exc}",
+            remediation=f"prefect worker start --pool {pool_name}",
+        )
+    online = [w for w in workers if getattr(w, "status", None) in ("ONLINE", "online")]
+    if not online:
+        return CheckResult(
+            name=name,
+            status=Status.FAIL,
+            message=f"pool '{pool_name}': {len(workers)} worker(s) registered, none online",
+            remediation=f"prefect worker start --pool {pool_name}",
+        )
+    return CheckResult(
+        name=name,
+        status=Status.OK,
+        message=f"pool '{pool_name}': {len(online)} online worker(s)",
+    )
+
+
+def _check_git_push_dry_run(rig_remote: str, env_prefix: str) -> CheckResult:
+    """Return FAIL when git push --dry-run to rig_remote fails."""
+    name = f"{env_prefix}: git-push"
+    try:
+        proc = subprocess.run(
+            ["git", "push", "--dry-run", rig_remote, "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        return CheckResult(
+            name=name,
+            status=Status.FAIL,
+            message=f"git push --dry-run failed: {exc}",
+            remediation="ensure git is on PATH and rig_remote is reachable",
+        )
+    if proc.returncode != 0:
+        msg = (proc.stderr or proc.stdout or "").strip().splitlines()[-1:]
+        return CheckResult(
+            name=name,
+            status=Status.FAIL,
+            message=f"git push --dry-run → {proc.returncode}: {' '.join(msg)}",
+            remediation=f"check SSH access to {rig_remote}",
+        )
+    return CheckResult(name=name, status=Status.OK, message=f"push ok → {rig_remote}")
+
+
+def run_env_checks() -> list[CheckResult]:
+    """Run per-env health checks for all records in ~/.config/po/envs/*.toml.
+
+    NOT added to ALL_CHECKS — triggered only by ``po doctor --check=envs``.
+    """
+    from prefect_orchestration.env import compute_identity_hash, list_envs
+    from prefect_orchestration.env_drivers import EnvHandle, load_drivers
+
+    records = list_envs()
+    if not records:
+        return [CheckResult(name="registered envs", status=Status.OK,
+                            message="no envs registered")]
+
+    results: list[CheckResult] = []
+    drivers = load_drivers()
+
+    for rec in records:
+        prefix = rec.name
+
+        # 1. snapshot drift
+        if not rec.snapshot_tag:
+            results.append(CheckResult(
+                name=f"{prefix}: snapshot", status=Status.OK,
+                message="no snapshot tag; skipping",
+            ))
+        else:
+            local_hash = _compute_local_pack_hash()
+            if local_hash != rec.snapshot_tag:
+                results.append(CheckResult(
+                    name=f"{prefix}: snapshot", status=Status.FAIL,
+                    message=f"local={local_hash!r} ≠ stored={rec.snapshot_tag!r}",
+                    remediation="po env image build, then po run --env <name> --rebuild",
+                ))
+            else:
+                results.append(CheckResult(
+                    name=f"{prefix}: snapshot", status=Status.OK,
+                    message=local_hash,
+                ))
+
+        # 2. identity drift
+        try:
+            current_hash = compute_identity_hash()
+        except Exception as exc:
+            results.append(CheckResult(
+                name=f"{prefix}: identity", status=Status.WARN,
+                message=f"hash error: {exc}",
+            ))
+        else:
+            if current_hash != rec.identity_hash:
+                results.append(CheckResult(
+                    name=f"{prefix}: identity", status=Status.WARN,
+                    message="~/.claude/ drift detected",
+                    remediation="will resync at next po run --env",
+                ))
+            else:
+                results.append(CheckResult(
+                    name=f"{prefix}: identity", status=Status.OK,
+                    message="hash matches",
+                ))
+
+        # 3. driver health
+        if rec.driver not in drivers:
+            results.append(CheckResult(
+                name=f"{prefix}: driver", status=Status.WARN,
+                message=f"driver '{rec.driver}' not registered",
+            ))
+        else:
+            handle = EnvHandle(driver_name=rec.driver, opaque=rec.opaque)
+            try:
+                health = drivers[rec.driver].health(handle)
+            except Exception as exc:
+                results.append(CheckResult(
+                    name=f"{prefix}: driver", status=Status.FAIL,
+                    message=str(exc),
+                ))
+            else:
+                drv_status = Status.OK if health.ok else Status.FAIL
+                results.append(CheckResult(
+                    name=f"{prefix}: driver", status=drv_status,
+                    message=health.summary,
+                ))
+
+        # 4. pool worker
+        results.append(_check_env_pool_worker(rec.pool, prefix))
+
+        # 5. git push dry-run
+        if rec.rig_remote:
+            results.append(_check_git_push_dry_run(rec.rig_remote, prefix))
+        else:
+            results.append(CheckResult(
+                name=f"{prefix}: git-push", status=Status.OK,
+                message="no rig_remote; skipping",
+            ))
+
+    return results
+
+
 def clean_stale_locks(rig_path: Path | None = None) -> list[Path]:
     """Delete stale .retry.lock files; return list of deleted paths."""
     from prefect_orchestration.retry import LOCK_SUFFIX
