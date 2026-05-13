@@ -136,6 +136,37 @@ def test_env_up_noop_creates_record(tmp_path, monkeypatch):
     assert any(c[0] == "provision" for c in noop.calls)
 
 
+def test_env_up_backend_threaded_into_opts(tmp_path, monkeypatch):
+    """--backend value is forwarded to driver.provision() inside opts."""
+    import prefect_orchestration.env as env_mod
+
+    envs_dir = tmp_path / "envs"
+    monkeypatch.setattr(env_mod, "ENVS_DIR", envs_dir)
+
+    noop = NoopDriver()
+    monkeypatch.setattr(env_mod, "load_drivers", lambda: {"noop": noop})
+
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *a, **kw: type("R", (), {"returncode": 0})(),
+    )
+    monkeypatch.setattr(
+        env_mod,
+        "_build_identity_tarball",
+        lambda dest, *, with_auth: (dest / "fake.tar.gz", "abc123"),
+    )
+
+    result = runner.invoke(
+        env_app,
+        ["up", "--driver", "noop", "--name", "myenv", "--backend", "digitalocean"],
+    )
+    assert result.exit_code == 0, result.output
+    provision_calls = [c for c in noop.calls if c[0] == "provision"]
+    assert provision_calls, "provision() was not called"
+    opts = provision_calls[0][3]  # (provision, name, snapshot_tag, opts_dict)
+    assert opts.get("backend") == "digitalocean"
+
+
 def test_env_up_unknown_driver_exits_1(tmp_path, monkeypatch):
     import prefect_orchestration.env as env_mod
 

@@ -206,6 +206,7 @@ def env_up(
     ),
     rebuild: bool = typer.Option(False, help="Force rebuild of identity tarball."),
     rig_transport: str = typer.Option("git", help="Rig transport: git or tar."),
+    backend: str = typer.Option("", help="Driver-specific backend (e.g. digitalocean, hetzner)."),
 ) -> None:
     """Provision a remote env and persist its record."""
     _validate_name(name)
@@ -223,7 +224,10 @@ def env_up(
 
     # 1. Provision
     typer.echo(f"provisioning env '{name}' via driver '{driver}'...")
-    handle = drv.provision(name, snapshot, {"rig_transport": rig_transport})
+    provision_opts: dict[str, str] = {"rig_transport": rig_transport}
+    if backend:
+        provision_opts["backend"] = backend
+    handle = drv.provision(name, snapshot, provision_opts)
 
     # 2. Ensure rig remote
     rig_remote = drv.ensure_rig_remote(handle)
