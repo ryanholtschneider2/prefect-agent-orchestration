@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
-from typing import Any
 
 import pytest
 from typer.testing import CliRunner
 
 from prefect_orchestration.env import (
-    ENVS_DIR,
     EnvNotFound,
     EnvRecord,
     delete_env,
@@ -205,10 +202,12 @@ def test_env_attach_execvp(tmp_path, monkeypatch):
     monkeypatch.setattr(env_mod, "load_drivers", lambda: {"noop": noop})
 
     execvp_calls: list[tuple[str, list[str]]] = []
-    monkeypatch.setattr(os, "execvp", lambda prog, argv: execvp_calls.append((prog, argv)))
+    monkeypatch.setattr(
+        os, "execvp", lambda prog, argv: execvp_calls.append((prog, argv))
+    )
 
     write_env(_make_record())
-    result = runner.invoke(env_app, ["attach", "myenv"])
+    runner.invoke(env_app, ["attach", "myenv"])
     # NoopDriver.attach_argv returns ["true"] so execvp would be called
     assert any(c[0] == "attach_argv" for c in noop.calls)
     assert execvp_calls[0] == ("true", ["true"])
