@@ -26,6 +26,7 @@ PACK_ENTRY_POINT_GROUPS: tuple[str, ...] = (
     "po.deployments",
     "po.commands",
     "po.doctor_checks",
+    "po.env_drivers",
 )
 
 CORE_DISTRIBUTION = "prefect-orchestration"

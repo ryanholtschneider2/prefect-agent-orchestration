@@ -495,6 +495,51 @@ def check_pack_overlays() -> CheckResult:
     )
 
 
+def check_env_drivers_registered() -> CheckResult:
+    """List registered `po.env_drivers` (informational; never red).
+
+    Returns OK with a comma-separated list of driver names, or OK with
+    "none registered" when no env-driver pack is installed (the common
+    case until 9ws.3 / 9ws.6 ship). WARN when an EP loads but doesn't
+    satisfy `isinstance(..., EnvDriver)` — that's a pack bug.
+    """
+    from prefect_orchestration import env_drivers as _env
+
+    name = "env drivers registered"
+    eps = _env.list_driver_eps()
+    if not eps:
+        return CheckResult(name=name, status=Status.OK, message="none registered")
+    parts: list[str] = []
+    for ep in sorted(
+        eps,
+        key=lambda e: (
+            getattr(getattr(e, "dist", None), "name", "") or "",
+            getattr(e, "name", ""),
+        ),
+    ):
+        dist = getattr(getattr(ep, "dist", None), "name", "") or "?"
+        parts.append(f"{ep.name} ({dist})")
+    loaded = _env.load_drivers()
+    missing = [ep.name for ep in eps if ep.name not in loaded]
+    if missing:
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message=(
+                f"{len(eps)} EP(s): {', '.join(parts)}; "
+                f"failed to load: {', '.join(missing)}"
+            ),
+            remediation=(
+                "ensure each po.env_drivers target is an EnvDriver class or factory"
+            ),
+        )
+    return CheckResult(
+        name=name,
+        status=Status.OK,
+        message=f"{len(eps)} driver(s): {', '.join(parts)}",
+    )
+
+
 def check_stale_locks(rig_path: Path | None = None) -> CheckResult:
     """Scan .planning/*/*.retry.lock sibling files; report stale ones (WARN)."""
     from prefect_orchestration.retry import LOCK_SUFFIX
@@ -568,6 +613,7 @@ ALL_CHECKS: list[Callable[[], CheckResult]] = [
     check_beads_dolt_mode,
     check_logfire_token,
     check_pack_overlays,
+    check_env_drivers_registered,
     check_stale_locks,
 ]
 

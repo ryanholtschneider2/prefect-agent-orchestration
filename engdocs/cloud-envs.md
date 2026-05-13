@@ -189,6 +189,66 @@ VMs forgotten = bills accrued. Two safeguards:
 - `--env up --auto-down 30m` on the ephemeral path schedules teardown
   at flow exit + 30m grace.
 
+## Writing a driver
+
+Cloud-env packs implement the `EnvDriver` Protocol defined in
+`prefect_orchestration/env_drivers.py`. Quick start:
+
+1. New pack: `po-cloud-<provider>`.
+2. Implement the 8 Protocol methods (`provision`, `teardown`,
+   `attach_argv`, `push_identity`, `push_credentials`,
+   `ensure_rig_remote`, `start_worker`, `health`) on a class.
+3. Register the class via:
+
+   ```toml
+   [project.entry-points."po.env_drivers"]
+   <provider> = "po_cloud_<provider>:<ClassName>"
+   ```
+
+4. `po packs install --editable <path>` then `po packs update`.
+5. Confirm with `po doctor` (`env drivers registered` row lists the
+   new driver) and `po packs list` (`env_drivers=<provider>` column).
+
+### `EnvHandle` rules
+
+- Frozen dataclass. Drivers MUST NOT mutate it in place — return a
+  new handle when state changes. (`Mapping[str, Any]` is a typing hint,
+  not a runtime guarantee; the underlying dict remains mutable
+  post-construction — discipline, not enforcement.)
+- `opaque` is a JSON-serializable mapping. No `Path`, no `bytes`, no
+  custom classes. Stash an SDK client by reconstructing it from the
+  ids in `opaque` each call. `__post_init__` validates the shape at
+  construction time and raises `TypeError` on a non-JSON value.
+- 9ws.4 (`envs.toml` store) round-trips `(driver_name, opaque)` via
+  TOML; design `opaque` so that round-trip preserves what the driver
+  needs to look up the sandbox.
+
+### `push_credentials` — bytes vs path
+
+The OAuth creds parameter is `bytes | None`, not `Path`. Caller reads
+`~/.claude/.credentials.json` into bytes once and passes them; driver
+controls the sandbox-side write path (typically
+`/home/coder/.claude/.credentials.json`, mode 0600). This keeps future
+drivers (Vault / 1Password fetch, mTLS bundle) clean.
+
+### Disjoint from `secrets.py`
+
+`prefect_orchestration/secrets.py` provides per-role secret injection
+at AgentSession launch (e.g. `SLACK_TOKEN_BUILDER`). That's orthogonal
+to `push_credentials`, which is per-sandbox provisioning. A pack will
+typically use both: `push_credentials` bakes `ANTHROPIC_API_KEY` into
+the sandbox env; `secrets.py` re-keys role-scoped secrets at turn time
+inside that sandbox.
+
+### Worked example — `NoopDriver`
+
+See `prefect_orchestration/env_drivers.py::NoopDriver` for a minimal
+in-tree implementation. It records every call in memory and returns
+canned values — **copy-paste this as your driver skeleton**.
+`NoopDriver` is deliberately NOT registered as a `po.env_drivers` entry
+point: it's a test fixture, not a supported driver. Don't add it to
+your pack's `pyproject.toml`.
+
 ## Sequencing — see beads epic `prefect-orchestration-cloud-envs`
 
 Each chunk independently testable. Final child is the E2E gate (real

@@ -659,6 +659,63 @@ def test_render_table_includes_source_column():
     assert "example-pack" in out
 
 
+# ─── check_env_drivers_registered ─────────────────────────────────────
+
+
+def test_check_env_drivers_registered_none(monkeypatch):
+    from prefect_orchestration import env_drivers as ed
+
+    monkeypatch.setattr(ed, "list_driver_eps", lambda: [])
+    r = doctor_mod.check_env_drivers_registered()
+    assert r.status is Status.OK
+    assert "none registered" in r.message
+
+
+def test_check_env_drivers_registered_lists_eps(monkeypatch):
+    from prefect_orchestration import env_drivers as ed
+    from prefect_orchestration.env_drivers import NoopDriver
+
+    @dataclass
+    class _Dist:
+        name: str
+
+    @dataclass
+    class _EP:
+        name: str
+        dist: _Dist
+
+    fake_ep = _EP(name="daytona", dist=_Dist(name="po-cloud-daytona"))
+    monkeypatch.setattr(ed, "list_driver_eps", lambda: [fake_ep])
+    monkeypatch.setattr(ed, "load_drivers", lambda: {"daytona": NoopDriver()})
+
+    r = doctor_mod.check_env_drivers_registered()
+    assert r.status is Status.OK
+    # AC: driver name appears as a substring (no assertion on dist literal).
+    assert "daytona" in r.message
+
+
+def test_check_env_drivers_registered_warns_on_broken(monkeypatch):
+    from prefect_orchestration import env_drivers as ed
+
+    @dataclass
+    class _Dist:
+        name: str
+
+    @dataclass
+    class _EP:
+        name: str
+        dist: _Dist
+
+    fake_ep = _EP(name="ghost", dist=_Dist(name="po-cloud-ghost"))
+    monkeypatch.setattr(ed, "list_driver_eps", lambda: [fake_ep])
+    monkeypatch.setattr(ed, "load_drivers", lambda: {})
+
+    r = doctor_mod.check_env_drivers_registered()
+    assert r.status is Status.WARN
+    assert "ghost" in r.message
+    assert r.remediation
+
+
 # ─── check_stale_locks / clean_stale_locks ────────────────────────────
 
 
