@@ -215,6 +215,67 @@ async def ensure_manual_deployment(client: Any, formula: str) -> tuple[Any, str 
     return deployment, warn_msg
 
 
+async def _find_named_deployment(client: Any, name: str) -> Any | None:
+    """Return a deployment by exact name from the Prefect server, or None."""
+    from prefect.client.schemas.filters import DeploymentFilter, DeploymentFilterName
+
+    deployments = await client.read_deployments(
+        deployment_filter=DeploymentFilter(name=DeploymentFilterName(any_=[name])),
+        limit=2,
+    )
+    return deployments[0] if deployments else None
+
+
+async def ensure_env_deployment(
+    client: Any,
+    formula: str,
+    *,
+    env_name: str,
+    work_pool_override: str,
+) -> tuple[Any, str | None]:
+    """Return (deployment, worker_warning | None) for <formula>-env-<env_name>-manual.
+
+    Auto-creates the deployment targeting `work_pool_override` if absent.
+    """
+    import asyncio
+
+    from prefect_orchestration import deployments as _deployments
+
+    target_name = f"{formula}-env-{env_name}-manual"
+    deployment = await _find_named_deployment(client, target_name)
+
+    if deployment is None:
+        flow_obj = _load_formula_flow(formula)
+        if flow_obj is None:
+            raise ManualDeploymentMissing(formula)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            runner_dep = await asyncio.to_thread(
+                lambda: flow_obj.to_deployment(
+                    name=target_name, work_pool_name=work_pool_override
+                )
+            )
+            await asyncio.to_thread(_deployments.apply_deployment, runner_dep)
+        print(f"auto-created deployment: {target_name}", file=sys.stderr)
+        deployment = await _find_named_deployment(client, target_name)
+        if deployment is None:
+            raise ManualDeploymentMissing(formula)
+
+    warn_msg: str | None = None
+    try:
+        workers = await client.read_workers(work_pool_name=work_pool_override)
+        if len(workers) == 0:
+            warn_msg = (
+                f"warning: no workers running on pool {work_pool_override!r}. "
+                f"Run `prefect worker start --pool {work_pool_override}` before "
+                f"the scheduled time or the run will stay Scheduled."
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+    return deployment, warn_msg
+
+
 async def submit_scheduled_run(
     *,
     client: Any,
@@ -223,6 +284,8 @@ async def submit_scheduled_run(
     scheduled_time: datetime,
     issue_id: str | None = None,
     job_variables: dict[str, Any] | None = None,
+    work_pool_override: str | None = None,
+    env_name: str | None = None,
 ) -> tuple[Any, str, str | None]:
     """Submit a one-shot scheduled flow-run for `<formula>-manual`.
 
@@ -235,7 +298,12 @@ async def submit_scheduled_run(
     `scheduled_time`. `as_subflow=False` is required because `po run`
     runs outside any Prefect flow context.
     """
-    deployment, warn_msg = await ensure_manual_deployment(client, formula)
+    if work_pool_override is not None and env_name is not None:
+        deployment, warn_msg = await ensure_env_deployment(
+            client, formula, env_name=env_name, work_pool_override=work_pool_override
+        )
+    else:
+        deployment, warn_msg = await ensure_manual_deployment(client, formula)
     flow = await client.read_flow(deployment.flow_id)
     full_name = f"{flow.name}/{deployment.name}"
 

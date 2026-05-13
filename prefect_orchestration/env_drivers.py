@@ -174,6 +174,10 @@ class EnvDriver(Protocol):
         """Cheap read-only probe; used by `po env doctor` and `po env list`."""
         ...
 
+    def fs_download(self, handle: EnvHandle, remote_path: str, local_path: Path) -> None:
+        """Download remote_path from the sandbox to local_path (recursive)."""
+        ...
+
 
 def load_drivers() -> dict[str, EnvDriver]:
     """Return {name: instantiated EnvDriver} for every registered EP.
@@ -274,6 +278,9 @@ class NoopDriver:
     def health(self, handle: EnvHandle) -> EnvHealth:
         self.calls.append(("health",))
         return EnvHealth(ok=True, summary="noop healthy")
+
+    def fs_download(self, handle: EnvHandle, remote_path: str, local_path: Path) -> None:
+        self.calls.append(("fs_download", remote_path, str(local_path)))
 
 
 __all__ = [

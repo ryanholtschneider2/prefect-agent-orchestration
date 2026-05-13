@@ -336,12 +336,24 @@ def run(
         help="Run the full formula with StubBackend (fake agent turns). "
         "Formerly the --dry-run behavior. Full bd side effects apply.",
     ),
+    env_name: str | None = typer.Option(
+        None,
+        "--env",
+        help="Env name to dispatch against (see `po env list`). Pushes the rig, "
+        "schedules the formula on the env's work pool, and mirrors run artifacts back.",
+    ),
+    rebuild: bool = typer.Option(
+        False,
+        "--rebuild",
+        help="Force rebuild + re-provision of the env before dispatch (requires --env).",
+    ),
 ) -> None:
     """Run a registered formula or an ad-hoc scratch flow.
 
     Registered:  po run software-dev-full --issue-id sr-8yu.3 --rig site --rig-path ./site
     Scheduled:   po run software-dev-full --at 2h --issue-id ...
     Scratch:     po run --from-file ./my_flow.py [--name foo] --arg value
+    Env-backed:  po run software-dev-full --env myenv --issue-id ...
     """
     if time_compat is not None:
         if when is not None:
@@ -412,6 +424,19 @@ def run(
         effort=effort,
         start_command=start_command,
     )
+
+    if env_name is not None:
+        from prefect_orchestration import env_dispatch as _env_dispatch
+
+        _env_dispatch.run_with_env(
+            env_name=env_name,
+            formula=name or "",
+            kwargs=kwargs,
+            rebuild=rebuild,
+            issue_id=kwargs.get("issue_id"),
+            rig_path=Path(kwargs["rig_path"]) if "rig_path" in kwargs else None,
+        )
+        return
 
     if dry_run:
         _print_dry_run_dag(name=name, kwargs=kwargs)
@@ -1374,6 +1399,18 @@ def retry(
         "(2h, 30m, 1d) or ISO-8601 with timezone. Auto-applies the "
         "<formula>-manual deployment if absent.",
     ),
+    env_name: str | None = typer.Option(
+        None,
+        "--env",
+        help="(stub) Env to dispatch against. Full wiring is a follow-up.",
+        hidden=True,
+    ),
+    rebuild: bool = typer.Option(
+        False,
+        "--rebuild",
+        help="(stub) Force rebuild before dispatch (requires --env).",
+        hidden=True,
+    ),
 ) -> None:
     """Archive an issue's run_dir and re-run its formula from scratch.
 
@@ -1384,6 +1421,11 @@ def retry(
     (pass `--force` to bypass). Pass `--at <when>` to schedule the
     retry as a future flow-run instead.
     """
+    if env_name is not None:
+        typer.echo(
+            "warning: --env on po retry is not yet wired; use `po run --env` instead.",
+            err=True,
+        )
     try:
         result = _retry.retry_issue(
             issue_id,
@@ -1441,6 +1483,18 @@ def resume(
             "(2h, 30m, 1d) or ISO-8601 with timezone."
         ),
     ),
+    env_name: str | None = typer.Option(
+        None,
+        "--env",
+        help="(stub) Env to dispatch against. Full wiring is a follow-up.",
+        hidden=True,
+    ),
+    rebuild: bool = typer.Option(
+        False,
+        "--rebuild",
+        help="(stub) Force rebuild before dispatch (requires --env).",
+        hidden=True,
+    ),
 ) -> None:
     """Resume a failed flow without archiving its run_dir.
 
@@ -1455,6 +1509,11 @@ def resume(
     picks up at the failing step instead of burning 10+ min re-running
     the upstream successes.
     """
+    if env_name is not None:
+        typer.echo(
+            "warning: --env on po resume is not yet wired; use `po run --env` instead.",
+            err=True,
+        )
     try:
         result = _resume.resume_issue(
             issue_id,
@@ -1943,6 +2002,16 @@ def attach(
         else:
             typer.echo(f"invalid selection {sel!r}", err=True)
             raise typer.Exit(5)
+
+    # Env-backed runs: delegate to driver.attach_argv before k8s/local path.
+    env_argv = _attach.resolve_env_attach_argv(
+        issue=issue_id, role=chosen, bead_metadata=bead_meta
+    )
+    if env_argv:
+        if print_argv:
+            typer.echo(" ".join(env_argv))
+            return
+        os.execvp(env_argv[0], env_argv)
 
     target = _attach.resolve_attach_target(
         issue=issue_id, role=chosen, bead_metadata=bead_meta

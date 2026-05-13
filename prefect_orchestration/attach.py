@@ -33,6 +33,7 @@ from prefect_orchestration.sessions import (
 META_K8S_POD = "po.k8s_pod"
 META_K8S_NAMESPACE = "po.k8s_namespace"
 META_K8S_CONTEXT = "po.k8s_context"
+META_ENV_NAME = "po.env_name"
 
 PodStatus = Literal["running", "gone", "forbidden", "unknown"]
 
@@ -192,6 +193,31 @@ def stamp_runtime_location(
         store.set(META_K8S_CONTEXT, context)
         written[META_K8S_CONTEXT] = context
     return written
+
+
+def resolve_env_attach_argv(
+    *,
+    issue: str,
+    role: str,
+    bead_metadata: dict[str, str],
+) -> list[str] | None:
+    """Return driver.attach_argv(...) if po.env_name is set, else None."""
+    env_name = bead_metadata.get(META_ENV_NAME)
+    if not env_name:
+        return None
+    from prefect_orchestration.env import EnvNotFound, read_env
+    from prefect_orchestration.env_drivers import EnvHandle, load_drivers
+
+    try:
+        record = read_env(env_name)
+    except EnvNotFound:
+        return None
+    drivers = load_drivers()
+    if record.driver not in drivers:
+        return None
+    handle = EnvHandle(driver_name=record.driver, opaque=record.opaque)
+    issue_safe = issue.replace(".", "_")
+    return drivers[record.driver].attach_argv(handle, role, issue_safe)
 
 
 def fetch_bead_metadata(issue_id: str) -> dict[str, str]:

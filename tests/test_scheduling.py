@@ -521,3 +521,123 @@ async def test_submit_scheduled_run_passes_job_variables(
         job_variables={"env": {"PO_RESUME": "1"}},
     )
     assert captured["kwargs"]["job_variables"] == {"env": {"PO_RESUME": "1"}}
+
+
+# ─── ensure_env_deployment / work_pool_override ──────────────────────
+
+
+class _FakeClientWithWorkers(_FakeClient):
+    """Extends _FakeClient with a workers list for pool probing."""
+
+    def __init__(
+        self,
+        deployments: list[_FakeDeployment],
+        flow: _FakeFlow,
+        workers: list = [],
+    ) -> None:
+        super().__init__(deployments, flow)
+        self._workers = workers
+
+    async def read_workers(self, **kwargs: object) -> list:
+        return list(self._workers)
+
+
+@pytest.mark.asyncio
+async def test_ensure_env_deployment_creates_targeted_deployment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ensure_env_deployment auto-creates <formula>-env-<name>-manual with work_pool_name."""
+    pytest.importorskip("prefect")
+
+    # No existing deployment on server
+    client = _FakeClientWithWorkers(deployments=[], flow=_FakeFlow("foo"))
+
+    created: dict = {}
+
+    class _FakeFlow:
+        name = "foo"
+
+        def to_deployment(self, name: str, work_pool_name: str = "") -> object:
+            created["name"] = name
+            created["work_pool_name"] = work_pool_name
+
+            class _FakeRunnerDep:
+                pass
+
+            return _FakeRunnerDep()
+
+    from prefect_orchestration import deployments as _deployments
+
+    apply_calls: list = []
+    monkeypatch.setattr(
+        _deployments, "apply_deployment", lambda dep: apply_calls.append(dep)
+    )
+    monkeypatch.setattr(scheduling, "_load_formula_flow", lambda f: _FakeFlow())
+
+    # After "apply", simulate server returning the deployment
+    returned_dep = _FakeDeployment(name="foo-env-myenv-manual", flow_id="abc")
+
+    call_count = 0
+
+    async def _patched_read_deployments(**kwargs: object) -> list[_FakeDeployment]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return []  # first call: not found
+        return [returned_dep]  # second call: found after apply
+
+    client.read_deployments = _patched_read_deployments
+
+    dep, warn = await scheduling.ensure_env_deployment(
+        client,
+        "foo",
+        env_name="myenv",
+        work_pool_override="po-env-myenv",
+    )
+    assert dep is returned_dep
+    assert created["name"] == "foo-env-myenv-manual"
+    assert created["work_pool_name"] == "po-env-myenv"
+    assert len(apply_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_scheduled_run_uses_env_deployment_when_pool_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """submit_scheduled_run calls ensure_env_deployment when work_pool_override is set."""
+    pytest.importorskip("prefect")
+
+    dep = _FakeDeployment(name="foo-env-myenv-manual", flow_id="abc")
+    client = _FakeClientWithWorkers(deployments=[dep], flow=_FakeFlow("foo"))
+
+    ensure_calls: list = []
+
+    async def _fake_ensure_env(c, formula, *, env_name, work_pool_override):
+        ensure_calls.append((formula, env_name, work_pool_override))
+        return dep, None
+
+    monkeypatch.setattr(scheduling, "ensure_env_deployment", _fake_ensure_env)
+
+    captured: dict = {}
+
+    async def _fake_arun_deployment(*args: object, **kwargs: object):
+        captured["kwargs"] = kwargs
+
+        class _FR:
+            id = "fr-env"
+
+        return _FR()
+
+    import prefect.deployments.flow_runs as flow_runs_mod
+
+    monkeypatch.setattr(flow_runs_mod, "arun_deployment", _fake_arun_deployment)
+
+    await scheduling.submit_scheduled_run(
+        client=client,
+        formula="foo",
+        parameters={},
+        scheduled_time=datetime.now(timezone.utc),
+        work_pool_override="po-env-myenv",
+        env_name="myenv",
+    )
+    assert ensure_calls == [("foo", "myenv", "po-env-myenv")]

@@ -190,3 +190,20 @@ def test_attach_run_dir_not_found(runner, monkeypatch):
     result = runner.invoke(cli.app, ["attach", "issue", "--print-argv"])
     assert result.exit_code == 2
     assert "nope" in result.stderr
+
+
+def test_attach_resolves_env_backed_run(tmp_path, runner, monkeypatch):
+    """When po.env_name is set, attach delegates to driver.attach_argv."""
+    loc = _seed(tmp_path, roles=["builder"])
+    _patch(monkeypatch, loc, bead_meta={attach.META_ENV_NAME: "myenv"})
+
+    # Stub resolve_env_attach_argv to return a custom argv
+    monkeypatch.setattr(
+        cli._attach,
+        "resolve_env_attach_argv",
+        lambda issue, role, bead_metadata: ["custom-ssh", "sandbox-host"],
+    )
+
+    result = runner.invoke(cli.app, ["attach", "issue", "--print-argv"])
+    assert result.exit_code == 0, result.stderr
+    assert result.stdout.strip() == "custom-ssh sandbox-host"
