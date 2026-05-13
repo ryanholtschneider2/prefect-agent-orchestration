@@ -30,6 +30,7 @@ from prefect_orchestration import trace as _trace
 from prefect_orchestration import commands as _commands
 from prefect_orchestration import deployments as _deployments
 from prefect_orchestration import doctor as _doctor
+from prefect_orchestration import env as _env
 from prefect_orchestration import packs as _packs
 from prefect_orchestration import resume as _resume
 from prefect_orchestration import retry as _retry
@@ -1722,6 +1723,12 @@ app.add_typer(
     _serve.app,
     name="serve",
     help="Install/manage the Postgres + Prefect server background stack.",
+)
+
+app.add_typer(
+    _env.env_app,
+    name="env",
+    help="Manage remote cloud envs (provision, list, teardown, attach).",
 )
 
 
