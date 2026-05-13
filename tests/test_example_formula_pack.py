@@ -11,8 +11,8 @@ PACK_ROOT = Path(__file__).resolve().parents[1] / "packs" / "po-formulas-example
 if str(PACK_ROOT) not in sys.path:
     sys.path.insert(0, str(PACK_ROOT))
 
-from po_example_formulas.deployments import register
-from po_example_formulas.flows import builder_heartbeat, on_bd_close, triage_inbox
+from po_example_formulas.deployments import register  # noqa: E402
+from po_example_formulas.flows import builder_heartbeat, on_bd_close, triage_inbox  # noqa: E402
 
 
 def _init_dummy_rig(tmp_path: Path) -> Path:
@@ -58,7 +58,9 @@ def test_triage_inbox_creates_bead_and_ready_item(tmp_path: Path) -> None:
         }
     ]
     archived = json.loads(
-        (rig / ".po-example" / "inbox" / "default" / "triaged" / "msg-1.json").read_text()
+        (
+            rig / ".po-example" / "inbox" / "default" / "triaged" / "msg-1.json"
+        ).read_text()
     )
     assert archived["route"] == "create_bead"
 
