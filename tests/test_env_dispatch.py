@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
@@ -36,7 +33,9 @@ def _make_record(
 
 
 def test_run_with_env_missing_raises(monkeypatch):
-    monkeypatch.setattr(ed, "read_env", lambda name: (_ for _ in ()).throw(EnvNotFound(name)))
+    monkeypatch.setattr(
+        ed, "read_env", lambda name: (_ for _ in ()).throw(EnvNotFound(name))
+    )
     with pytest.raises(typer.Exit) as exc_info:
         ed.run_with_env(env_name="nonexistent", formula="f", kwargs={})
     assert exc_info.value.exit_code == 1
@@ -121,12 +120,15 @@ def test_run_with_env_calls_fs_download_on_terminal(monkeypatch, tmp_path):
 
 def test_run_with_env_push_identity_skipped_when_hash_unchanged(monkeypatch, tmp_path):
     """_maybe_push_identity skips push when local hash equals stored hash."""
-    from pathlib import Path
 
     record = _make_record(identity_hash="match-hash")
     noop = NoopDriver()
 
-    monkeypatch.setattr(ed, "_build_identity_tarball", lambda dest, with_auth=False: (dest / "x.tar.gz", "match-hash"))
+    monkeypatch.setattr(
+        ed,
+        "_build_identity_tarball",
+        lambda dest, with_auth=False: (dest / "x.tar.gz", "match-hash"),
+    )
     # Simulate ~/.claude/ existing
     monkeypatch.setattr(ed.Path, "home", staticmethod(lambda: tmp_path))
     (tmp_path / ".claude").mkdir(exist_ok=True)
@@ -140,7 +142,11 @@ def test_run_with_env_push_identity_called_when_hash_differs(monkeypatch, tmp_pa
     record = _make_record(identity_hash="old-hash")
     noop = NoopDriver()
 
-    monkeypatch.setattr(ed, "_build_identity_tarball", lambda dest, with_auth=False: (dest / "x.tar.gz", "new-hash"))
+    monkeypatch.setattr(
+        ed,
+        "_build_identity_tarball",
+        lambda dest, with_auth=False: (dest / "x.tar.gz", "new-hash"),
+    )
     monkeypatch.setattr(ed.Path, "home", staticmethod(lambda: tmp_path))
     (tmp_path / ".claude").mkdir(exist_ok=True)
 

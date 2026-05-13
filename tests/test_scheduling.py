@@ -549,9 +549,6 @@ async def test_ensure_env_deployment_creates_targeted_deployment(
     """ensure_env_deployment auto-creates <formula>-env-<name>-manual with work_pool_name."""
     pytest.importorskip("prefect")
 
-    # No existing deployment on server
-    client = _FakeClientWithWorkers(deployments=[], flow=_FakeFlow("foo"))
-
     created: dict = {}
 
     class _FakeFlow:
@@ -565,6 +562,9 @@ async def test_ensure_env_deployment_creates_targeted_deployment(
                 pass
 
             return _FakeRunnerDep()
+
+    # No existing deployment on server
+    client = _FakeClientWithWorkers(deployments=[], flow=_FakeFlow())
 
     from prefect_orchestration import deployments as _deployments
 

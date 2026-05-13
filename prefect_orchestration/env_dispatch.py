@@ -140,9 +140,7 @@ def _push_rig(record: EnvRecord, rig_path: Path | None) -> None:
         )
 
 
-def _maybe_push_identity(
-    record: EnvRecord, handle: EnvHandle, driver: Any
-) -> None:
+def _maybe_push_identity(record: EnvRecord, handle: EnvHandle, driver: Any) -> None:
     """Re-upload identity tarball iff local sha256 differs from stored hash."""
     claude_dir = Path.home() / ".claude"
     if not claude_dir.exists():
@@ -190,7 +188,11 @@ async def _dispatch(
     from prefect import get_client
 
     from prefect_orchestration.scheduling import submit_scheduled_run
-    from prefect_orchestration.watch import _TERMINAL_STATES, _state_name_of, _state_type_of
+    from prefect_orchestration.watch import (
+        _TERMINAL_STATES,
+        _state_name_of,
+        _state_type_of,
+    )
 
     async with get_client() as client:
         flow_run, full_name, warn_msg = await submit_scheduled_run(
