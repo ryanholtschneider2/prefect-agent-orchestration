@@ -174,6 +174,10 @@ class EnvDriver(Protocol):
         """Cheap read-only probe; used by `po env doctor` and `po env list`."""
         ...
 
+    def build_image(self, opts: Mapping[str, Any] | None = None) -> None:
+        """Build/refresh the sandbox base image. No-op if already fresh."""
+        ...
+
     def fs_download(
         self, handle: EnvHandle, remote_path: str, local_path: Path
     ) -> None:
@@ -280,6 +284,9 @@ class NoopDriver:
     def health(self, handle: EnvHandle) -> EnvHealth:
         self.calls.append(("health",))
         return EnvHealth(ok=True, summary="noop healthy")
+
+    def build_image(self, opts: Mapping[str, Any] | None = None) -> None:
+        self.calls.append(("build_image", dict(opts or {})))
 
     def fs_download(
         self, handle: EnvHandle, remote_path: str, local_path: Path

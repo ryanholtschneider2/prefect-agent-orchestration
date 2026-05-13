@@ -12,9 +12,12 @@ Steps in `run_with_env`:
 from __future__ import annotations
 
 import asyncio
+import os
+import secrets
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +28,7 @@ from prefect_orchestration.env import (
     EnvNotFound,
     EnvRecord,
     _build_identity_tarball,
+    delete_env,
     read_env,
     write_env,
 )
@@ -39,8 +43,8 @@ def run_with_env(
     rebuild: bool = False,
     issue_id: str | None = None,
     rig_path: Path | None = None,
-) -> None:
-    """Orchestrate a `po run --env <name>` dispatch."""
+) -> str | None:
+    """Orchestrate a `po run --env <name>` dispatch. Returns the terminal state name."""
     try:
         record = read_env(env_name)
     except EnvNotFound:
@@ -81,6 +85,7 @@ def run_with_env(
 
     record.last_run_at = datetime.now(timezone.utc).isoformat()
     write_env(record)
+    return terminal_state
 
 
 def _run_async_dispatch(
@@ -233,4 +238,130 @@ async def _dispatch(
             await asyncio.sleep(3.0)
 
 
-__all__ = ["run_with_env"]
+def run_ephemeral_env(
+    *,
+    driver_name: str,
+    formula: str,
+    kwargs: dict[str, Any],
+    snapshot: str = "",
+    with_auth: bool = False,
+    auto_down_secs: float = 1800.0,
+    auto_down_on_failure: bool = False,
+    issue_id: str | None = None,
+    rig_path: Path | None = None,
+    rebuild: bool = False,
+) -> None:
+    """Provision an ephemeral env, run formula, teardown based on terminal state.
+
+    On flow Completed (or auto_down_on_failure=True on Failed), waits
+    auto_down_secs then tears down the env and removes its record.
+    On flow Failed with auto_down_on_failure=False, leaves the env alive
+    so the operator can `po attach` and investigate.
+    """
+    drivers = load_drivers()
+    if driver_name not in drivers:
+        typer.echo(
+            f"error: unknown driver '{driver_name}'; registered: {sorted(drivers)}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    drv = drivers[driver_name]
+    auto_id = f"ephemeral-{secrets.token_hex(4)}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Optional image build (drivers that don't implement it are silently skipped)
+    if hasattr(drv, "build_image"):
+        drv.build_image()
+
+    typer.echo(f"[po] provisioning ephemeral env '{auto_id}' via driver '{driver_name}'...")
+    handle = drv.provision(auto_id, snapshot, {})
+    rig_remote = drv.ensure_rig_remote(handle)
+
+    identity_hash = ""
+    claude_dir = Path.home() / ".claude"
+    if claude_dir.exists():
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                tarball_path, identity_hash = _build_identity_tarball(
+                    Path(tmp), with_auth=with_auth
+                )
+                drv.push_identity(handle, tarball_path, identity_hash)
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(f"warning: identity push failed: {exc}", err=True)
+
+    env_dict: dict[str, str] = {}
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if api_key:
+        env_dict["ANTHROPIC_API_KEY"] = api_key
+    oauth_creds: bytes | None = None
+    creds_path = Path.home() / ".claude" / ".credentials.json"
+    if with_auth and creds_path.exists():
+        oauth_creds = creds_path.read_bytes()
+    if env_dict or oauth_creds is not None:
+        try:
+            drv.push_credentials(handle, env_dict, oauth_creds)
+        except Exception as exc:  # noqa: BLE001
+            typer.echo(f"warning: credential push failed: {exc}", err=True)
+
+    pool_name = f"po-env-{auto_id}"
+    drv.start_worker(handle, pool_name)
+    try:
+        subprocess.run(
+            ["prefect", "work-pool", "create", pool_name, "--type", "process"],
+            check=True,
+            capture_output=True,
+        )
+    except FileNotFoundError:
+        typer.echo("warning: prefect not on PATH; work pool not created", err=True)
+    except subprocess.CalledProcessError:
+        typer.echo(
+            f"warning: work pool not created (Prefect server unreachable); "
+            f"run manually: prefect work-pool create {pool_name}",
+            err=True,
+        )
+
+    record = EnvRecord(
+        name=auto_id,
+        driver=driver_name,
+        snapshot_tag=snapshot,
+        pool=pool_name,
+        opaque=dict(handle.opaque),
+        rig_remote=rig_remote,
+        identity_hash=identity_hash,
+        created_at=now,
+        last_run_at="",
+    )
+    write_env(record)
+
+    terminal_state: str = "Unknown"
+    try:
+        terminal_state = run_with_env(
+            env_name=auto_id,
+            formula=formula,
+            kwargs=kwargs,
+            rebuild=rebuild,
+            issue_id=issue_id,
+            rig_path=rig_path,
+        ) or "Unknown"
+    finally:
+        should_down = (terminal_state == "Completed") or auto_down_on_failure
+        if should_down:
+            if auto_down_secs > 0:
+                typer.echo(f"[po] grace window {auto_down_secs:.0f}s before teardown...")
+                time.sleep(auto_down_secs)
+            typer.echo(f"[po] tearing down ephemeral env '{auto_id}'...")
+            try:
+                drv.teardown(handle)
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(f"warning: teardown error: {exc}", err=True)
+            delete_env(auto_id)
+            typer.echo(f"[po] ephemeral env '{auto_id}' removed")
+        else:
+            typer.echo(
+                f"[po] flow {terminal_state}: ephemeral env '{auto_id}' kept alive "
+                f"(pass --auto-down-on-failure to tear down on failure)"
+            )
+
+
+__all__ = ["run_ephemeral_env", "run_with_env"]

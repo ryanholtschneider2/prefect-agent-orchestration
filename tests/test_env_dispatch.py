@@ -153,3 +153,118 @@ def test_run_with_env_push_identity_called_when_hash_differs(monkeypatch, tmp_pa
     ed._maybe_push_identity(record, EnvHandle(driver_name="noop", opaque={}), noop)
     assert any(c[0] == "push_identity" for c in noop.calls)
     assert record.identity_hash == "new-hash"
+
+
+# ---------------------------------------------------------------------------
+# run_ephemeral_env tests
+# ---------------------------------------------------------------------------
+
+
+def _patch_ephemeral(monkeypatch, tmp_path, noop, terminal_state="Completed"):
+    """Apply common monkeypatches for run_ephemeral_env tests."""
+    monkeypatch.setattr(ed, "load_drivers", lambda: {"noop": noop})
+    monkeypatch.setattr(ed, "write_env", lambda r: None)
+    monkeypatch.setattr(ed, "delete_env", lambda name: None)
+    monkeypatch.setattr(
+        ed,
+        "_build_identity_tarball",
+        lambda dest, with_auth=False: (dest / "id.tar.gz", "hash-xyz"),
+    )
+    monkeypatch.setattr(ed.Path, "home", staticmethod(lambda: tmp_path))
+    (tmp_path / ".claude").mkdir(exist_ok=True)
+    monkeypatch.setattr(ed, "run_with_env", lambda **kw: terminal_state)
+    monkeypatch.setattr(ed.subprocess, "run", lambda *a, **kw: None)
+    monkeypatch.setattr(ed.time, "sleep", lambda s: None)
+
+
+def test_run_ephemeral_teardown_on_completed(monkeypatch, tmp_path):
+    """Teardown is called when flow Completes."""
+    noop = NoopDriver()
+    _patch_ephemeral(monkeypatch, tmp_path, noop, terminal_state="Completed")
+    teardown_calls: list[str] = []
+    delete_calls: list[str] = []
+    monkeypatch.setattr(
+        ed, "delete_env", lambda name: delete_calls.append(name)
+    )
+    original_teardown = noop.teardown
+
+    def _patched_teardown(handle):
+        teardown_calls.append(handle.driver_name)
+        return original_teardown(handle)
+
+    noop.teardown = _patched_teardown  # type: ignore[method-assign]
+
+    ed.run_ephemeral_env(
+        driver_name="noop",
+        formula="software-dev-fast",
+        kwargs={},
+        auto_down_secs=0,
+    )
+    assert teardown_calls, "teardown should be called on Completed"
+    assert delete_calls, "delete_env should be called on Completed"
+
+
+def test_run_ephemeral_no_teardown_on_failure_by_default(monkeypatch, tmp_path):
+    """Env is kept alive on Failed when auto_down_on_failure=False (default)."""
+    noop = NoopDriver()
+    _patch_ephemeral(monkeypatch, tmp_path, noop, terminal_state="Failed")
+    delete_calls: list[str] = []
+    monkeypatch.setattr(ed, "delete_env", lambda name: delete_calls.append(name))
+
+    ed.run_ephemeral_env(
+        driver_name="noop",
+        formula="software-dev-fast",
+        kwargs={},
+        auto_down_secs=0,
+        auto_down_on_failure=False,
+    )
+    assert not any(c[0] == "teardown" for c in noop.calls), "teardown must NOT be called on Failed by default"
+    assert not delete_calls, "delete_env must NOT be called on Failed by default"
+
+
+def test_run_ephemeral_teardown_on_failure_with_flag(monkeypatch, tmp_path):
+    """Teardown IS called on Failed when auto_down_on_failure=True."""
+    noop = NoopDriver()
+    _patch_ephemeral(monkeypatch, tmp_path, noop, terminal_state="Failed")
+    delete_calls: list[str] = []
+    monkeypatch.setattr(ed, "delete_env", lambda name: delete_calls.append(name))
+
+    ed.run_ephemeral_env(
+        driver_name="noop",
+        formula="software-dev-fast",
+        kwargs={},
+        auto_down_secs=0,
+        auto_down_on_failure=True,
+    )
+    assert any(c[0] == "teardown" for c in noop.calls), "teardown must be called when auto_down_on_failure=True"
+    assert delete_calls, "delete_env must be called when auto_down_on_failure=True"
+
+
+def test_run_ephemeral_grace_window_called(monkeypatch, tmp_path):
+    """time.sleep is called with auto_down_secs before teardown."""
+    noop = NoopDriver()
+    _patch_ephemeral(monkeypatch, tmp_path, noop, terminal_state="Completed")
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(ed.time, "sleep", lambda s: sleep_calls.append(s))
+
+    ed.run_ephemeral_env(
+        driver_name="noop",
+        formula="software-dev-fast",
+        kwargs={},
+        auto_down_secs=999.0,
+    )
+    assert sleep_calls == [999.0], f"expected sleep(999.0), got {sleep_calls}"
+
+
+def test_run_ephemeral_build_image_called_if_driver_has_it(monkeypatch, tmp_path):
+    """build_image() is invoked on NoopDriver (which implements it)."""
+    noop = NoopDriver()
+    _patch_ephemeral(monkeypatch, tmp_path, noop, terminal_state="Completed")
+
+    ed.run_ephemeral_env(
+        driver_name="noop",
+        formula="software-dev-fast",
+        kwargs={},
+        auto_down_secs=0,
+    )
+    assert ("build_image", {}) in noop.calls, "build_image should be called on drivers that implement it"

@@ -339,13 +339,28 @@ def run(
     env_name: str | None = typer.Option(
         None,
         "--env",
-        help="Env name to dispatch against (see `po env list`). Pushes the rig, "
-        "schedules the formula on the env's work pool, and mirrors run artifacts back.",
+        help="Env name to dispatch against (see `po env list`). Use 'up' with --driver "
+        "to provision an ephemeral env, run, and tear it down automatically.",
     ),
     rebuild: bool = typer.Option(
         False,
         "--rebuild",
         help="Force rebuild + re-provision of the env before dispatch (requires --env).",
+    ),
+    env_driver: str | None = typer.Option(
+        None,
+        "--driver",
+        help="Driver for ephemeral env provisioning (use with --env up).",
+    ),
+    auto_down: str = typer.Option(
+        "30m",
+        "--auto-down",
+        help="Grace window before ephemeral env teardown (e.g. 30m, 1h, 0). Requires --env up.",
+    ),
+    auto_down_on_failure: bool = typer.Option(
+        False,
+        "--auto-down-on-failure",
+        help="Tear down ephemeral env even if the flow fails. Requires --env up.",
     ),
 ) -> None:
     """Run a registered formula or an ad-hoc scratch flow.
@@ -425,7 +440,25 @@ def run(
         start_command=start_command,
     )
 
-    if env_name is not None:
+    if env_name == "up":
+        if env_driver is None:
+            typer.echo("error: --env up requires --driver <name>", err=True)
+            raise typer.Exit(2)
+        from prefect_orchestration import env_dispatch as _env_dispatch
+        from prefect_orchestration.env import _parse_duration
+
+        _env_dispatch.run_ephemeral_env(
+            driver_name=env_driver,
+            formula=name or "",
+            kwargs=kwargs,
+            auto_down_secs=_parse_duration(auto_down),
+            auto_down_on_failure=auto_down_on_failure,
+            issue_id=kwargs.get("issue_id"),
+            rig_path=Path(kwargs["rig_path"]) if "rig_path" in kwargs else None,
+            rebuild=rebuild,
+        )
+        return
+    elif env_name is not None:
         from prefect_orchestration import env_dispatch as _env_dispatch
 
         _env_dispatch.run_with_env(
