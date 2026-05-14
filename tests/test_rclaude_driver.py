@@ -7,12 +7,11 @@ when rclaude is not installed (CI without --ignore-requires-python).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from prefect_orchestration.env_drivers import EnvHandle, EnvHealth
+from prefect_orchestration.env_drivers import EnvHandle
 
 # Guard: skip entire module when rclaude is absent
 rclaude = pytest.importorskip("rclaude", reason="rclaude not installed")
@@ -33,7 +32,12 @@ def _make_handle(
 ) -> EnvHandle:
     return EnvHandle(
         driver_name="rclaude",
-        opaque={"ip": ip, "droplet_id": droplet_id, "backend": backend, "ssh_key": ssh_key},
+        opaque={
+            "ip": ip,
+            "droplet_id": droplet_id,
+            "backend": backend,
+            "ssh_key": ssh_key,
+        },
     )
 
 

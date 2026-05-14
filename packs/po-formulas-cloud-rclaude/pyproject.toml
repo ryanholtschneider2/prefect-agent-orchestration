@@ -1,0 +1,32 @@
+[project]
+name = "po-formulas-cloud-rclaude"
+version = "0.1.0"
+description = "po env driver: cloud VMs (DigitalOcean/Hetzner/SSH) via rclaude.devenv"
+requires-python = ">=3.11"
+dependencies = [
+    "prefect-orchestration",
+]
+
+[project.optional-dependencies]
+rclaude = ["rclaude"]
+
+[project.entry-points."po.env_drivers"]
+rclaude = "po_formulas_cloud_rclaude.driver:RClaudeEnvDriver"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["po_formulas_cloud_rclaude"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"overlay" = "po_formulas_cloud_rclaude/overlay"
+
+# NOTE: do NOT add a `[tool.uv.sources]` clause pinning prefect-orchestration to
+# a relative path. uv unifies tool.uv.sources across the consumer (this pack)
+# and root projects, so any path declared here CONFLICTS with explicit `-e <PO>`
+# installs at the venv level — and rebuilds re-resolve PO from this pack's
+# path, evicting whatever editable was installed last. PO is registered in the
+# `po.formulas` EP group and discovered at runtime; no source-path pinning
+# needed. See po-formulas-software-dev incident notes (2026-05-13).

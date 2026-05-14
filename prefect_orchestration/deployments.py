@@ -166,7 +166,9 @@ def build_cron_deployments_from_order_dir(
                 )
             )
         except Exception as exc:
-            active_logger.warning("to_deployment failed for %s: %s", toml_path.name, exc)
+            active_logger.warning(
+                "to_deployment failed for %s: %s", toml_path.name, exc
+            )
             continue
     return deployments
 

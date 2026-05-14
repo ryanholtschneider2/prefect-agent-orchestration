@@ -183,9 +183,7 @@ def test_run_ephemeral_teardown_on_completed(monkeypatch, tmp_path):
     _patch_ephemeral(monkeypatch, tmp_path, noop, terminal_state="Completed")
     teardown_calls: list[str] = []
     delete_calls: list[str] = []
-    monkeypatch.setattr(
-        ed, "delete_env", lambda name: delete_calls.append(name)
-    )
+    monkeypatch.setattr(ed, "delete_env", lambda name: delete_calls.append(name))
     original_teardown = noop.teardown
 
     def _patched_teardown(handle):
@@ -218,7 +216,9 @@ def test_run_ephemeral_no_teardown_on_failure_by_default(monkeypatch, tmp_path):
         auto_down_secs=0,
         auto_down_on_failure=False,
     )
-    assert not any(c[0] == "teardown" for c in noop.calls), "teardown must NOT be called on Failed by default"
+    assert not any(c[0] == "teardown" for c in noop.calls), (
+        "teardown must NOT be called on Failed by default"
+    )
     assert not delete_calls, "delete_env must NOT be called on Failed by default"
 
 
@@ -236,7 +236,9 @@ def test_run_ephemeral_teardown_on_failure_with_flag(monkeypatch, tmp_path):
         auto_down_secs=0,
         auto_down_on_failure=True,
     )
-    assert any(c[0] == "teardown" for c in noop.calls), "teardown must be called when auto_down_on_failure=True"
+    assert any(c[0] == "teardown" for c in noop.calls), (
+        "teardown must be called when auto_down_on_failure=True"
+    )
     assert delete_calls, "delete_env must be called when auto_down_on_failure=True"
 
 
@@ -267,4 +269,6 @@ def test_run_ephemeral_build_image_called_if_driver_has_it(monkeypatch, tmp_path
         kwargs={},
         auto_down_secs=0,
     )
-    assert ("build_image", {}) in noop.calls, "build_image should be called on drivers that implement it"
+    assert ("build_image", {}) in noop.calls, (
+        "build_image should be called on drivers that implement it"
+    )

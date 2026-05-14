@@ -274,7 +274,9 @@ def run_ephemeral_env(
     if hasattr(drv, "build_image"):
         drv.build_image()
 
-    typer.echo(f"[po] provisioning ephemeral env '{auto_id}' via driver '{driver_name}'...")
+    typer.echo(
+        f"[po] provisioning ephemeral env '{auto_id}' via driver '{driver_name}'..."
+    )
     handle = drv.provision(auto_id, snapshot, {})
     rig_remote = drv.ensure_rig_remote(handle)
 
@@ -336,19 +338,24 @@ def run_ephemeral_env(
 
     terminal_state: str = "Unknown"
     try:
-        terminal_state = run_with_env(
-            env_name=auto_id,
-            formula=formula,
-            kwargs=kwargs,
-            rebuild=rebuild,
-            issue_id=issue_id,
-            rig_path=rig_path,
-        ) or "Unknown"
+        terminal_state = (
+            run_with_env(
+                env_name=auto_id,
+                formula=formula,
+                kwargs=kwargs,
+                rebuild=rebuild,
+                issue_id=issue_id,
+                rig_path=rig_path,
+            )
+            or "Unknown"
+        )
     finally:
         should_down = (terminal_state == "Completed") or auto_down_on_failure
         if should_down:
             if auto_down_secs > 0:
-                typer.echo(f"[po] grace window {auto_down_secs:.0f}s before teardown...")
+                typer.echo(
+                    f"[po] grace window {auto_down_secs:.0f}s before teardown..."
+                )
                 time.sleep(auto_down_secs)
             typer.echo(f"[po] tearing down ephemeral env '{auto_id}'...")
             try:

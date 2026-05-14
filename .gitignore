@@ -58,3 +58,5 @@ packs/*
 !packs/README.md
 !packs/po-formulas-examples/
 !packs/po-formulas-examples/**
+!packs/po-formulas-cloud-rclaude/
+!packs/po-formulas-cloud-rclaude/**

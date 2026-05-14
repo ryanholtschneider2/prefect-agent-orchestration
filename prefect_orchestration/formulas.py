@@ -48,7 +48,9 @@ _RESET_RE = _re.compile(
 )
 
 
-def _compute_retry_time(reset_str: str | None, *, buffer_minutes: int = 2) -> _dt.datetime | None:
+def _compute_retry_time(
+    reset_str: str | None, *, buffer_minutes: int = 2
+) -> _dt.datetime | None:
     """Parse Claude's rate-limit reset string to a tz-aware UTC datetime.
 
     `reset_str` looks like ``"10:50am (America/New_York)"``. Returns

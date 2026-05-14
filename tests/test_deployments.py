@@ -126,7 +126,7 @@ def test_build_cron_deployments_from_order_dir(tmp_path: Path, monkeypatch):
     (orders / "nightly.toml").write_text(
         'cron = "0 9 * * *"\n'
         'formula = "hello"\n'
-        "timezone = \"America/New_York\"\n"
+        'timezone = "America/New_York"\n'
         "[params]\n"
         "x = 42\n"
     )
@@ -156,7 +156,9 @@ def test_build_cron_deployments_skips_unknown_formula_with_warning(
     orders = tmp_path / "orders"
     orders.mkdir()
     (orders / "nightly.toml").write_text('cron = "0 9 * * *"\nformula = "missing"\n')
-    monkeypatch.setattr(deployments_mod, "load_formula_flows", lambda **kwargs: ({}, []))
+    monkeypatch.setattr(
+        deployments_mod, "load_formula_flows", lambda **kwargs: ({}, [])
+    )
     caplog.set_level(logging.WARNING, logger=deployments_mod.logger.name)
 
     built = deployments_mod.build_cron_deployments_from_order_dir(
