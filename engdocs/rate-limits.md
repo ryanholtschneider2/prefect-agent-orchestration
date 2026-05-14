@@ -11,7 +11,7 @@
   observing research-heavy agents (polymer-dev get-data) working
   productively right up to the 60 min wall in JSONL transcripts. Raise
   again if a real workload still hits the wall.
-- **StepTimeoutError has TWO patterns** worth distinguishing when triaging:
+- **StepTimeoutError has THREE patterns** worth distinguishing when triaging:
   (A) **Post-bd-close subprocess wedge** — agent finished work, called
   `bd close`, printed summary, then Claude subprocess sat silent for
   10-20 min until the wall killed it. Look for: bd `status: closed`
@@ -21,6 +21,16 @@
   (B) **Real budget shortage** — JSONL shows active tool calls within
   ~30s of the kill. Bd still open, no close-reason. Re-fire needed;
   90 min budget should cover most.
+  (C) **run_in_background + end_turn wedge** — agent ran pytest (or any
+  long-running process) via Bash with `run_in_background: true`, then
+  printed "The harness will notify me when it completes." and stopped
+  (`end_turn`). `agent_step` emits no notification for background Bash
+  processes; the subprocess sits idle for the full 90 min until the wall
+  kills it. Bd may be open or claimed depending on whether the agent issued
+  `bd update` before stopping. First observed: regression-gate in epic
+  `prefect-orchestration-9ws`, 2026-05-13. **Fix applied in 5fx**: the
+  regression-gate prompt now explicitly forbids `run_in_background`; the
+  task.md already showed the correct foreground pattern.
 - **Cancelling future-Scheduled flow runs is safe for cadence ops.**
   Bd `--claim` happens INSIDE the flow body, not at scheduling time,
   so a Scheduled-but-not-yet-running flow has no bd assignment to
