@@ -197,7 +197,7 @@ class _RateLimitedBackend:
         raise RateLimitError(reset_time=reset or None)
 
 
-def test_prompt_propagates_rate_limit_error_without_nudge(tmp_path: Path) -> None:
+def test_prompt_propagates_rate_limit_error(tmp_path: Path) -> None:
     backend = _RateLimitedBackend(tmp_path)
     sess = AgentSession(
         role="builder",
@@ -207,19 +207,14 @@ def test_prompt_propagates_rate_limit_error_without_nudge(tmp_path: Path) -> Non
         overlay=False,
         skills=False,
     )
-    verdict_path = tmp_path / "verdicts" / "build.json"
 
     with pytest.raises(RateLimitError) as exc:
-        sess.prompt("do the thing", expect_verdict=verdict_path)
+        sess.prompt("do the thing")
 
     # AC: error carries reset-time
     assert exc.value.reset_time == "1:30am (America/New_York)"
-    # AC: prompt() does NOT fire a verdict-nudge after a rate-limit
-    # (would have been a second call to backend.run).
+    # AC: prompt() never retries on rate-limit (backend.run called once).
     assert backend.calls == 1
-    # And the verdict file was never written, confirming the turn never
-    # produced output (not even a partial one to skip nudging).
-    assert not verdict_path.exists()
 
 
 def test_rate_limit_error_default_message_includes_reset() -> None:

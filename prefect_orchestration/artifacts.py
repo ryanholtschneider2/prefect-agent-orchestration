@@ -9,7 +9,12 @@ Pure helpers used by `po artifacts`. The run dir layout is:
       verification-report-iter-N.md
       decision-log.md
       lessons-learned.md
-      verdicts/*.json
+
+Verdicts live on bd-metadata of the iter beads
+(`<issue>.<step>.iter<N>`, metadata key `po.<step>`); this module reads
+them via `bd list --parent <issue>` and renders them as sections.
+Pre-migration run dirs with `verdicts/*.json` files are still rendered
+via a legacy fallback in `_collect_verdicts`.
 
 Iter files are sorted by integer N so `iter-10` comes after `iter-2`.
 Missing files render as a header with `(missing)` — never abort.
@@ -108,13 +113,64 @@ def collect_sections(run_dir: Path, *, verdicts_only: bool = False) -> list[Sect
 
 
 def _collect_verdicts(run_dir: Path) -> list[Section]:
-    verdicts_dir = run_dir / "verdicts"
-    if not verdicts_dir.is_dir():
-        return []
-    return [
-        _read_or_missing(p, run_dir)
-        for p in sorted(verdicts_dir.glob("*.json"), key=lambda p: p.name)
-    ]
+    """Render per-step verdicts as Section objects.
+
+    Source of truth: bd-metadata on iter beads (`<seed>.<step>.iter<N>`).
+    By convention, `run_dir.name` is the seed_id. Falls back to the
+    legacy `<run_dir>/verdicts/*.json` scan for pre-migration data.
+    """
+    sections: list[Section] = []
+    seed_id = run_dir.name
+    if seed_id:
+        import re as _re
+        import subprocess as _sp
+
+        # Find the rig root by walking up: <rig>/.planning/<formula>/<seed>/
+        rig_root: Path | None = None
+        candidate = run_dir
+        for _ in range(5):
+            candidate = candidate.parent
+            if (candidate / ".beads").is_dir():
+                rig_root = candidate
+                break
+
+        proc = _sp.run(
+            ["bd", "list", "--parent", seed_id, "--all", "--json"],
+            cwd=str(rig_root) if rig_root else None,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            try:
+                rows = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                rows = []
+            iter_pat = _re.compile(rf"^{_re.escape(seed_id)}\.(.+?)\.iter(\d+)$")
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                m = iter_pat.match(str(row.get("id", "")))
+                if not m:
+                    continue
+                metadata = row.get("metadata") or {}
+                for key, value in sorted(metadata.items()):
+                    if not str(key).startswith("po."):
+                        continue
+                    if key in {"po.run_dir", "po.rig_path"}:
+                        continue
+                    label = f"{m.group(1)}-iter-{m.group(2)} {key}"
+                    body = json.dumps(value, indent=2) if isinstance(value, (dict, list)) else str(value)
+                    sections.append(Section(label=label, path=run_dir, body=body))
+
+    # Legacy fallback for pre-migration run dirs.
+    legacy_dir = run_dir / "verdicts"
+    if legacy_dir.is_dir():
+        sections.extend(
+            _read_or_missing(p, run_dir)
+            for p in sorted(legacy_dir.glob("*.json"), key=lambda p: p.name)
+        )
+    return sections
 
 
 def render(sections: list[Section]) -> str:

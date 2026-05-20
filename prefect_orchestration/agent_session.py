@@ -531,7 +531,11 @@ _STUB_VERDICTS: dict[str, dict] = {
     "regression": {"regression_detected": False},
     "ralph": {"ralph_found_improvement": False},
     "test": {"passed": True, "count": 7},
-    "full-test-gate": {"passed": True, "failures": [], "summary": "stub"},
+    "full_test_gate": {"passed": True, "failures": [], "summary": "stub"},
+    "spec_audit": {"verdict": "PASSED", "gaps": []},
+    "code_health": {"verdict": "complete", "findings_count": 0, "summary": "stub"},
+    "pr_writer": {"verdict": "PASS", "pr": None, "url": None, "mode": "none"},
+    "synthesize": {"recurring": [], "single_occurrence": []},
 }
 
 
@@ -539,11 +543,14 @@ _STUB_VERDICTS: dict[str, dict] = {
 class StubBackend:
     """Exercise the flow DAG with no real Claude calls.
 
-    Writes the verdict file the real agent would have written so the
-    orchestrator's file reads succeed and the flow advances. Sniffs
-    the prompt for two things: which verdict artifact to emit, and
-    what filename to write it to (we extract it from the literal
-    `{{run_dir}}/verdicts/<name>.json` path in the prompt).
+    The prompt sent to the backend is the agent's role-identity
+    (`prompt.md`); the actual task lives on the iter bead's description.
+    StubBackend mimics what the agent would do: locate the iter bead
+    from the close-block, read its description via `bd show --json`,
+    scan for `bd update <same_bead> --metadata '{"po.<name>": ...}'`,
+    stamp a stub payload, and finally `bd close` the bead with a
+    canonical reason. Falls back to the legacy verdict-file shape for
+    not-yet-migrated callers.
     """
 
     captured_extra_env: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -561,20 +568,110 @@ class StubBackend:
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         import re as _re
+        import subprocess as _sp
 
         sid = session_id or f"stub-{uuid.uuid4().hex[:8]}"
         self.captured_extra_env[sid] = dict(extra_env or {})
-        # Find the first `<path>/verdicts/<name>.json` in the prompt
-        # Prefer the `cat > <path> <<EOF` form (unambiguous). Fall back
-        # to any absolute-path occurrence if not found.
+
+        # 1. Find the iter bead ID. The close block always renders a
+        #    literal `bd close <bead> --reason ...` line; the resumed-
+        #    turn prompt renders `bd show <bead>`.
+        bead_match = (
+            _re.search(r"bd\s+close\s+(\S+)\s+--reason", prompt)
+            or _re.search(r"bd\s+show\s+(\S+)", prompt)
+        )
+        if not bead_match:
+            return self._legacy_verdict_file(prompt, sid)
+
+        bead_id = bead_match.group(1)
+
+        # 2. Read the bead description (canonical task spec).
+        description = self._read_bead_description(bead_id, cwd)
+
+        # 3. Look for `bd update <bead_id> --metadata '{"po.<name>": ...}'`
+        #    in the description. Stamp a stub payload if present.
+        if description:
+            md_match = _re.search(
+                rf"bd\s+update\s+{_re.escape(bead_id)}\s+--metadata\s+'\{{\"po\.([\w\-]+)\":",
+                description,
+            )
+            if md_match:
+                key = md_match.group(1)
+                payload = _STUB_VERDICTS.get(key, {"ok": True})
+                _sp.run(
+                    [
+                        "bd", "update", bead_id, "--metadata",
+                        json.dumps({f"po.{key}": payload}),
+                    ],
+                    cwd=str(cwd),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+        # 4. Pick a verdict-keyword for the close-reason from the prompt's
+        #    declared keywords (if any). Otherwise use a generic 'complete'.
+        kw_match = _re.search(
+            r"Required verdict keyword[^:]*:\s*((?:`[\w\-]+`\s*\|?\s*)+)",
+            prompt,
+        )
+        keyword = "complete"
+        if kw_match:
+            kws = _re.findall(r"`([\w\-]+)`", kw_match.group(1))
+            # Prefer affirmative keywords when multiple offered.
+            for preferred in (
+                "approved", "complete", "passed", "synthesized", "no-recurring",
+                "no", "true",
+            ):
+                if preferred in kws:
+                    keyword = preferred
+                    break
+            else:
+                keyword = kws[0] if kws else keyword
+
+        # 5. Close the bead so the orchestrator's caching path catches it.
+        _sp.run(
+            ["bd", "close", bead_id, "--reason", f"{keyword}: stub backend"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        return "[dry-run] ack", sid
+
+    def _read_bead_description(self, bead_id: str, cwd: Path) -> str:
+        import subprocess as _sp
+
+        proc = _sp.run(
+            ["bd", "show", bead_id, "--json"],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return ""
+        try:
+            rows = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return ""
+        issue = rows[0] if isinstance(rows, list) else rows
+        if not isinstance(issue, dict):
+            return ""
+        return str(issue.get("description") or "")
+
+    def _legacy_verdict_file(self, prompt: str, sid: str) -> tuple[str, str]:
+        """Legacy file-based shape for not-yet-migrated callers."""
+        import re as _re
+
         match = _re.search(r"cat\s*>\s*(/[^\s`]+/verdicts/[\w\-.]+\.json)", prompt)
         if not match:
             match = _re.search(r"(/[^\s`]+/verdicts/[\w\-.]+\.json)", prompt)
         if match:
             verdict_path = Path(match.group(1))
             verdict_path.parent.mkdir(parents=True, exist_ok=True)
-            # Pick the right stub payload based on verdict filename
-            stem = verdict_path.stem  # e.g. "review-iter-1"
+            stem = verdict_path.stem
             key = stem.split("-iter-")[0] if "-iter-" in stem else stem
             if key not in _STUB_VERDICTS and key in ("unit", "e2e", "playwright"):
                 key = "test"
@@ -1980,7 +2077,6 @@ class AgentSession:
         text: str,
         *,
         fork: bool = False,
-        expect_verdict: Path | None = None,
     ) -> str:
         """Send a prompt; updates `session_id` in place.
 
@@ -1989,12 +2085,10 @@ class AgentSession:
         marks those messages read (via `mail_marker`). On exception,
         leaves them unread so the next turn re-renders them.
 
-        ``expect_verdict``: when set, after the turn returns the path is
-        checked. If missing, a single nudge turn is fired (reusing the
-        post-turn ``session_id``, no fork, no mail re-injection) telling
-        the agent to write the file. Capped at one retry — if the file
-        is still absent, fall through and let the caller's
-        ``read_verdict`` raise the loud ``FileNotFoundError``.
+        Verdicts: callers that need a structured payload should read
+        bead metadata via :func:`prefect_orchestration.parsing.read_bead_verdict`
+        after the turn returns. Loudly raises ``KeyError`` if the agent
+        skipped the metadata stamp — no nudge retry; fix the prompt.
         """
         self._materialize_packs_once()
         mails = self._fetch_inbox()
@@ -2041,63 +2135,7 @@ class AgentSession:
             span.set_attribute("new_session_id", new_sid)
         self.session_id = new_sid
         self._mark_read(mails)
-
-        if expect_verdict is not None and not expect_verdict.exists():
-            result = self._nudge_for_verdict(
-                expect_verdict, extra_env=extra_env, tel=tel, prior_result=result
-            )
         return result
-
-    def _nudge_for_verdict(
-        self,
-        verdict_path: Path,
-        *,
-        extra_env: Mapping[str, str] | None,
-        tel: Any,
-        prior_result: str,
-    ) -> str:
-        """Fire one nudge turn re-prompting the agent to emit the verdict file.
-
-        Reuses the current ``session_id`` so the agent sees its prior
-        reasoning. Skips mail-injection (this is a forced internal retry,
-        not a fresh turn). One retry only — no recursion.
-        """
-        nudge = (
-            f"You ended your previous turn without writing the required verdict "
-            f"file at {verdict_path}. Write it now using the JSON shape your "
-            f"role prompt specified, then stop. Do not redo the analysis — "
-            f"only emit the file."
-        )
-        self._turn_index += 1
-        attrs: dict[str, Any] = {
-            "role": self.role,
-            "issue_id": self.issue_id,
-            "session_id": self.session_id,
-            "turn_index": self._turn_index,
-            "fork_session": False,
-            "model": self.model,
-            "effort": self.effort,
-            "nudge": True,
-            "verdict_path": str(verdict_path),
-        }
-        with tel.span("agent.prompt.nudge", **attrs) as span:
-            try:
-                result, new_sid = self.backend.run(
-                    nudge,
-                    session_id=self.session_id,
-                    cwd=self.repo_path,
-                    fork=False,
-                    model=self.model,
-                    effort=self.effort,
-                    extra_env=extra_env,
-                )
-            except BaseException as e:
-                span.record_exception(e)
-                span.set_status("ERROR", f"{type(e).__name__}: {e}")
-                raise
-            span.set_attribute("new_session_id", new_sid)
-        self.session_id = new_sid
-        return result or prior_result
 
     def _tmux_session_name(self, *, fork: bool) -> str | None:
         """Best-effort lookup of the tmux session name for telemetry.

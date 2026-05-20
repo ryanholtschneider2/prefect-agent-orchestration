@@ -1,96 +1,123 @@
-"""Verdict artifact I/O.
+"""Verdict artifact I/O — bd-metadata-backed.
 
-Agents end their turn by writing a small JSON file to
-`$RUN_DIR/verdicts/<name>.json`. The orchestrator reads that file to
-decide the next edge. Two wins over parsing the agent's prose:
+Agents end their turn by stamping a structured payload onto the iter
+bead's metadata at key ``po.<name>``, then closing the bead with a
+canonical close-reason. The orchestrator reads bd as the source of
+truth — no verdict files, no prose parsing. Two wins:
 
-  1. The file is a side-effect we can observe deterministically —
-     no regex over free-form output, no "the LLM decided to add a
-     second JSON block for illustration."
-  2. The rest of the reply is free to be natural prose / commits /
-     file writes. The agent isn't being shoehorned into a format it
-     wouldn't otherwise pick.
+  1. Single source of truth. bd already knows when the work is done
+     (status=closed); reading metadata off the same bead means there
+     is no second artifact that can disagree with bd's state.
+  2. The bd state-change hooks (`-nanocorps` fork) can react to
+     metadata writes uniformly — the orchestration substrate gets
+     observability for free.
 
-Verdict filenames are stable (e.g. `triage.json`, `review-iter-2.json`,
-`ralph-iter-1.json`) so a crashed-and-resumed flow can detect prior
-verdicts without reading transcripts.
+Keys are namespaced (``po.triage``, ``po.full_test_gate``,
+``po.ralph``, …) so a single iter bead can carry both run-dir
+bookkeeping (``po.run_dir``, ``po.rig_path``) and the role's verdict
+without collision.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
 
-def verdicts_dir(run_dir: Path) -> Path:
-    d = run_dir / "verdicts"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+def read_bead_verdict(
+    bead_id: str,
+    name: str,
+    *,
+    rig_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Read a verdict stamped on bead ``bead_id`` at metadata key ``po.<name>``.
+
+    Shells ``bd show <bead_id> --json`` and returns the parsed value at
+    ``metadata.po.<name>``. The value is whatever the agent wrote via
+    ``bd update <bead_id> --metadata '{"po.<name>": {...}}'`` — usually
+    a JSON object, but scalars work too.
+
+    Raises ``FileNotFoundError`` when the bead doesn't exist, and
+    ``KeyError`` if the bead exists but lacks the expected metadata key
+    (agent skipped the metadata stamp — usually a prompt regression).
+    """
+    proc = subprocess.run(
+        ["bd", "show", bead_id, "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(rig_path) if rig_path is not None else None,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise FileNotFoundError(
+            f"bd show {bead_id} returned no rows "
+            f"(rc={proc.returncode}, stderr={proc.stderr[:200]!r})"
+        )
+    try:
+        rows = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"bd show {bead_id} --json was not parseable:\n{proc.stdout[:500]}"
+        ) from exc
+    issue = rows[0] if isinstance(rows, list) else rows
+    if not isinstance(issue, dict):
+        raise FileNotFoundError(f"bd show {bead_id} returned no issue rows")
+    metadata = issue.get("metadata") or {}
+    key = f"po.{name}"
+    if key not in metadata:
+        raise KeyError(
+            f"bead {bead_id} has no metadata key {key!r}. "
+            f"Agent likely skipped the `bd update ... --metadata '{{\"{key}\": ...}}'` step. "
+            f"Available keys: {sorted(metadata.keys())}"
+        )
+    value = metadata[key]
+    # `--set-metadata k=v` stores values as strings, even if v looks like JSON.
+    # `--metadata '<json>'` stores native objects. Accept both shapes — if the
+    # stored value is a string that parses as JSON, decode it for the caller.
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return {"value": value}
+    if isinstance(value, dict):
+        return value
+    return {"value": value}
 
 
-def prompt_for_verdict(
+def prompt_for_bead_verdict(
     sess: Any,
     prompt: str,
-    run_dir: Path,
+    bead_id: str,
     name: str,
     *,
     fork: bool = False,
+    rig_path: Path | str | None = None,
 ) -> dict[str, Any]:
-    """Send ``prompt`` through ``sess`` and read the resulting verdict file.
+    """Send ``prompt`` through ``sess`` and read the resulting bead-metadata verdict.
 
-    Convenience helper used by formula packs: every step that ends with
-    a verdict has the same shape — prompt the agent, then read
-    ``<run_dir>/verdicts/<name>.json``. ``fork`` forwards to
-    ``AgentSession.prompt(fork=...)`` so callers can opt into a
-    forked turn that doesn't bump the parent session's resume UUID.
+    The agent is expected to end its turn with::
 
-    The agent's textual reply is discarded — only the verdict file
-    matters (per parsing.py docstring: file artifacts beat prose
-    parsing). ``read_verdict`` raises ``FileNotFoundError`` if the
-    agent skipped writing the file.
+        bd update <bead_id> --metadata '{"po.<name>": {...}}'
+        bd close  <bead_id> --reason "<keyword>: ..."
 
-    When ``PO_RESUME=1`` is set in the environment AND a verdict file
-    for ``name`` already exists, the agent is NOT prompted — the
-    existing verdict is read and returned. This is what `po resume`
-    relies on to skip already-completed steps when relaunching a flow.
+    On return, this function reads ``po.<name>`` off the bead and
+    returns it. The agent's prose reply is discarded.
+
+    When ``PO_RESUME=1`` is set in the environment AND the bead
+    already carries ``po.<name>``, the agent is NOT prompted — the
+    existing metadata is returned. This is the bd-backed resume
+    fast-path.
     """
-    expected = verdicts_dir(run_dir) / f"{name}.json"
-    if os.environ.get("PO_RESUME") == "1" and expected.exists():
-        return read_verdict(run_dir, name)
-    try:
-        if fork:
-            sess.prompt(prompt, fork=True, expect_verdict=expected)
-        else:
-            sess.prompt(prompt, expect_verdict=expected)
-    except TypeError:
-        # Stub sessions used in older tests don't accept expect_verdict;
-        # fall through and let read_verdict's FileNotFoundError surface.
-        if fork:
-            sess.prompt(prompt, fork=True)
-        else:
-            sess.prompt(prompt)
-    return read_verdict(run_dir, name)
-
-
-def read_verdict(run_dir: Path, name: str) -> dict[str, Any]:
-    """Read a verdict file the agent just wrote.
-
-    Raises FileNotFoundError if the agent skipped writing it — that's
-    useful; we want the flow to fail loudly on missing artifacts rather
-    than silently proceed on a default verdict.
-    """
-    path = verdicts_dir(run_dir) / f"{name}.json"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"agent did not write verdict file {path}. "
-            f"Check the task's prompt ends with the `echo ... > {path}` instruction."
-        )
-    text = path.read_text().strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"verdict file {path} is not valid JSON:\n{text[:500]}"
-        ) from exc
+    if os.environ.get("PO_RESUME") == "1":
+        try:
+            return read_bead_verdict(bead_id, name, rig_path=rig_path)
+        except (FileNotFoundError, KeyError):
+            pass
+    if fork:
+        sess.prompt(prompt, fork=True)
+    else:
+        sess.prompt(prompt)
+    return read_bead_verdict(bead_id, name, rig_path=rig_path)

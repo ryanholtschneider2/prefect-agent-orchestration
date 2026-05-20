@@ -27,7 +27,7 @@ workflow and dispatch boundary.
 | `agent_session.SessionBackend` (Protocol) | Swap `ClaudeCliBackend` → `StubBackend` (`--stub-backend`) → `TmuxClaudeBackend` (lurk-able via `tmux attach -t po-<issue>-<role>`); future `ClaudeAgentSdkBackend` (commercial API key), `GeminiCliBackend`, etc. |
 | `beads_meta.MetadataStore` (Protocol) | `BeadsStore` (uses `bd` CLI) or `FileStore` (local JSON fallback when beads isn't present). |
 | `beads_meta.{claim_issue, close_issue, list_epic_children}` | Minimal beads tracker ops; no-op when `bd` is absent. |
-| `parsing.read_verdict` | Reads `$RUN_DIR/verdicts/<name>.json` — the artifact convention for agent → orchestrator signals. |
+| `parsing.read_bead_verdict` | Reads `po.<name>` metadata off an iter bead — the bd-as-truth convention for agent → orchestrator signals. |
 | `templates.render_template` | `{{var}}` substitution over a caller-supplied prompts directory. |
 | `cli.app` (`po`) | Discovers formulas via the `po.formulas` entry-point group; `po list` / `po show <name>` / `po run <name> --args`. |
 | `context_bundle.build_context_md` | Per-role-step writes a single `<run_dir>/CONTEXT.md` concatenating bd-show + plan + triage + latest build diff + decision-log + pack CLAUDE.md excerpts. Role task.md tells the agent: *first action — `cat CONTEXT.md`, that's everything.* Saves 4–6 tool round-trips per role. |
@@ -40,7 +40,7 @@ Substantial `po` runs write proof into one canonical run dir:
 
 - `<rig>/.planning/software-dev-full/<issue>/artifact-manifest.json` — machine-readable proof index for tooling and future UI viewers
 - `<rig>/.planning/software-dev-full/<issue>/review-artifacts/summary.md` — human handoff entry point
-- `<rig>/.planning/software-dev-full/<issue>/verdicts/` — orchestrator verdict JSON
+- `po.<role>` metadata on iter beads (`<issue>.<step>.iter<N>`) — orchestrator verdicts, read via `bd show <iter_bead> --json` or `po artifacts <issue> --verdicts`
 - `<rig>/.planning/software-dev-full/<issue>/transcripts/` — Claude transcript symlinks
 
 `bd show <issue>` close notes point at the run dir, summary, and manifest. `po artifacts <issue>` renders the same summary and manifest so operators can inspect proof without hunting through the filesystem.
@@ -619,9 +619,12 @@ po run software-dev-full --issue-id <id> --rig <name> --rig-path <path>
 - **Claude Code CLI is the worker, Prefect is the foreman.** Core doesn't
   model agents; it models subprocess sessions. Formula packs compose those
   into DAGs.
-- **Verdicts are file artifacts, not LLM reply regex.** Agents write
-  `$RUN_DIR/verdicts/<step>.json`; orchestrators read them back. No
-  parsing prose.
+- **Verdicts are bd-metadata, not LLM reply regex.** Agents stamp
+  `po.<step>` onto their iter bead (`bd update <iter_id> --metadata
+  '{"po.<step>": {...}}'`); orchestrators read it back via
+  `read_bead_verdict`. Single source of truth — same bead that
+  tracks status carries the verdict. No parsing prose, no second
+  artifact that can disagree with bd.
 - **Beads is the source of truth for task structure.** Dependencies map
   directly onto Prefect `wait_for=`. No polling daemon needed.
 - **Concurrency is a deploy concern, not a code concern.** Prefect

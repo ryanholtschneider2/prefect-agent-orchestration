@@ -818,7 +818,7 @@ def artifacts(
         ..., help="Beads issue id (e.g. prefect-orchestration-5i9)"
     ),
     verdicts: bool = typer.Option(
-        False, "--verdicts", help="Print only the verdicts/*.json files."
+        False, "--verdicts", help="Print only the bd-metadata verdicts (po.* keys on iter beads)."
     ),
     open_: bool = typer.Option(
         False,
@@ -833,8 +833,8 @@ def artifacts(
 
     Prints triage.md, plan.md, each critique-iter-N / verification-report-iter-N
     pair in numeric N order, decision-log.md, lessons-learned.md, and every
-    verdicts/*.json. Missing files render as `(missing)` — the command never
-    aborts on a partial run.
+    `po.*` metadata key found on iter beads under the seed. Missing files
+    render as `(missing)` — the command never aborts on a partial run.
     """
     try:
         loc = _run_lookup.resolve_run_dir(issue_id)
@@ -1533,14 +1533,15 @@ def resume(
 
     Unlike `po retry` (which archives run_dir → `.bak-<utc>` and starts
     fresh from triage), `po resume` preserves the run_dir as-is. Steps
-    whose `verdicts/<step>.json` already exists are skipped — the
-    formula's `prompt_for_verdict` short-circuits via `PO_RESUME=1` and
-    returns the existing verdict instead of re-prompting the agent.
+    whose iter bead already carries a `po.<step>` metadata key are
+    skipped — the formula's `prompt_for_bead_verdict` short-circuits
+    via `PO_RESUME=1` and returns the existing verdict instead of
+    re-prompting the agent.
 
     Use this when a wave wedges deep in the DAG (e.g. on review with
-    triage/baseline/plan/build/lint/test verdicts already written): it
-    picks up at the failing step instead of burning 10+ min re-running
-    the upstream successes.
+    triage/baseline/plan/build/lint/test verdicts already stamped on
+    their iter beads): it picks up at the failing step instead of
+    burning 10+ min re-running the upstream successes.
     """
     if env_name is not None:
         typer.echo(
@@ -1568,7 +1569,7 @@ def resume(
             f"already complete: {', '.join(result.completed_steps)}"
         )
     else:
-        typer.echo(f"resuming {issue_id} — no prior verdicts on disk; running from top")
+        typer.echo(f"resuming {issue_id} — no prior verdicts on iter beads; running from top")
     if result.reopened:
         typer.echo(f"reopened bead {issue_id}")
     typer.echo(result.flow_result)

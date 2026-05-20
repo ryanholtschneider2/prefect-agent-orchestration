@@ -160,7 +160,7 @@ before declaring a release ready: `uv run python -m pytest tests/e2e/`.
 | `packs.py` | Pack lifecycle — `install`/`update`/`uninstall`/`packs` shell out to `uv tool` and introspect `importlib.metadata` for `po.*` EP groups. |
 | `agent_session.py` | `AgentSession` + `SessionBackend` Protocol (`ClaudeCliBackend`, `TmuxClaudeBackend`, `StubBackend`). Per-role `--resume <uuid>` + `--fork-session`. |
 | `beads_meta.py` | `MetadataStore` Protocol; `BeadsStore` (shells `bd`) + `FileStore` (JSON fallback); `claim_issue`/`close_issue`/`list_epic_children`. |
-| `parsing.py` | `read_verdict()` — reads `$RUN_DIR/verdicts/<step>.json`. |
+| `parsing.py` | `read_bead_verdict(bead_id, name)` — reads `po.<name>` metadata off the iter bead via `bd show --json`. `prompt_for_bead_verdict()` is the prompt + read wrapper with PO_RESUME short-circuit. |
 | `templates.py` | `{{var}}` substitution over a caller-supplied agents dir (`<dir>/<role>/prompt.md`). |
 | `role_config.py` | Per-role runtime config (`agents/<role>/config.toml`): `model` / `effort` / `start_command`. `resolve_role_runtime` precedence: per-role config > CLI flag (`PO_*_CLI` env stamped by `po run`) > shell env (`PO_*`) > None. Disjoint from `identity.toml` (persona). |
 | `artifacts.py`, `sessions.py`, `watch.py`, `retry.py`, `status.py`, `run_lookup.py`, `doctor.py`, `deployments.py` | Back the matching `po` subcommand. |
@@ -179,8 +179,10 @@ Three-legged stool:
   work is a bead; dependencies are edges.
 - **PO flows** — *how* to do it. Python `@flow`s in packs, composed of
   `@task` steps (one per role: triager, builder, critic, verifier, …).
-  Verdicts flow between steps via file artifacts (`$RUN_DIR/verdicts/<step>.json`),
-  not LLM-JSON parsing.
+  Verdicts flow between steps via bd-metadata stamped on each iter
+  bead (`bd update <iter_id> --metadata '{"po.<role>": {...}}'`),
+  read back by `read_bead_verdict`. Not LLM-JSON parsing, not file
+  artifacts.
 - **Prefect** — *when* and *where*. DAG scheduler, UI, retries, work
   pools, concurrency limits. Beads-deps compile to Prefect `wait_for=`.
 
@@ -549,7 +551,7 @@ Every `software-dev-full` run leaves a full paper trail at
 
 - `triage.md`, `plan.md`, `build-iter-N.diff`, `critique-iter-N.md`,
   `verification-report-iter-N.md`, `decision-log.md`, `lessons-learned.md`
-- `verdicts/<step>.json` — orchestrator-readable pass/fail artifacts
+- `po.<role>` metadata on each iter bead (`<seed>.<step>.iter<N>`) — orchestrator-readable verdicts via `bd show <iter_bead> --json | jq '.[0].metadata'`
 - `metadata.json` — per-role Claude `--resume <uuid>` session ids
 - `review-artifacts/` — screenshots, smoke output, etc.
 - `agent_step_failures.jsonl` — appended one row per `agent_step` turn
@@ -578,8 +580,9 @@ log/artifact. `-f` streams (`tail -F`), `-n N` overrides tail length,
 `po artifacts <issue-id>` dumps the whole forensic trail in one scroll:
 `triage.md`, `plan.md`, each `critique-iter-N.md` + `verification-report-iter-N.md`
 (sorted numerically), `decision-log.md`, `lessons-learned.md`, then every
-`verdicts/*.json` pretty-printed. Missing files render as `(missing)` — never
-aborts. `--verdicts` prints only JSON verdicts; `--open` launches `$EDITOR`
+`po.*` metadata key found on iter beads under the seed (pretty-printed). Missing
+files render as `(missing)` — never aborts. `--verdicts` prints only the
+bd-metadata verdicts; `--open` launches `$EDITOR`
 (TTY) or `xdg-open` on the run dir. ANSI color auto-disables when piped.
 
 `po sessions <issue-id>` reads `metadata.json` at the run dir and prints a
@@ -710,8 +713,9 @@ Python second).
 
 - **Do NOT** add a `po` verb that just wraps a `prefect` subcommand with
   no added context. Pass-through wrappers violate principle §1.
-- **Do NOT** parse LLM output to extract step results. Agents write
-  verdict files at `$RUN_DIR/verdicts/<step>.json`; the flow reads them.
+- **Do NOT** parse LLM output to extract step results. Agents stamp
+  bd metadata on the iter bead (`bd update <iter_id> --metadata
+  '{"po.<name>": {...}}'`); the flow reads it via `read_bead_verdict`.
 - **Do NOT** hardcode role names or rig names in core. Roles are
   per-formula; rigs are caller-supplied.
 - **Do NOT** create new PO-specific runtime-state directories. On-disk
@@ -767,7 +771,7 @@ See `engdocs/principles.md` § "Prompt authoring convention".
 ## Installed at runtime
 
 - `prefect-orchestration` — core, CLI, `AgentSession`, `BeadsStore`,
-  `parsing.read_verdict`, `templates.render_template`, `telemetry`
+  `parsing.read_bead_verdict`, `templates.render_template`, `telemetry`
   (once `9cn` lands).
 - `po-formulas-software-dev` — ships `software-dev-full`, `epic`,
   `deployments.register()`, `mail` helper, 16 role prompts.
@@ -844,7 +848,7 @@ NOT `po run <command>` — and skip Prefect overhead entirely
 ```python
 # po_formulas/commands.py
 def summarize_verdicts(issue_id: str) -> None:
-    """One-line summary per verdicts/*.json for an issue's run dir."""
+    """One-line summary per `po.*` metadata key across an issue's iter beads."""
     ...
 ```
 

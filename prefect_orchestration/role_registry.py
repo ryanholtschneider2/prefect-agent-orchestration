@@ -324,7 +324,7 @@ def build_registry(
 ) -> tuple[RoleRegistry, dict[str, Any]]:
     """Bundle the standard PO flow bootstrap into one call.
 
-    Resolves rig/pack paths, creates the run_dir + verdicts/ tree, picks
+    Resolves rig/pack paths, creates the run_dir, picks
     a backend factory from PO_BACKEND, opens a beads `MetadataStore`,
     constructs the `RoleRegistry`, tags the Prefect flow run with
     `issue_id:<id>`, seeds `links.md`, stamps the run URL on the bead,
@@ -344,7 +344,6 @@ def build_registry(
     rig_path_p = Path(rig_path).expanduser().resolve()
     run_dir = rig_path_p / ".planning" / formula_name / issue_id
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "verdicts").mkdir(exist_ok=True)
 
     pack_path_p = _resolve_pack_path(pack_path, issue_id, rig_path_p)
 

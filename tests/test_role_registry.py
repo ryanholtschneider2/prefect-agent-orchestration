@@ -47,7 +47,7 @@ def test_build_registry_dry_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """build_registry with dry_run=True returns (RoleRegistry, base_ctx) and
-    creates the run_dir + verdicts/ subtree without shelling out to bd."""
+    creates the run_dir without shelling out to bd."""
     # Force the bd shellouts off so this test runs in any environment.
     monkeypatch.setattr(
         "prefect_orchestration.role_registry.shutil.which", lambda _: None
@@ -74,7 +74,6 @@ def test_build_registry_dry_run(
 
     expected_run_dir = tmp_path / ".planning" / "software-dev-full" / issue_id
     assert expected_run_dir.is_dir()
-    assert (expected_run_dir / "verdicts").is_dir()
 
     assert ctx == {
         "issue_id": issue_id,

@@ -6,12 +6,12 @@ Difference vs `po retry`:
   from triage. Useful when the prior run got into a bad state and you
   want a clean slate.
 - **`po resume`** preserves the run_dir as-is. Verdict-bearing tasks
-  whose `verdicts/<step>.json` already exists are skipped — the
-  formula's `prompt_for_verdict` short-circuits via `PO_RESUME=1` and
-  reads the existing verdict instead of re-prompting the agent.
-  Non-verdict tasks (baseline body, plan body, build body) still run;
-  the agent's `--resume <uuid>` keeps it cheap because Claude's
-  conversation memory remembers the prior turn.
+  whose iter bead already carries a `po.<step>` metadata key are
+  skipped — the formula's `prompt_for_bead_verdict` short-circuits
+  via `PO_RESUME=1` and reads the stamped metadata instead of
+  re-prompting the agent. Non-verdict tasks (baseline body, plan body,
+  build body) still run; the agent's `--resume <uuid>` keeps it cheap
+  because Claude's conversation memory remembers the prior turn.
 
 Use `resume` when a wave wedges deep in the DAG (e.g. on review or
 verifier with all upstream verdicts written): it picks up at the
@@ -93,13 +93,54 @@ class ResumeResult:
     flow_result: Any
 
 
-def _list_completed_steps(run_dir: Path) -> list[str]:
-    """Return the set of verdict step names already on disk.
+def _list_completed_steps(run_dir: Path, issue_id: str | None = None) -> list[str]:
+    """Return the set of completed step names for the issue.
 
-    Each verdict file lives at `<run_dir>/verdicts/<step>.json`; the
-    file's stem is the step name (`triage`, `plan-iter-1`, `review-iter-2`,
-    …). Empty list if no verdicts dir or no `.json` children.
+    Walks iter beads under the seed (`<seed>.<step>.iter<N>`) via
+    `bd list --parent <seed>` and returns the stems of every iter bead
+    that has metadata under a `po.*` key (excluding bookkeeping keys
+    `po.run_dir` / `po.rig_path`).
+
+    If `issue_id` is not supplied (legacy callers), falls back to the
+    on-disk `<run_dir>/verdicts/*.json` scan so this function stays
+    useful for resuming pre-migration runs.
     """
+    if issue_id:
+        import json as _json
+        import re as _re
+        import subprocess as _sp
+
+        proc = _sp.run(
+            ["bd", "list", "--parent", issue_id, "--all", "--json"],
+            cwd=str(run_dir.parent.parent.parent)  # rig root: .planning/<formula>/<seed>/
+            if run_dir.exists() else None,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            try:
+                rows = _json.loads(proc.stdout)
+            except _json.JSONDecodeError:
+                rows = []
+            iter_pat = _re.compile(rf"^{_re.escape(issue_id)}\.(.+?)\.iter(\d+)$")
+            steps: list[str] = []
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                m = iter_pat.match(str(row.get("id", "")))
+                if not m:
+                    continue
+                metadata = row.get("metadata") or {}
+                has_verdict = any(
+                    str(k).startswith("po.") and k not in {"po.run_dir", "po.rig_path"}
+                    for k in metadata
+                )
+                if has_verdict:
+                    steps.append(f"{m.group(1)}-iter-{m.group(2)}")
+            return sorted(steps)
+
+    # Legacy fallback for pre-migration run dirs.
     vdir = run_dir / "verdicts"
     if not vdir.is_dir():
         return []
@@ -157,7 +198,7 @@ def resume_issue(
                 exit_code=3,
             )
 
-    completed = _list_completed_steps(run_dir)
+    completed = _list_completed_steps(run_dir, issue_id=issue_id)
     lock_path = run_dir.with_name(run_dir.name + LOCK_SUFFIX)
     _maybe_clear_stale_lock(
         lock_path, issue_id, lambda msg: print(msg, file=sys.stderr)
