@@ -255,6 +255,16 @@ async def ensure_env_deployment(
                     name=target_name, work_pool_name=work_pool_override
                 )
             )
+            # `--env` runs on a REMOTE worker. to_deployment() infers a
+            # dispatcher-relative file-path entrypoint (e.g. `../pack/x.py:fn`)
+            # that doesn't exist on the remote. Rewrite to a module-form
+            # entrypoint so the worker imports the installed pack from sys.path
+            # regardless of its working directory.
+            fn = getattr(flow_obj, "fn", None)
+            mod = getattr(fn, "__module__", None)
+            fname = getattr(fn, "__name__", None)
+            if mod and fname:
+                runner_dep.entrypoint = f"{mod}:{fname}"
             await asyncio.to_thread(_deployments.apply_deployment, runner_dep)
         print(f"auto-created deployment: {target_name}", file=sys.stderr)
         deployment = await _find_named_deployment(client, target_name)

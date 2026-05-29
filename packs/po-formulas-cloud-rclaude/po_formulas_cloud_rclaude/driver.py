@@ -371,7 +371,9 @@ if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || true
 fi
 export PATH="$HOME/.local/bin:$PATH"
-uv tool install prefect-orchestration 2>/dev/null || true
+# Only PyPI-install if po is absent — a bare `uv tool install` would EVICT
+# the editable packs placed by `po env sync-packs`.
+command -v po >/dev/null 2>&1 || uv tool install prefect-orchestration 2>/dev/null || true
 TOOLBIN="$(uv tool dir 2>/dev/null)/prefect-orchestration/bin"
 export PATH="$TOOLBIN:$PATH"
 {api_line}
@@ -409,7 +411,7 @@ if ! command -v uv &>/dev/null; then
 fi
 su - coder -c "
   export PATH=/home/coder/.local/bin:\$PATH
-  uv tool install prefect-orchestration 2>/dev/null || true
+  command -v po >/dev/null 2>&1 || uv tool install prefect-orchestration 2>/dev/null || true
 "
 su - coder -c "
   export PATH=/home/coder/.local/bin:\$PATH
