@@ -389,6 +389,43 @@ def env_attach(
     os.execvp(argv[0], argv)
 
 
+@env_app.command("sync-packs")
+def env_sync_packs(
+    name: str = typer.Argument(..., help="Env name to sync local packs to."),
+) -> None:
+    """Mirror locally-editable formula packs to a remote env.
+
+    Bridges the gap the worker bootstrap can't: editable / local-only packs
+    (not on PyPI) are copied to the remote and its `po` tool env rebuilt so
+    every formula is importable by the remote worker. Requires the env's
+    driver to implement `sync_packs` (e.g. the rclaude ssh backend).
+    """
+    try:
+        record = read_env(name)
+    except EnvNotFound:
+        typer.echo(f"error: no env '{name}'; run po env up first", err=True)
+        raise typer.Exit(1)
+
+    drivers = load_drivers()
+    if record.driver not in drivers:
+        typer.echo(
+            f"error: driver '{record.driver}' not registered; cannot sync", err=True
+        )
+        raise typer.Exit(1)
+
+    drv = drivers[record.driver]
+    if not hasattr(drv, "sync_packs"):
+        typer.echo(
+            f"error: driver '{record.driver}' does not support sync-packs", err=True
+        )
+        raise typer.Exit(1)
+
+    handle = EnvHandle(driver_name=record.driver, opaque=record.opaque)
+    typer.echo(f"syncing local editable packs to env '{name}'...")
+    drv.sync_packs(handle)  # type: ignore[attr-defined]
+    typer.echo("[po] pack sync complete")
+
+
 @env_app.command("reap")
 def env_reap(
     idle_since: str = typer.Option(
