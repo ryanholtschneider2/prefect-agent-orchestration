@@ -1,6 +1,6 @@
 """RClaudeEnvDriver — run PO formulas on a remote machine via rclaude.
 
-Two backends:
+Three backends:
 
 - ``ssh``  — a machine you ALREADY own and have registered with rclaude
   (``~/.config/rclaude/hosts.toml``) or can reach as ``user@addr``. No
@@ -8,6 +8,10 @@ Two backends:
   is the daily-driver path for "run this on my laptop / home server".
 - ``digitalocean`` — provision a fresh DO droplet (the original cloud-VM
   path: ``root`` login, a ``coder`` user, ``/home/coder``).
+- ``daytona`` — a Daytona sandbox (SDK-native: no SSH/cloudflared). All
+  remote ops run via ``process.exec``; the box has no public IP. Fast
+  create-from-snapshot + suspend/resume. Secrets are delivered the same
+  way (rclaude store -> tmpfs); ``attach`` uses Daytona's SSH gateway.
 
 The driver bootstraps a Prefect worker on the remote pointed at a central
 Prefect server (so the central UI stays the source of truth) and lets the
@@ -89,6 +93,22 @@ class RClaudeEnvDriver:
     @staticmethod
     def _is_ssh(op: Mapping[str, Any]) -> bool:
         return op.get("backend") == "ssh"
+
+    @staticmethod
+    def _is_daytona(op: Mapping[str, Any]) -> bool:
+        return op.get("backend") == "daytona"
+
+    def _daytona_backend(self):
+        from rclaude.backends.daytona_backend import DaytonaBackend
+
+        return DaytonaBackend()
+
+    def _daytona_exec(
+        self, op: Mapping[str, Any], script: str, timeout: int = 600
+    ) -> str:
+        """Run a bash script in the sandbox via the Daytona SDK (no SSH)."""
+        be = self._daytona_backend()
+        return be.exec(op["sandbox_id"], ["bash", "-lc", script])
 
     def _ssh_opts(self, op: Mapping[str, Any]) -> list[str]:
         """SSH args INCLUDING the target as the last element."""
@@ -184,12 +204,52 @@ class RClaudeEnvDriver:
                 },
             )
 
+        if backend_name == "daytona":
+            from rclaude.backends.daytona_backend import DaytonaBackend
+            from rclaude.daytona_devenv import BASE_SNAPSHOT, DaytonaDevEnv
+
+            snapshot = opts.get("snapshot") or snapshot_tag or BASE_SNAPSHOT
+            be = DaytonaBackend()
+            if snapshot == BASE_SNAPSHOT:
+                DaytonaDevEnv(be).ensure_base_snapshot()
+            # auto_stop=0 disables idle suspend — the PO worker must stay alive
+            # for the central server to dispatch to it. (Interactive `rclaude up`
+            # keeps the 30-min default; suspend-between-runs for PO would need a
+            # `po env stop/start` verb — follow-up.)
+            vm = be.provision_vm(
+                name=name,
+                from_snapshot=snapshot,
+                tags=["po-env"],
+                auto_stop_minutes=int(opts.get("auto_stop_minutes", 0)),
+            )
+            return EnvHandle(
+                driver_name="rclaude",
+                opaque={
+                    "backend": "daytona",
+                    "sandbox_id": vm.id,
+                    "snapshot": snapshot,
+                    "host": opts.get("host", ""),
+                    "api_url": opts.get("api_url", ""),
+                },
+            )
+
         raise ValueError(
-            f"Unknown rclaude backend: {backend_name!r} (supported: ssh, digitalocean)"
+            f"Unknown rclaude backend: {backend_name!r} "
+            "(supported: ssh, digitalocean, daytona)"
         )
 
     def teardown(self, handle: EnvHandle) -> None:
         op = handle.opaque
+        if self._is_daytona(op):
+            _require_rclaude()
+            be = self._daytona_backend()
+            # tmpfs secrets vanish with the sandbox; scrub anyway, then delete.
+            try:
+                be.exec(op["sandbox_id"], ["bash", "-lc", _rcsecrets.scrub_script()])
+            except Exception:  # noqa: BLE001
+                pass
+            be.destroy_vm(op["sandbox_id"])
+            return
         if self._is_ssh(op):
             # Own host: never destroy it. Stop the worker and scrub the
             # RAM-only secrets file.
@@ -209,8 +269,6 @@ class RClaudeEnvDriver:
 
     def attach_argv(self, handle: EnvHandle, role: str, issue_safe: str) -> list[str]:
         op = handle.opaque
-        ssh_prefix = ["ssh", "-t", *self._ssh_opts(op)[:-1]]
-        target = op["ssh_target"] if self._is_ssh(op) else f"root@{op['ip']}"
 
         if issue_safe and role:
             inner = f"tmux attach -t po-{issue_safe}-{role}"
@@ -222,6 +280,21 @@ class RClaudeEnvDriver:
         else:
             inner = "tmux attach"
 
+        if self._is_daytona(op):
+            # Attach over Daytona's SSH-access gateway (ready-made ssh_command).
+            be = self._daytona_backend()
+            dto = be.ssh_access(op["sandbox_id"])
+            argv = shlex.split(getattr(dto, "ssh_command", "") or "")
+            if not argv:
+                raise RuntimeError("Daytona SSH access unavailable for attach")
+            if "-t" not in argv:
+                argv.insert(1, "-t")
+            argv[1:1] = ["-o", "StrictHostKeyChecking=accept-new"]
+            argv.append(inner)
+            return argv
+
+        ssh_prefix = ["ssh", "-t", *self._ssh_opts(op)[:-1]]
+        target = op["ssh_target"] if self._is_ssh(op) else f"root@{op['ip']}"
         if self._is_ssh(op):
             return ssh_prefix + [target, inner]
         return ssh_prefix + [target, f"su - coder -c {shlex.quote(inner)}"]
@@ -232,6 +305,15 @@ class RClaudeEnvDriver:
         self, handle: EnvHandle, tarball_path: Path, identity_hash: str
     ) -> None:
         op = handle.opaque
+        if self._is_daytona(op):
+            # No scp; ship the (small ~/.claude config) tarball as base64 over exec.
+            b64 = base64.b64encode(tarball_path.read_bytes()).decode()
+            self._daytona_exec(
+                op,
+                f'mkdir -p "$HOME/.claude" && echo {b64} | base64 -d '
+                '| tar -xzf - -C "$HOME" 2>/dev/null || true',
+            )
+            return
         ssh_opts_no_target = self._ssh_opts(op)[:-1]
         subprocess.run(
             [
@@ -278,6 +360,23 @@ rm -f /tmp/claude-identity.tar.gz
         scope = op.get("host") or _rcsecrets.GLOBAL
         merged = dict(_rcsecrets.resolve(scope))
         merged.update({k: v for k, v in (env_dict or {}).items() if v})
+
+        if self._is_daytona(op):
+            be = self._daytona_backend()
+            if merged:
+                be.exec(
+                    op["sandbox_id"],
+                    ["bash", "-lc", _rcsecrets.write_payload_script(merged)],
+                )
+            if oauth_creds_bytes is not None:
+                be.upload_text(
+                    op["sandbox_id"],
+                    "/home/daytona/.claude/.credentials.json",
+                    oauth_creds_bytes.decode(),
+                    mode="600",
+                )
+            return
+
         if merged:
             self._ssh(op, _rcsecrets.write_payload_script(merged), timeout=60)
         if oauth_creds_bytes is not None:
@@ -304,10 +403,9 @@ chown coder:coder /home/coder/.claude/.credentials.json
 
     def ensure_rig_remote(self, handle: EnvHandle) -> str:
         op = handle.opaque
-        if self._is_ssh(op):
-            # Own host: no git push. The operator points --rig-path at a path
-            # that already exists on the remote (your other dev machine has
-            # the repo checked out). Tar/no-transport fallback.
+        if self._is_daytona(op) or self._is_ssh(op):
+            # No reachable bare-git endpoint (Daytona has no public IP; ssh is
+            # an owned host). PO falls back to tar rig transport.
             return ""
         self._ssh(
             op,
@@ -342,6 +440,41 @@ fi
         api_line = (
             f"export PREFECT_API_URL={shlex.quote(api_url)}" if api_url else ":"
         )
+
+        if self._is_daytona(op):
+            # Sandbox runs as the `daytona` user in $HOME. uv tool installs po;
+            # prefect lives in the po tool venv. Worker tmux session sources the
+            # RAM-only secrets so flow + agent subprocs inherit them.
+            self._daytona_exec(
+                op,
+                rf"""
+set -uo pipefail
+command -v tmux >/dev/null 2>&1 || (sudo apt-get install -y tmux 2>/dev/null || true)
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || true
+fi
+export PATH="$HOME/.local/bin:$PATH"
+command -v po >/dev/null 2>&1 || uv tool install prefect-orchestration 2>/dev/null || true
+TOOLBIN="$(uv tool dir 2>/dev/null)/prefect-orchestration/bin"
+export PATH="$TOOLBIN:$PATH"
+{api_line}
+{_rcsecrets.source_snippet()}
+if ! command -v prefect >/dev/null 2>&1; then
+  echo "ERROR: prefect not in po tool env — bake packs via build_image or sync" >&2
+  exit 1
+fi
+WORKER_SESSION=po-worker
+tmux has-session -t "$WORKER_SESSION" 2>/dev/null && {{ echo "worker already running"; exit 0; }}
+tmux new-session -d -s "$WORKER_SESSION" \
+  "exec prefect worker start --pool {escaped_pool} --type process"
+sleep 4
+tmux has-session -t "$WORKER_SESSION" 2>/dev/null \
+  && echo "started worker on pool {pool_name}" \
+  || {{ echo "ERROR: worker session died on startup" >&2; exit 1; }}
+""",
+                timeout=300,
+            )
+            return
 
         if self._is_ssh(op):
             # Own host, connecting user, $HOME. Best-effort prereq install;
@@ -416,6 +549,13 @@ su - coder -c "
 
     def health(self, handle: EnvHandle) -> EnvHealth:
         op = handle.opaque
+        if self._is_daytona(op):
+            sid = op.get("sandbox_id", "")
+            try:
+                self._daytona_exec(op, "echo ok", timeout=15)
+                return EnvHealth(ok=True, summary=f"daytona sandbox reachable ({sid})")
+            except Exception as exc:  # noqa: BLE001
+                return EnvHealth(ok=False, summary=f"daytona exec failed: {exc}")
         target = op.get("ssh_target") if self._is_ssh(op) else op.get("ip")
         try:
             self._ssh(op, "echo ok", timeout=15)
@@ -424,7 +564,19 @@ su - coder -c "
             return EnvHealth(ok=False, summary=f"SSH failed: {exc}")
 
     def build_image(self, opts: Mapping[str, Any] | None = None) -> None:
-        pass  # VM/own-host driver: no image to bake
+        """Bake the reusable Daytona base snapshot (no-op for VM/own-host).
+
+        For daytona this pre-pays the slow ttyd+node+Claude install once so
+        `provision` is near-instant. Prefect/PO packs are installed at
+        worker-start (start_worker), matching the ssh/cloud path.
+        """
+        opts = dict(opts or {})
+        if opts.get("backend") != "daytona":
+            return
+        _require_rclaude()
+        from rclaude.daytona_devenv import DaytonaDevEnv
+
+        DaytonaDevEnv().ensure_base_snapshot(rebuild=bool(opts.get("rebuild")))
 
     # ── pack sync (editable/local packs the auto-installer can't reach) ───────
 
@@ -486,6 +638,13 @@ su - coder -c "
         by the remote worker.
         """
         op = handle.opaque
+        if self._is_daytona(op):
+            # Daytona is image-first: bake packs into the snapshot via
+            # build_image rather than rsyncing onto an ephemeral sandbox.
+            raise NotImplementedError(
+                "sync-packs isn't supported on the daytona backend; bake packs "
+                "into the snapshot (build_image / a custom snapshot) instead."
+            )
         packs = self._local_editable_packs()
         if not packs:
             print("[rclaude-driver] no editable packs to sync")
@@ -539,6 +698,26 @@ echo "[remote] po tool rebuilt with {len(packs)} editable pack(s)"
         self, handle: EnvHandle, remote_path: str, local_path: Path
     ) -> None:
         op = handle.opaque
+
+        if self._is_daytona(op):
+            # No public IP for rsync — stream a tar of the run-dir as base64
+            # over exec and unpack locally. Run dirs are small (text artifacts).
+            local_path.mkdir(parents=True, exist_ok=True)
+            be = self._daytona_backend()
+            b64 = be.exec(
+                op["sandbox_id"],
+                ["bash", "-lc",
+                 f"cd {shlex.quote(remote_path)} 2>/dev/null && tar -czf - . | base64 -w0 || true"],
+            )
+            if b64.strip():
+                import io
+                import tarfile
+
+                raw = base64.b64decode(b64.strip())
+                with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tf:
+                    tf.extractall(local_path)
+            return
+
         ssh_cmd = "ssh " + " ".join(self._ssh_opts(op)[:-1])
 
         if self._is_ssh(op):

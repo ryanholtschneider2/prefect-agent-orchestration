@@ -1,12 +1,18 @@
 # cloud-rclaude
 
 **What it provides:** `po env` driver that runs PO formulas on a remote
-machine via the rclaude stack. Registers `--driver rclaude` with two backends:
+machine via the rclaude stack. Registers `--driver rclaude` with three backends:
 
 - `ssh` (default) — a machine you ALREADY own and have registered with
   rclaude (`~/.config/rclaude/hosts.toml`) or can reach as `user@addr`.
   No provisioning; the flow runs as your connecting user in `$HOME`.
 - `digitalocean` — provision a fresh DO droplet (`root`/`coder`/`/home/coder`).
+- `daytona` — a Daytona sandbox (SDK-native, no SSH/cloudflared, no public IP).
+  All remote ops run via `process.exec`; fast create-from-snapshot + cheap
+  suspend/resume. Needs `DAYTONA_API_KEY` and `pip install rclaude[daytona]`.
+  `build_image --backend daytona` bakes the reusable base snapshot once;
+  `attach` uses Daytona's SSH gateway. Worker is provisioned with
+  `auto_stop=0` (idle suspend off) so the central server can always dispatch.
 
 **When to use:**
 - Run `software-dev-full` / `epic` on your laptop / home server / colo box
@@ -23,6 +29,12 @@ po env down laptop            # stops the worker; does NOT destroy your host
 
 # Fresh DO droplet:
 po env up --driver rclaude --name big --backend digitalocean
+
+# Daytona sandbox (bake the base image once, then provision are seconds):
+po env build-image --driver rclaude --backend daytona     # one-time
+po env up --driver rclaude --name sb --backend daytona
+po attach <issue-id>          # tmux in over Daytona's ssh gateway
+po env down sb                # deletes the sandbox
 ```
 
 **How the worker reaches Prefect (ssh backend):** the remote worker's
@@ -64,6 +76,6 @@ own. (Non-rclaude PO env drivers don't get these secrets.)
 **Key paths:** `po_formulas_cloud_rclaude/driver.py` (delegates),
 `rclaude/secrets.py` (the store + delivery).
 
-**Skip if:** running locally, or using a Daytona/Modal driver.
+**Skip if:** running locally, or using a non-rclaude driver (e.g. Modal).
 
 **Read more:** `po show env-up`, `engdocs/cloud-envs.md`
