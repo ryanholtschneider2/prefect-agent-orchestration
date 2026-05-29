@@ -490,6 +490,23 @@ TOOLBIN="$(uv tool dir 2>/dev/null)/prefect-orchestration/bin"
 export PATH="$TOOLBIN:$PATH"
 {api_line}
 {_rcsecrets.source_snippet()}
+# Tailscale: a Daytona cloud sandbox isn't on your tailnet, so a private
+# PREFECT_API_URL (e.g. a Tailscale IP) is unreachable by default. If a
+# TS_AUTHKEY secret was delivered, join the tailnet in userspace mode (no
+# /dev/net/tun in the sandbox) and route the worker's outbound HTTP through
+# Tailscale's local proxy so it can reach the private Prefect server.
+if [ -n "${{TS_AUTHKEY:-}}" ]; then
+  command -v tailscale >/dev/null 2>&1 || curl -fsSL https://tailscale.com/install.sh | sh 2>/dev/null || true
+  sudo tailscaled --tun=userspace-networking \
+    --outbound-http-proxy-listen=localhost:1055 \
+    --socks5-server=localhost:1055 >/tmp/tailscaled.log 2>&1 &
+  sleep 2
+  sudo tailscale up --authkey="$TS_AUTHKEY" \
+    --hostname="po-daytona-$(hostname)" --accept-routes >/tmp/tsup.log 2>&1 \
+    || echo "WARN: tailscale up failed (check authkey/sudo)" >&2
+  export HTTP_PROXY=http://localhost:1055 HTTPS_PROXY=http://localhost:1055
+  export ALL_PROXY=socks5://localhost:1055 NO_PROXY=localhost,127.0.0.1
+fi
 if ! command -v prefect >/dev/null 2>&1; then
   echo "ERROR: prefect not in po tool env — bake packs via build_image or sync" >&2
   exit 1

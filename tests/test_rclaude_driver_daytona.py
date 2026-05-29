@@ -128,3 +128,14 @@ def test_suspend_rejected_on_non_daytona():
     h = EnvHandle(driver_name="rclaude", opaque={"backend": "ssh", "ssh_target": "x"})
     with pytest.raises(NotImplementedError, match="daytona"):
         RClaudeEnvDriver().suspend(h)
+
+
+def test_start_worker_daytona_wires_tailscale():
+    be = FakeBackend()
+    with patch.object(RClaudeEnvDriver, "_daytona_backend", return_value=be):
+        RClaudeEnvDriver().start_worker(_handle(), "po-env-x")
+    script = next(c[2] for c in be.calls if c[0] == "exec")
+    # Conditional tailnet join + worker proxy so it can reach a private Prefect.
+    assert 'TS_AUTHKEY' in script and "tailscale up" in script
+    assert "HTTP_PROXY=http://localhost:1055" in script
+    assert "prefect worker start --pool po-env-x" in script
