@@ -30,12 +30,21 @@ po env down laptop            # stops the worker; does NOT destroy your host
 # Fresh DO droplet:
 po env up --driver rclaude --name big --backend digitalocean
 
-# Daytona sandbox (bake the base image once, then provision are seconds):
-po env build-image --driver rclaude --backend daytona     # one-time
+# Daytona sandbox (bake the base image once, then provisions are seconds):
+po env build-image --driver rclaude --backend daytona     # one-time base snapshot
 po env up --driver rclaude --name sb --backend daytona
+po env sync-packs sb          # deliver local-only packs (exec-tar) for a real po run
 po attach <issue-id>          # tmux in over Daytona's ssh gateway
+po env stop sb / po env start sb   # suspend / resume (keep disk, ~1s resume)
 po env down sb                # deletes the sandbox
 ```
+
+Daytona notes: local-only packs (not on PyPI) reach the sandbox via
+`po env sync-packs` (tar over `process.exec`, not rsync — no public IP), same
+`uv tool install --editable` as the ssh path. For a worker to reach a **private**
+Prefect (Tailscale/LAN) `PREFECT_API_URL`, set a `TS_AUTHKEY` secret
+(`rclaude secrets set TS_AUTHKEY=...`); `start_worker` joins the tailnet in
+userspace mode and proxies the worker's HTTP through it.
 
 **How the worker reaches Prefect (ssh backend):** the remote worker's
 `PREFECT_API_URL` resolves, first match wins:

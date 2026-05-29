@@ -628,6 +628,47 @@ su - coder -c "
 
     # ── pack sync (editable/local packs the auto-installer can't reach) ───────
 
+    _PACK_EXCLUDES = (
+        ".git", ".venv", "__pycache__", "node_modules",
+        "*.egg-info", ".pytest_cache", ".mypy_cache",
+    )
+
+    def _push_dir(self, op: Mapping[str, Any], local: str, remote_rel: str) -> None:
+        """Mirror a local dir to <remote $HOME>/<remote_rel> (transport-aware)."""
+        if self._is_daytona(op):
+            self._daytona_push_dir(op, local, remote_rel)
+        else:
+            self._rsync_up(op, local, remote_rel)
+
+    def _daytona_push_dir(
+        self, op: Mapping[str, Any], local: str, remote_rel: str
+    ) -> None:
+        """tar (with excludes) -> base64 -> exec-unpack into the sandbox $HOME.
+
+        No rsync/scp (no public IP); pack sources are small once .venv/.git are
+        excluded. Mirrors _rsync_up's exclude set + --delete semantics.
+        """
+        import base64
+        import subprocess
+
+        excl = []
+        for pat in self._PACK_EXCLUDES:
+            excl += ["--exclude", pat]
+        tar = subprocess.run(
+            ["tar", "-czf", "-", *excl, "-C", local.rstrip("/"), "."],
+            capture_output=True,
+            check=True,
+            timeout=120,
+        )
+        b64 = base64.b64encode(tar.stdout).decode()
+        rel_q = shlex.quote(remote_rel)
+        self._daytona_exec(
+            op,
+            f'rm -rf "$HOME"/{rel_q} && mkdir -p "$HOME"/{rel_q} && '
+            f'echo {b64} | base64 -d | tar -xzf - -C "$HOME"/{rel_q}',
+            timeout=300,
+        )
+
     def _rsync_up(self, op: Mapping[str, Any], local: str, remote_rel: str) -> None:
         ssh_cmd = "ssh " + " ".join(self._ssh_opts(op)[:-1])
         target = op["ssh_target"] if self._is_ssh(op) else f"root@{op['ip']}"
@@ -686,13 +727,6 @@ su - coder -c "
         by the remote worker.
         """
         op = handle.opaque
-        if self._is_daytona(op):
-            # Daytona is image-first: bake packs into the snapshot via
-            # build_image rather than rsyncing onto an ephemeral sandbox.
-            raise NotImplementedError(
-                "sync-packs isn't supported on the daytona backend; bake packs "
-                "into the snapshot (build_image / a custom snapshot) instead."
-            )
         packs = self._local_editable_packs()
         if not packs:
             print("[rclaude-driver] no editable packs to sync")
@@ -705,7 +739,7 @@ su - coder -c "
         rel = {name: os.path.relpath(lp, base) for name, lp in packs}
 
         for name, local in packs:
-            self._rsync_up(op, local, f".po-packs/{rel[name]}")
+            self._push_dir(op, local, f".po-packs/{rel[name]}")
             print(f"[rclaude-driver] synced {name} -> .po-packs/{rel[name]}")
 
         primary = next((p for p in packs if p[0] == "prefect-orchestration"), None)
@@ -724,9 +758,7 @@ su - coder -c "
         for name, _ in extras:
             argv += f' --with-editable "$HOME/.po-packs/{rel[name]}"'
 
-        self._ssh(
-            op,
-            rf"""
+        install_script = rf"""
 set -uo pipefail
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || true
@@ -737,9 +769,11 @@ if ! {argv}; then
   exit 1
 fi
 echo "[remote] po tool rebuilt with {len(packs)} editable pack(s)"
-""",
-            timeout=600,
-        )
+"""
+        if self._is_daytona(op):
+            self._daytona_exec(op, install_script, timeout=600)
+        else:
+            self._ssh(op, install_script, timeout=600)
         print(f"[rclaude-driver] reinstalled remote po tool with {len(packs)} pack(s)")
 
     def fs_download(

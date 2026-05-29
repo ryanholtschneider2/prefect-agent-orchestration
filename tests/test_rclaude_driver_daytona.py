@@ -130,6 +130,32 @@ def test_suspend_rejected_on_non_daytona():
         RClaudeEnvDriver().suspend(h)
 
 
+def test_sync_packs_daytona_delivers_and_installs(monkeypatch, tmp_path):
+    """Daytona sync-packs tars sources over exec, then uv tool installs them."""
+    # Fake two editable packs on disk.
+    core = tmp_path / "prefect-orchestration"
+    pack = tmp_path / "po-formulas-software-dev"
+    for p in (core, pack):
+        (p).mkdir()
+        (p / "pyproject.toml").write_text("[project]\n")
+
+    be = FakeBackend()
+    d = RClaudeEnvDriver()
+    monkeypatch.setattr(
+        d, "_local_editable_packs",
+        lambda: [("prefect-orchestration", str(core)), ("po-formulas-software-dev", str(pack))],
+    )
+    with patch.object(RClaudeEnvDriver, "_daytona_backend", return_value=be):
+        d.sync_packs(_handle())
+
+    execs = [c[2] for c in be.calls if c[0] == "exec"]
+    # two dir deliveries (base64 | tar) + one uv tool install
+    assert sum("base64 -d | tar -xzf" in e for e in execs) == 2
+    install = next(e for e in execs if "uv tool install" in e)
+    assert "--editable" in install and "--with-editable" in install
+    assert ".po-packs/prefect-orchestration" in install
+
+
 def test_start_worker_daytona_wires_tailscale():
     be = FakeBackend()
     with patch.object(RClaudeEnvDriver, "_daytona_backend", return_value=be):
