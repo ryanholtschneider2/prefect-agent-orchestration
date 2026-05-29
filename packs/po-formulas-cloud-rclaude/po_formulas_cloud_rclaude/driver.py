@@ -550,16 +550,34 @@ echo "[remote] po tool rebuilt with {len(packs)} editable pack(s)"
         self, handle: EnvHandle, remote_path: str, local_path: Path
     ) -> None:
         op = handle.opaque
-        local_path.mkdir(parents=True, exist_ok=True)
         ssh_cmd = "ssh " + " ".join(self._ssh_opts(op)[:-1])
-        target = op["ssh_target"] if self._is_ssh(op) else f"coder@{op['ip']}"
+
+        if self._is_ssh(op):
+            # Own host: --rig-path points at the REMOTE tree, so core's
+            # `local_path` (rig_path/.planning/<formula>/<issue>) is actually
+            # the run-dir's ABSOLUTE path ON THE REMOTE. That path generally
+            # doesn't exist on the dispatcher, so mirror it into a local cache
+            # instead of trying to write the remote path locally.
+            remote_src = str(local_path)
+            dest = Path.home() / ".cache" / "po" / "env-runs" / local_path.name
+            dest.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                [
+                    "rsync", "-az", "-e", ssh_cmd,
+                    f"{op['ssh_target']}:{remote_src}/",
+                    str(dest) + "/",
+                ],
+                capture_output=True,
+                timeout=300,
+            )
+            print(f"[rclaude-driver] run artifacts mirrored to {dest}")
+            return
+
+        local_path.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             [
-                "rsync",
-                "-az",
-                "-e",
-                ssh_cmd,
-                f"{target}:{remote_path}/",
+                "rsync", "-az", "-e", ssh_cmd,
+                f"coder@{op['ip']}:{remote_path}/",
                 str(local_path) + "/",
             ],
             capture_output=True,

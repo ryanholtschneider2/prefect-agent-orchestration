@@ -231,6 +231,27 @@ def test_ensure_rig_remote_ssh_is_noop():
     assert RClaudeEnvDriver().ensure_rig_remote(_ssh_handle()) == ""
 
 
+def test_fs_download_ssh_pulls_remote_abs_to_local_cache(monkeypatch):
+    """For ssh hosts, fs_download rsyncs from the remote ABSOLUTE run-dir
+    (core's local_path) into a dispatcher-local cache, not the remote path."""
+    import po_formulas_cloud_rclaude.driver as drv_mod
+
+    calls = {}
+    monkeypatch.setattr(
+        drv_mod.subprocess, "run", lambda argv, **kw: calls.setdefault("argv", argv)
+    )
+    drv = RClaudeEnvDriver()
+    remote_run = Path("/home/ryan/rig/.planning/software-dev-edit/abc")
+    drv.fs_download(_ssh_handle(), ".planning/software-dev-edit/abc", remote_run)
+
+    argv = calls["argv"]
+    assert argv[0] == "rsync"
+    # source = ssh_target:<remote-abs>/  (not the relative remote_path)
+    assert argv[-2] == "ryan@laptop.ts:/home/ryan/rig/.planning/software-dev-edit/abc/"
+    # dest = local cache keyed by the run-dir name, never the remote path
+    assert argv[-1].endswith("/.cache/po/env-runs/abc/")
+
+
 def test_start_worker_ssh_sets_api_url_and_no_coder(monkeypatch):
     """start_worker on ssh host exports PREFECT_API_URL and never uses `su - coder`."""
     import po_formulas_cloud_rclaude.driver as drv_mod
