@@ -267,6 +267,37 @@ class RClaudeEnvDriver:
         backend = DigitalOceanBackend()
         backend.destroy_vm(op["droplet_id"])
 
+    # ── suspend / resume (optional; daytona only) ─────────────────────────────
+    # Not part of the EnvDriver Protocol (keeps isinstance stable for drivers
+    # that can't suspend). `po env stop/start` calls these via hasattr.
+
+    def suspend(self, handle: EnvHandle) -> None:
+        """Suspend the env: keep disk, pause compute. Daytona only."""
+        op = handle.opaque
+        if not self._is_daytona(op):
+            raise NotImplementedError(
+                f"suspend/resume is only supported on the daytona backend "
+                f"(this env is {op.get('backend')!r})."
+            )
+        _require_rclaude()
+        self._daytona_backend().stop_vm(op["sandbox_id"])
+
+    def resume(self, handle: EnvHandle) -> None:
+        """Resume a suspended env (state intact). Daytona only.
+
+        Brings the box back; the caller (`po env start`) re-pushes the RAM-only
+        secrets and restarts the worker, since tmpfs clears and the worker dies
+        on suspend. Disk-resident OAuth + clones survive.
+        """
+        op = handle.opaque
+        if not self._is_daytona(op):
+            raise NotImplementedError(
+                f"suspend/resume is only supported on the daytona backend "
+                f"(this env is {op.get('backend')!r})."
+            )
+        _require_rclaude()
+        self._daytona_backend().start_vm(op["sandbox_id"])
+
     def attach_argv(self, handle: EnvHandle, role: str, issue_safe: str) -> list[str]:
         op = handle.opaque
 

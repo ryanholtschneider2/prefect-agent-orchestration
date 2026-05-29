@@ -109,3 +109,22 @@ def test_health_daytona():
 
 def test_ensure_rig_remote_daytona_is_tar_fallback():
     assert RClaudeEnvDriver().ensure_rig_remote(_handle()) == ""
+
+
+def test_suspend_resume_daytona_calls_backend():
+    calls = []
+    be = types.SimpleNamespace(
+        stop_vm=lambda sid: calls.append(("stop", sid)),
+        start_vm=lambda sid: calls.append(("start", sid)),
+    )
+    with patch.object(RClaudeEnvDriver, "_daytona_backend", return_value=be):
+        d = RClaudeEnvDriver()
+        d.suspend(_handle())
+        d.resume(_handle())
+    assert calls == [("stop", "sb-77"), ("start", "sb-77")]
+
+
+def test_suspend_rejected_on_non_daytona():
+    h = EnvHandle(driver_name="rclaude", opaque={"backend": "ssh", "ssh_target": "x"})
+    with pytest.raises(NotImplementedError, match="daytona"):
+        RClaudeEnvDriver().suspend(h)

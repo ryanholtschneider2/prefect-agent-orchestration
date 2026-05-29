@@ -358,6 +358,83 @@ def env_down(
     typer.echo(f"env '{name}' removed")
 
 
+@env_app.command("stop")
+def env_stop(
+    name: str = typer.Argument(..., help="Env name to suspend."),
+) -> None:
+    """Suspend an env (keep disk, pause compute). Driver must support it."""
+    try:
+        record = read_env(name)
+    except EnvNotFound:
+        typer.echo(f"error: no env '{name}'; run po env up first", err=True)
+        raise typer.Exit(1)
+
+    drivers = load_drivers()
+    drv = drivers.get(record.driver)
+    if drv is None:
+        typer.echo(f"error: driver '{record.driver}' not registered", err=True)
+        raise typer.Exit(1)
+    if not hasattr(drv, "suspend"):
+        typer.echo(
+            f"error: driver '{record.driver}' does not support suspend/resume",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    handle = EnvHandle(driver_name=record.driver, opaque=record.opaque)
+    try:
+        drv.suspend(handle)
+    except NotImplementedError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"env '{name}' suspended  →  resume with: po env start {name}")
+
+
+@env_app.command("start")
+def env_start(
+    name: str = typer.Argument(..., help="Env name to resume."),
+) -> None:
+    """Resume a suspended env: bring the box back, re-deliver secrets, restart worker."""
+    try:
+        record = read_env(name)
+    except EnvNotFound:
+        typer.echo(f"error: no env '{name}'; run po env up first", err=True)
+        raise typer.Exit(1)
+
+    drivers = load_drivers()
+    drv = drivers.get(record.driver)
+    if drv is None:
+        typer.echo(f"error: driver '{record.driver}' not registered", err=True)
+        raise typer.Exit(1)
+    if not hasattr(drv, "resume"):
+        typer.echo(
+            f"error: driver '{record.driver}' does not support suspend/resume",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    handle = EnvHandle(driver_name=record.driver, opaque=record.opaque)
+    try:
+        drv.resume(handle)
+    except NotImplementedError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    # tmpfs secrets cleared + worker died on suspend; re-establish both.
+    # OAuth + clones live on disk and survive, so only stored secrets are pushed.
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    env_dict = {"ANTHROPIC_API_KEY": api_key} if api_key else {}
+    try:
+        drv.push_credentials(handle, env_dict, None)
+    except Exception as exc:
+        typer.echo(f"warning: credential re-push failed: {exc}", err=True)
+    try:
+        drv.start_worker(handle, record.pool)
+    except Exception as exc:
+        typer.echo(f"warning: worker restart failed: {exc}", err=True)
+    typer.echo(f"env '{name}' resumed  →  worker on pool {record.pool}")
+
+
 @env_app.command("attach")
 def env_attach(
     name: str = typer.Argument(..., help="Env name to attach to."),
