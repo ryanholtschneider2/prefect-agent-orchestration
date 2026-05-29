@@ -41,6 +41,12 @@ except ImportError:
     _RCLAUDE = False
 
 
+# RAM-backed (tmpfs) location for injected secrets on the remote. Never on
+# disk; sourced by the worker at start; scrubbed on teardown.
+_SECRETS_DIR = "/dev/shm/po"
+_SECRETS_FILE = "/dev/shm/po/secrets.env"
+
+
 def _require_rclaude() -> None:
     if not _RCLAUDE:
         raise RuntimeError(
@@ -190,11 +196,13 @@ class RClaudeEnvDriver:
     def teardown(self, handle: EnvHandle) -> None:
         op = handle.opaque
         if self._is_ssh(op):
-            # Own host: never destroy it. Just stop the rclaude-managed worker.
+            # Own host: never destroy it. Stop the worker and scrub the
+            # RAM-only secrets file.
             try:
                 self._ssh(
                     op,
-                    "tmux kill-session -t po-worker 2>/dev/null || true; echo ok",
+                    f"tmux kill-session -t po-worker 2>/dev/null || true; "
+                    f"rm -f {_SECRETS_FILE} 2>/dev/null || true; echo ok",
                     timeout=30,
                 )
             except Exception:  # noqa: BLE001
@@ -274,26 +282,20 @@ rm -f /tmp/claude-identity.tar.gz
                 f"export {k}={shlex.quote(v)}" for k, v in env_dict.items() if v
             )
             b64 = base64.b64encode(lines.encode()).decode()
-            if is_ssh:
-                self._ssh(
-                    op,
-                    f"""
-echo '{b64}' | base64 -d > "$HOME/.po-env"
-chmod 644 "$HOME/.po-env"
-grep -q 'source $HOME/.po-env' "$HOME/.bashrc" 2>/dev/null || \
-  echo 'source $HOME/.po-env 2>/dev/null' >> "$HOME/.bashrc"
+            # RAM-only: write to tmpfs (/dev/shm) at 0600, NEVER to disk or
+            # .bashrc. The worker sources it at start (so flow subprocesses
+            # inherit) and teardown scrubs it.
+            self._ssh(
+                op,
+                f"""
+set -e
+umask 077
+mkdir -p {_SECRETS_DIR}
+chmod 700 {_SECRETS_DIR}
+echo '{b64}' | base64 -d > {_SECRETS_FILE}
+chmod 600 {_SECRETS_FILE}
 """,
-                )
-            else:
-                self._ssh(
-                    op,
-                    f"""
-echo '{b64}' | base64 -d > /etc/po-env
-chmod 644 /etc/po-env
-grep -q 'source /etc/po-env' /home/coder/.bashrc 2>/dev/null || \
-  echo 'source /etc/po-env 2>/dev/null' >> /home/coder/.bashrc
-""",
-                )
+            )
         if oauth_creds_bytes is not None:
             b64 = base64.b64encode(oauth_creds_bytes).decode()
             if is_ssh:
@@ -377,6 +379,8 @@ command -v po >/dev/null 2>&1 || uv tool install prefect-orchestration 2>/dev/nu
 TOOLBIN="$(uv tool dir 2>/dev/null)/prefect-orchestration/bin"
 export PATH="$TOOLBIN:$PATH"
 {api_line}
+# Inherit injected secrets (tmpfs, RAM-only) into the worker -> flow subprocs.
+if [ -f {_SECRETS_FILE} ]; then set -a; . {_SECRETS_FILE}; set +a; fi
 if ! command -v prefect >/dev/null 2>&1; then
   echo "ERROR: prefect not in po tool env — run 'po env sync-packs <name>' first" >&2
   exit 1
@@ -418,6 +422,7 @@ su - coder -c "
   TOOLBIN=\$(uv tool dir 2>/dev/null)/prefect-orchestration/bin
   export PATH=\$TOOLBIN:\$PATH
   {api_line}
+  if [ -f {_SECRETS_FILE} ]; then set -a; . {_SECRETS_FILE}; set +a; fi
   tmux has-session -t po-worker 2>/dev/null && exit 0
   tmux new-session -d -s po-worker 'exec prefect worker start --pool {escaped_pool} --type process'
 "

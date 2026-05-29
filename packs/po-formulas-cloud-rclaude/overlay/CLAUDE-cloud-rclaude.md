@@ -43,7 +43,23 @@ po env up --driver rclaude --name big --backend digitalocean
   other dev machine has the repo checked out). The ssh backend does no
   git-push / checkout — `ensure_rig_remote` returns `""` (tar/no-transport).
 
-**Key paths:** `po_formulas_cloud_rclaude/driver.py`
+**Secrets (env vars the run/agent needs):** store them encrypted on the
+dispatcher, never on the remote disk or in git:
+```bash
+po secrets set GITHUB_TOKEN=ghp_xxx --env laptop   # env-scoped
+po secrets set OPENAI_API_KEY=sk-xxx               # global (all envs)
+po secrets import ./.env --env laptop              # bulk
+po secrets list                                    # keys only
+```
+At `po env up`, the merged secrets (global + env-scoped) are injected into the
+remote's tmpfs (`/dev/shm/po/secrets.env`, 0600, RAM-only) and sourced by the
+worker, so the flow + agent inherit them. Nothing is written to the remote
+disk; `po env down` scrubs the file. **Updating secrets requires re-running
+`po env up <name>`** (the worker re-sources at start). Stored AES-256-GCM at
+`~/.config/po/secrets.enc`.
+
+**Key paths:** `po_formulas_cloud_rclaude/driver.py`,
+`prefect_orchestration/secrets_store.py`
 
 **Skip if:** running locally, or using a Daytona/Modal driver.
 

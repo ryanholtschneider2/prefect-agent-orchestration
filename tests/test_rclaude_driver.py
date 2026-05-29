@@ -255,6 +255,41 @@ def test_fs_download_ssh_mirrors_planning_root_by_issue(monkeypatch):
     assert argv[-1].endswith("/.cache/po/env-runs/")
 
 
+def test_push_credentials_ssh_writes_tmpfs_not_bashrc(monkeypatch):
+    """Secrets land in tmpfs (/dev/shm, 0600), never on disk or in .bashrc."""
+    drv = RClaudeEnvDriver()
+    scripts = []
+    monkeypatch.setattr(drv, "_ssh", lambda op, script, **kw: scripts.append(script))
+    drv.push_credentials(_ssh_handle(), {"GITHUB_TOKEN": "ghp_x"}, None)
+
+    joined = "\n".join(scripts)
+    assert "/dev/shm/po/secrets.env" in joined
+    assert "chmod 600 /dev/shm/po/secrets.env" in joined
+    assert ".bashrc" not in joined
+    assert "$HOME/.po-env" not in joined
+
+
+def test_teardown_ssh_scrubs_secrets(monkeypatch):
+    drv = RClaudeEnvDriver()
+    scripts = []
+    monkeypatch.setattr(drv, "_ssh", lambda op, script, **kw: scripts.append(script))
+    drv.teardown(_ssh_handle())
+    assert any("rm -f /dev/shm/po/secrets.env" in sc for sc in scripts)
+
+
+def test_start_worker_ssh_sources_secrets(monkeypatch):
+    import po_formulas_cloud_rclaude.driver as drv_mod
+
+    monkeypatch.setattr(drv_mod, "_central_api_url", lambda stored="": "http://h:4200/api")
+    drv = RClaudeEnvDriver()
+    captured = {}
+    monkeypatch.setattr(
+        drv, "_ssh", lambda op, script, **kw: captured.setdefault("s", script)
+    )
+    drv.start_worker(_ssh_handle(), "po-env-laptop")
+    assert ". /dev/shm/po/secrets.env" in captured["s"]
+
+
 def test_start_worker_ssh_sets_api_url_and_no_coder(monkeypatch):
     """start_worker on ssh host exports PREFECT_API_URL and never uses `su - coder`."""
     import po_formulas_cloud_rclaude.driver as drv_mod

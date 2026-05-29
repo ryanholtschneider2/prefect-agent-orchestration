@@ -249,11 +249,17 @@ def env_up(
     else:
         typer.echo("warning: ~/.claude/ not found; skipping identity push", err=True)
 
-    # 4. Push credentials
-    env_dict: dict[str, str] = {}
+    # 4. Push credentials — encrypted-store secrets (global + env-scoped),
+    #    plus ANTHROPIC_API_KEY from the dispatcher's shell if set.
+    from prefect_orchestration import secrets_store as _secrets
+
+    env_dict: dict[str, str] = dict(_secrets.resolve(name))
+    n_secrets = len(env_dict)
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if api_key:
         env_dict["ANTHROPIC_API_KEY"] = api_key
+    if n_secrets:
+        typer.echo(f"injecting {n_secrets} stored secret(s) into env '{name}'")
     oauth_creds: bytes | None = None
     creds_path = Path.home() / ".claude" / ".credentials.json"
     if with_auth and creds_path.exists():
