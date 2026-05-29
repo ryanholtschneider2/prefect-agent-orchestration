@@ -554,23 +554,33 @@ echo "[remote] po tool rebuilt with {len(packs)} editable pack(s)"
 
         if self._is_ssh(op):
             # Own host: --rig-path points at the REMOTE tree, so core's
-            # `local_path` (rig_path/.planning/<formula>/<issue>) is actually
-            # the run-dir's ABSOLUTE path ON THE REMOTE. That path generally
-            # doesn't exist on the dispatcher, so mirror it into a local cache
-            # instead of trying to write the remote path locally.
-            remote_src = str(local_path)
-            dest = Path.home() / ".cache" / "po" / "env-runs" / local_path.name
-            dest.mkdir(parents=True, exist_ok=True)
+            # `local_path` (rig_path/.planning/<formula>/<issue>) is the
+            # run-dir's ABSOLUTE path ON THE REMOTE — it won't exist locally.
+            # Mirror into a dispatcher-local cache instead.
+            #
+            # The <formula> segment core guesses from the dispatched formula
+            # name does NOT always match where the flow actually wrote (e.g.
+            # software-dev-edit/fast share `.planning/software-dev-full/<id>/`
+            # by design). So pull every `.planning/*/<issue>/` subtree from the
+            # remote, not just the guessed path.
+            issue = local_path.name
+            planning_root = local_path.parent.parent  # <rig>/.planning
+            dest_root = Path.home() / ".cache" / "po" / "env-runs"
+            dest_root.mkdir(parents=True, exist_ok=True)
             subprocess.run(
                 [
-                    "rsync", "-az", "-e", ssh_cmd,
-                    f"{op['ssh_target']}:{remote_src}/",
-                    str(dest) + "/",
+                    "rsync", "-az", "-e", ssh_cmd, "--prune-empty-dirs",
+                    "--include=/*/", f"--include=/*/{issue}/***", "--exclude=*",
+                    f"{op['ssh_target']}:{planning_root}/",
+                    str(dest_root) + "/",
                 ],
                 capture_output=True,
                 timeout=300,
             )
-            print(f"[rclaude-driver] run artifacts mirrored to {dest}")
+            print(
+                f"[rclaude-driver] run artifacts mirrored under "
+                f"{dest_root}/<formula>/{issue}/"
+            )
             return
 
         local_path.mkdir(parents=True, exist_ok=True)
