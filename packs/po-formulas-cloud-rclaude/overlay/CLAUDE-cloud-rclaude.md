@@ -43,23 +43,26 @@ po env up --driver rclaude --name big --backend digitalocean
   other dev machine has the repo checked out). The ssh backend does no
   git-push / checkout — `ensure_rig_remote` returns `""` (tar/no-transport).
 
-**Secrets (env vars the run/agent needs):** store them encrypted on the
-dispatcher, never on the remote disk or in git:
+**Secrets (env vars the run/agent needs):** owned by **rclaude** (the box
+layer), so they work in `rclaude talk`/`exec` AND `po run --env`:
 ```bash
-po secrets set GITHUB_TOKEN=ghp_xxx --env laptop   # env-scoped
-po secrets set OPENAI_API_KEY=sk-xxx               # global (all envs)
-po secrets import ./.env --env laptop              # bulk
-po secrets list                                    # keys only
+rclaude secrets set GITHUB_TOKEN=ghp_xxx --host laptop   # host-scoped
+rclaude secrets set OPENAI_API_KEY=sk-xxx                # global (all hosts)
+rclaude secrets import ./.env --host laptop              # bulk
+rclaude secrets list                                     # keys only
 ```
-At `po env up`, the merged secrets (global + env-scoped) are injected into the
-remote's tmpfs (`/dev/shm/po/secrets.env`, 0600, RAM-only) and sourced by the
-worker, so the flow + agent inherit them. Nothing is written to the remote
-disk; `po env down` scrubs the file. **Updating secrets requires re-running
-`po env up <name>`** (the worker re-sources at start). Stored AES-256-GCM at
-`~/.config/po/secrets.enc`.
+Stored AES-256-GCM at `~/.config/rclaude/secrets.enc`. On launch (`rclaude
+talk`/`exec` or `po env up`) the merged secrets (global + host) are written to
+the box's tmpfs (`/dev/shm/rclaude/secrets.env`, 0600, RAM-only) and sourced,
+so the agent + PO worker inherit them. Nothing on the remote disk; `po env
+down` scrubs it. **Updating secrets → re-run `po env up <name>`** (or just
+`rclaude talk` again) so the box re-sources.
 
-**Key paths:** `po_formulas_cloud_rclaude/driver.py`,
-`prefect_orchestration/secrets_store.py`
+The PO rclaude driver delegates to `rclaude.secrets`; PO holds no store of its
+own. (Non-rclaude PO env drivers don't get these secrets.)
+
+**Key paths:** `po_formulas_cloud_rclaude/driver.py` (delegates),
+`rclaude/secrets.py` (the store + delivery).
 
 **Skip if:** running locally, or using a Daytona/Modal driver.
 

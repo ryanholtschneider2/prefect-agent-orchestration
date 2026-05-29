@@ -32,6 +32,7 @@ from typing import Any, Mapping
 from prefect_orchestration.env_drivers import EnvHandle, EnvHealth
 
 try:
+    from rclaude import secrets as _rcsecrets
     from rclaude.backends.digitalocean_backend import DigitalOceanBackend
     from rclaude.backends.ssh_backend import _resolve_host
     from rclaude.devenv import DevEnvLauncher
@@ -39,12 +40,6 @@ try:
     _RCLAUDE = True
 except ImportError:
     _RCLAUDE = False
-
-
-# RAM-backed (tmpfs) location for injected secrets on the remote. Never on
-# disk; sourced by the worker at start; scrubbed on teardown.
-_SECRETS_DIR = "/dev/shm/po"
-_SECRETS_FILE = "/dev/shm/po/secrets.env"
 
 
 def _require_rclaude() -> None:
@@ -202,7 +197,7 @@ class RClaudeEnvDriver:
                 self._ssh(
                     op,
                     f"tmux kill-session -t po-worker 2>/dev/null || true; "
-                    f"rm -f {_SECRETS_FILE} 2>/dev/null || true; echo ok",
+                    f"{_rcsecrets.scrub_script()}; echo ok",
                     timeout=30,
                 )
             except Exception:  # noqa: BLE001
@@ -277,25 +272,14 @@ rm -f /tmp/claude-identity.tar.gz
     ) -> None:
         op = handle.opaque
         is_ssh = self._is_ssh(op)
-        if env_dict:
-            lines = "\n".join(
-                f"export {k}={shlex.quote(v)}" for k, v in env_dict.items() if v
-            )
-            b64 = base64.b64encode(lines.encode()).decode()
-            # RAM-only: write to tmpfs (/dev/shm) at 0600, NEVER to disk or
-            # .bashrc. The worker sources it at start (so flow subprocesses
-            # inherit) and teardown scrubs it.
-            self._ssh(
-                op,
-                f"""
-set -e
-umask 077
-mkdir -p {_SECRETS_DIR}
-chmod 700 {_SECRETS_DIR}
-echo '{b64}' | base64 -d > {_SECRETS_FILE}
-chmod 600 {_SECRETS_FILE}
-""",
-            )
+        # rclaude owns the secret store + delivery. Merge this host's stored
+        # secrets with any env_dict PO passes (e.g. ANTHROPIC_API_KEY) and let
+        # rclaude write them to its RAM-only tmpfs file (the single writer).
+        scope = op.get("host") or _rcsecrets.GLOBAL
+        merged = dict(_rcsecrets.resolve(scope))
+        merged.update({k: v for k, v in (env_dict or {}).items() if v})
+        if merged:
+            self._ssh(op, _rcsecrets.write_payload_script(merged), timeout=60)
         if oauth_creds_bytes is not None:
             b64 = base64.b64encode(oauth_creds_bytes).decode()
             if is_ssh:
@@ -379,8 +363,8 @@ command -v po >/dev/null 2>&1 || uv tool install prefect-orchestration 2>/dev/nu
 TOOLBIN="$(uv tool dir 2>/dev/null)/prefect-orchestration/bin"
 export PATH="$TOOLBIN:$PATH"
 {api_line}
-# Inherit injected secrets (tmpfs, RAM-only) into the worker -> flow subprocs.
-if [ -f {_SECRETS_FILE} ]; then set -a; . {_SECRETS_FILE}; set +a; fi
+# Inherit injected secrets (rclaude tmpfs, RAM-only) into worker -> flow subprocs.
+{_rcsecrets.source_snippet()}
 if ! command -v prefect >/dev/null 2>&1; then
   echo "ERROR: prefect not in po tool env — run 'po env sync-packs <name>' first" >&2
   exit 1
@@ -422,7 +406,7 @@ su - coder -c "
   TOOLBIN=\$(uv tool dir 2>/dev/null)/prefect-orchestration/bin
   export PATH=\$TOOLBIN:\$PATH
   {api_line}
-  if [ -f {_SECRETS_FILE} ]; then set -a; . {_SECRETS_FILE}; set +a; fi
+  {_rcsecrets.source_snippet()}
   tmux has-session -t po-worker 2>/dev/null && exit 0
   tmux new-session -d -s po-worker 'exec prefect worker start --pool {escaped_pool} --type process'
 "

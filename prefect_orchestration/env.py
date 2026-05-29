@@ -249,32 +249,23 @@ def env_up(
     else:
         typer.echo("warning: ~/.claude/ not found; skipping identity push", err=True)
 
-    # 4. Push credentials — encrypted-store secrets (global + env-scoped),
-    #    plus ANTHROPIC_API_KEY from the dispatcher's shell if set.
-    from prefect_orchestration import secrets_store as _secrets
-
-    env_dict: dict[str, str] = dict(_secrets.resolve(name))
-    n_secrets = len(env_dict)
+    # 4. Push credentials. Secrets are owned by the driver's secret store
+    #    (e.g. `rclaude secrets`); the driver resolves + injects them. PO only
+    #    forwards ANTHROPIC_API_KEY (if set) + OAuth creds, and always calls
+    #    push_credentials so the driver injects the host's stored secrets even
+    #    when PO has nothing of its own to add.
+    env_dict: dict[str, str] = {}
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if api_key:
         env_dict["ANTHROPIC_API_KEY"] = api_key
-    if n_secrets:
-        typer.echo(f"injecting {n_secrets} stored secret(s) into env '{name}'")
     oauth_creds: bytes | None = None
     creds_path = Path.home() / ".claude" / ".credentials.json"
     if with_auth and creds_path.exists():
         oauth_creds = creds_path.read_bytes()
-    if env_dict or oauth_creds is not None:
-        try:
-            drv.push_credentials(handle, env_dict, oauth_creds)
-        except Exception as exc:
-            typer.echo(f"warning: credential push failed: {exc}", err=True)
-    else:
-        typer.echo(
-            "warning: no ANTHROPIC_API_KEY set and --with-auth not passed; "
-            "no credentials pushed",
-            err=True,
-        )
+    try:
+        drv.push_credentials(handle, env_dict, oauth_creds)
+    except Exception as exc:
+        typer.echo(f"warning: credential push failed: {exc}", err=True)
 
     # 5. Start worker
     pool_name = f"po-env-{name}"

@@ -255,18 +255,30 @@ def test_fs_download_ssh_mirrors_planning_root_by_issue(monkeypatch):
     assert argv[-1].endswith("/.cache/po/env-runs/")
 
 
-def test_push_credentials_ssh_writes_tmpfs_not_bashrc(monkeypatch):
-    """Secrets land in tmpfs (/dev/shm, 0600), never on disk or in .bashrc."""
+def test_push_credentials_merges_rclaude_store_to_tmpfs(monkeypatch):
+    """push_credentials resolves the host's rclaude secrets, merges PO's
+    env_dict, and writes them to rclaude's tmpfs file — never .bashrc/disk."""
+    import po_formulas_cloud_rclaude.driver as drv_mod
+
+    monkeypatch.setattr(
+        drv_mod._rcsecrets, "resolve", lambda scope: {"GITHUB_TOKEN": "ghp_x"}
+    )
     drv = RClaudeEnvDriver()
     scripts = []
     monkeypatch.setattr(drv, "_ssh", lambda op, script, **kw: scripts.append(script))
-    drv.push_credentials(_ssh_handle(), {"GITHUB_TOKEN": "ghp_x"}, None)
+    drv.push_credentials(_ssh_handle(), {"ANTHROPIC_API_KEY": "sk"}, None)
+
+    import base64 as _b64
+    import re
 
     joined = "\n".join(scripts)
-    assert "/dev/shm/po/secrets.env" in joined
-    assert "chmod 600 /dev/shm/po/secrets.env" in joined
+    assert "/dev/shm/rclaude/secrets.env" in joined
     assert ".bashrc" not in joined
     assert "$HOME/.po-env" not in joined
+    # payload is base64-encoded in the script; decode and confirm the merge
+    m = re.search(r"echo ([A-Za-z0-9+/=]+) \| base64 -d", joined)
+    decoded = _b64.b64decode(m.group(1)).decode()
+    assert "GITHUB_TOKEN" in decoded and "ANTHROPIC_API_KEY" in decoded
 
 
 def test_teardown_ssh_scrubs_secrets(monkeypatch):
@@ -274,7 +286,7 @@ def test_teardown_ssh_scrubs_secrets(monkeypatch):
     scripts = []
     monkeypatch.setattr(drv, "_ssh", lambda op, script, **kw: scripts.append(script))
     drv.teardown(_ssh_handle())
-    assert any("rm -f /dev/shm/po/secrets.env" in sc for sc in scripts)
+    assert any("rm -f /dev/shm/rclaude/secrets.env" in sc for sc in scripts)
 
 
 def test_start_worker_ssh_sources_secrets(monkeypatch):
@@ -287,7 +299,7 @@ def test_start_worker_ssh_sources_secrets(monkeypatch):
         drv, "_ssh", lambda op, script, **kw: captured.setdefault("s", script)
     )
     drv.start_worker(_ssh_handle(), "po-env-laptop")
-    assert ". /dev/shm/po/secrets.env" in captured["s"]
+    assert "/dev/shm/rclaude/secrets.env" in captured["s"]
 
 
 def test_start_worker_ssh_sets_api_url_and_no_coder(monkeypatch):
