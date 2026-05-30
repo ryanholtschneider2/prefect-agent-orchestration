@@ -337,12 +337,15 @@ class RClaudeEnvDriver:
     ) -> None:
         op = handle.opaque
         if self._is_daytona(op):
-            # No scp; ship the (small ~/.claude config) tarball as base64 over exec.
-            b64 = base64.b64encode(tarball_path.read_bytes()).decode()
+            # No scp; upload the identity tarball via the fs API, then unpack.
+            be = self._daytona_backend()
+            sid = op["sandbox_id"]
+            be.upload_bytes(sid, "/tmp/claude-identity.tar.gz", tarball_path.read_bytes())
             self._daytona_exec(
                 op,
-                f'mkdir -p "$HOME/.claude" && echo {b64} | base64 -d '
-                '| tar -xzf - -C "$HOME" 2>/dev/null || true',
+                'mkdir -p "$HOME/.claude" && '
+                'tar -xzf /tmp/claude-identity.tar.gz -C "$HOME" 2>/dev/null || true; '
+                'rm -f /tmp/claude-identity.tar.gz',
             )
             return
         ssh_opts_no_target = self._ssh_opts(op)[:-1]
@@ -476,6 +479,10 @@ fi
             # Sandbox runs as the `daytona` user in $HOME. uv tool installs po;
             # prefect lives in the po tool venv. Worker tmux session sources the
             # RAM-only secrets so flow + agent subprocs inherit them.
+            api_health_url = (
+                api_url.rstrip("/") + "/health" if api_url
+                else "http://127.0.0.1:4200/api/health"
+            )
             self._daytona_exec(
                 op,
                 rf"""
@@ -492,33 +499,59 @@ export PATH="$TOOLBIN:$PATH"
 {_rcsecrets.source_snippet()}
 # Tailscale: a Daytona cloud sandbox isn't on your tailnet, so a private
 # PREFECT_API_URL (e.g. a Tailscale IP) is unreachable by default. If a
-# TS_AUTHKEY secret was delivered, join the tailnet in userspace mode (no
-# /dev/net/tun in the sandbox) and route the worker's outbound HTTP through
-# Tailscale's local proxy so it can reach the private Prefect server.
+# TS_AUTHKEY secret was delivered, join the tailnet — ROOTLESS: the sandbox
+# has no sudo and runs as a non-root user, so install the static binaries to
+# $HOME and run tailscaled in userspace mode with a $HOME state dir + socket.
+# Egress is via the SOCKS5 proxy (the userspace HTTP proxy proved unreliable —
+# curl/httpx bypassed it and tried a direct connect; SOCKS5h works), so the
+# worker's httpx routes through ALL_PROXY=socks5h and needs the socksio extra.
 if [ -n "${{TS_AUTHKEY:-}}" ]; then
-  command -v tailscale >/dev/null 2>&1 || curl -fsSL https://tailscale.com/install.sh | sh 2>/dev/null || true
-  sudo tailscaled --tun=userspace-networking \
-    --outbound-http-proxy-listen=localhost:1055 \
+  export PATH="$HOME/.local/bin:$PATH"
+  TS_SOCK="$HOME/.tailscaled.sock"
+  if ! command -v tailscaled >/dev/null 2>&1; then
+    TSVER=$(curl -fsSL "https://pkgs.tailscale.com/stable/?mode=json" \
+      | grep -oE '"Version" *: *"[0-9.]+"' | head -1 | grep -oE '[0-9.]+')
+    if [ -n "$TSVER" ]; then
+      curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${{TSVER}}_amd64.tgz" -o /tmp/ts.tgz \
+        && tar -xzf /tmp/ts.tgz -C /tmp \
+        && mkdir -p "$HOME/.local/bin" \
+        && cp "/tmp/tailscale_${{TSVER}}_amd64/tailscale" "/tmp/tailscale_${{TSVER}}_amd64/tailscaled" "$HOME/.local/bin/"
+    fi
+  fi
+  "$HOME/.local/bin/tailscaled" --tun=userspace-networking \
+    --state="$HOME/.tailscaled.state" --socket="$TS_SOCK" \
     --socks5-server=localhost:1055 >/tmp/tailscaled.log 2>&1 &
   sleep 2
-  sudo tailscale up --authkey="$TS_AUTHKEY" \
+  "$HOME/.local/bin/tailscale" --socket="$TS_SOCK" up --authkey="$TS_AUTHKEY" \
     --hostname="po-daytona-$(hostname)" --accept-routes >/tmp/tsup.log 2>&1 \
-    || echo "WARN: tailscale up failed (check authkey/sudo)" >&2
-  export HTTP_PROXY=http://localhost:1055 HTTPS_PROXY=http://localhost:1055
-  export ALL_PROXY=socks5://localhost:1055 NO_PROXY=localhost,127.0.0.1
+    || echo "WARN: tailscale up failed (see /tmp/tsup.log)" >&2
+  # Wait for the tailnet path to the dispatcher to come up (NAT traversal/DERP).
+  for _ in $(seq 1 15); do
+    curl -fsS -m 4 --socks5-hostname localhost:1055 -o /dev/null \
+      {api_health_url} && break || sleep 2
+  done
+  export ALL_PROXY=socks5h://localhost:1055
+  export NO_PROXY=localhost,127.0.0.1
 fi
 if ! command -v prefect >/dev/null 2>&1; then
   echo "ERROR: prefect not in po tool env — bake packs via build_image or sync" >&2
   exit 1
 fi
-WORKER_SESSION=po-worker
-tmux has-session -t "$WORKER_SESSION" 2>/dev/null && {{ echo "worker already running"; exit 0; }}
-tmux new-session -d -s "$WORKER_SESSION" \
-  "exec prefect worker start --pool {escaped_pool} --type process"
-sleep 4
-tmux has-session -t "$WORKER_SESSION" 2>/dev/null \
-  && echo "started worker on pool {pool_name}" \
-  || {{ echo "ERROR: worker session died on startup" >&2; exit 1; }}
+# Launch the worker via nohup in THIS shell, which already has the tailnet
+# proxy (ALL_PROXY) + PREFECT_API_URL + PATH exported — tmux new-session does
+# not reliably propagate them, and a tmux command string mis-parses pipes.
+# (Agent role sessions the flow spawns still use tmux; only the worker differs.)
+pkill -f "prefect worker start" 2>/dev/null || true
+nohup prefect worker start --pool {escaped_pool} --type process \
+  > /tmp/po-worker.log 2>&1 &
+WORKER_PID=$!
+sleep 6
+# portable liveness check (pgrep/tmux may be absent in the sandbox)
+if kill -0 "$WORKER_PID" 2>/dev/null; then
+  echo "started worker on pool {pool_name}"
+else
+  echo "ERROR: worker died on startup:" >&2; tail -15 /tmp/po-worker.log >&2; exit 1
+fi
 """,
                 timeout=300,
             )
@@ -643,12 +676,12 @@ su - coder -c "
     def _daytona_push_dir(
         self, op: Mapping[str, Any], local: str, remote_rel: str
     ) -> None:
-        """tar (with excludes) -> base64 -> exec-unpack into the sandbox $HOME.
+        """tar (with excludes) -> fs.upload_file -> exec-unpack into sandbox $HOME.
 
-        No rsync/scp (no public IP); pack sources are small once .venv/.git are
-        excluded. Mirrors _rsync_up's exclude set + --delete semantics.
+        No rsync/scp (no public IP). Upload via the Daytona fs API, NOT
+        base64-over-exec — the latter exceeds Daytona's command-length limit for
+        larger packs. Mirrors _rsync_up's exclude set + --delete semantics.
         """
-        import base64
         import subprocess
 
         excl = []
@@ -660,12 +693,15 @@ su - coder -c "
             check=True,
             timeout=120,
         )
-        b64 = base64.b64encode(tar.stdout).decode()
+        sid = op["sandbox_id"]
+        remote_tgz = f"/tmp/po-pack-{remote_rel.replace('/', '_')}.tgz"
+        self._daytona_backend().upload_bytes(sid, remote_tgz, tar.stdout)
         rel_q = shlex.quote(remote_rel)
         self._daytona_exec(
             op,
             f'rm -rf "$HOME"/{rel_q} && mkdir -p "$HOME"/{rel_q} && '
-            f'echo {b64} | base64 -d | tar -xzf - -C "$HOME"/{rel_q}',
+            f'tar -xzf {shlex.quote(remote_tgz)} -C "$HOME"/{rel_q} && '
+            f'rm -f {shlex.quote(remote_tgz)}',
             timeout=300,
         )
 
@@ -757,6 +793,9 @@ su - coder -c "
         )
         for name, _ in extras:
             argv += f' --with-editable "$HOME/.po-packs/{rel[name]}"'
+        # socksio gives the worker's httpx SOCKS5 support, needed when the
+        # daytona worker reaches a private Prefect via the tailnet SOCKS proxy.
+        argv += " --with socksio"
 
         install_script = rf"""
 set -uo pipefail
@@ -782,20 +821,24 @@ echo "[remote] po tool rebuilt with {len(packs)} editable pack(s)"
         op = handle.opaque
 
         if self._is_daytona(op):
-            # No public IP for rsync — stream a tar of the run-dir as base64
-            # over exec and unpack locally. Run dirs are small (text artifacts).
+            # No public IP for rsync — tar the run-dir to a temp file in the
+            # sandbox, pull it via the fs API, unpack locally.
             local_path.mkdir(parents=True, exist_ok=True)
             be = self._daytona_backend()
-            b64 = be.exec(
-                op["sandbox_id"],
-                ["bash", "-lc",
-                 f"cd {shlex.quote(remote_path)} 2>/dev/null && tar -czf - . | base64 -w0 || true"],
+            sid = op["sandbox_id"]
+            be.exec(
+                sid, ["bash", "-lc",
+                      f"cd {shlex.quote(remote_path)} 2>/dev/null && "
+                      "tar -czf /tmp/po-dl.tgz . || true"],
             )
-            if b64.strip():
+            try:
+                raw = be.download_bytes(sid, "/tmp/po-dl.tgz")
+            except Exception:  # noqa: BLE001
+                raw = b""
+            if raw:
                 import io
                 import tarfile
 
-                raw = base64.b64decode(b64.strip())
                 with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as tf:
                     tf.extractall(local_path)
             return

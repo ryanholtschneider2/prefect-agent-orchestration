@@ -37,6 +37,13 @@ class FakeBackend:
     def upload_text(self, sid, path, content, mode="644"):
         self.calls.append(("upload_text", path, mode))
 
+    def upload_bytes(self, sid, path, data):
+        self.calls.append(("upload_bytes", path, len(data)))
+
+    def download_bytes(self, sid, path):
+        self.calls.append(("download_bytes", path))
+        return b""
+
     def ssh_access(self, sid, expires_in_minutes=60):
         return types.SimpleNamespace(ssh_command="ssh tok-1@ssh.app.daytona.io")
 
@@ -148,12 +155,14 @@ def test_sync_packs_daytona_delivers_and_installs(monkeypatch, tmp_path):
     with patch.object(RClaudeEnvDriver, "_daytona_backend", return_value=be):
         d.sync_packs(_handle())
 
+    # two pack tarballs uploaded via the fs API, each unpacked via exec
+    assert sum(1 for c in be.calls if c[0] == "upload_bytes") == 2
     execs = [c[2] for c in be.calls if c[0] == "exec"]
-    # two dir deliveries (base64 | tar) + one uv tool install
-    assert sum("base64 -d | tar -xzf" in e for e in execs) == 2
+    assert sum("tar -xzf" in e for e in execs) == 2
     install = next(e for e in execs if "uv tool install" in e)
     assert "--editable" in install and "--with-editable" in install
     assert ".po-packs/prefect-orchestration" in install
+    assert "--with socksio" in install  # SOCKS support for the worker's httpx
 
 
 def test_start_worker_daytona_wires_tailscale():
@@ -161,7 +170,8 @@ def test_start_worker_daytona_wires_tailscale():
     with patch.object(RClaudeEnvDriver, "_daytona_backend", return_value=be):
         RClaudeEnvDriver().start_worker(_handle(), "po-env-x")
     script = next(c[2] for c in be.calls if c[0] == "exec")
-    # Conditional tailnet join + worker proxy so it can reach a private Prefect.
+    # Conditional tailnet join + SOCKS5 egress so it can reach a private Prefect.
     assert 'TS_AUTHKEY' in script and "tailscale up" in script
-    assert "HTTP_PROXY=http://localhost:1055" in script
+    assert "socks5-server=localhost:1055" in script
+    assert "ALL_PROXY=socks5h://localhost:1055" in script
     assert "prefect worker start --pool po-env-x" in script
