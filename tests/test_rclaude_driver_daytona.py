@@ -170,8 +170,10 @@ def test_start_worker_daytona_wires_tailscale():
     with patch.object(RClaudeEnvDriver, "_daytona_backend", return_value=be):
         RClaudeEnvDriver().start_worker(_handle(), "po-env-x")
     script = next(c[2] for c in be.calls if c[0] == "exec")
-    # Conditional tailnet join + SOCKS5 egress so it can reach a private Prefect.
+    # Conditional tailnet join + localhost->SOCKS forwarder so HTTP AND the
+    # events websocket reach a private Prefect at 127.0.0.1.
     assert 'TS_AUTHKEY' in script and "tailscale up" in script
     assert "socks5-server=localhost:1055" in script
-    assert "ALL_PROXY=socks5h://localhost:1055" in script
+    assert ".po-forwarder.py" in script
+    assert "export PREFECT_API_URL=http://127.0.0.1:4200/api" in script
     assert "prefect worker start --pool po-env-x" in script

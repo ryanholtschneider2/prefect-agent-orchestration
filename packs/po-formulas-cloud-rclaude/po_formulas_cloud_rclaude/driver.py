@@ -397,17 +397,22 @@ rm -f /tmp/claude-identity.tar.gz
 
         if self._is_daytona(op):
             be = self._daytona_backend()
+            sid = op["sandbox_id"]
             if merged:
-                be.exec(
-                    op["sandbox_id"],
-                    ["bash", "-lc", _rcsecrets.write_payload_script(merged)],
-                )
+                be.exec(sid, ["bash", "-lc", _rcsecrets.write_payload_script(merged)])
             if oauth_creds_bytes is not None:
+                # process.exec runs as root ($HOME=/root) — put creds where the
+                # worker's claude subprocesses actually look, and stamp
+                # .claude.json so --print skips onboarding/trust prompts.
+                home = be.exec(sid, ["bash", "-lc", "echo $HOME"]).strip() or "/root"
                 be.upload_text(
-                    op["sandbox_id"],
-                    "/home/daytona/.claude/.credentials.json",
-                    oauth_creds_bytes.decode(),
-                    mode="600",
+                    sid, f"{home}/.claude/.credentials.json",
+                    oauth_creds_bytes.decode(), mode="600",
+                )
+                be.upload_text(
+                    sid, f"{home}/.claude.json",
+                    '{"numStartups": 1, "hasCompletedOnboarding": true, '
+                    '"bypassPermissionsModeAccepted": true}',
                 )
             return
 
@@ -483,11 +488,19 @@ fi
                 api_url.rstrip("/") + "/health" if api_url
                 else "http://127.0.0.1:4200/api/health"
             )
+            # Forwarder target: the private (tailnet) Prefect host:port.
+            from urllib.parse import urlparse
+
+            _pu = urlparse(api_url) if api_url else None
+            fwd_host = (_pu.hostname if _pu else None) or "127.0.0.1"
+            fwd_port = (_pu.port if _pu else None) or 4200
             self._daytona_exec(
                 op,
                 rf"""
 set -uo pipefail
-command -v tmux >/dev/null 2>&1 || (sudo apt-get install -y tmux 2>/dev/null || true)
+# exec runs as root in the sandbox — no sudo. procps gives pkill/pgrep so we
+# can reliably replace a stale worker; tmux for agent role sessions.
+command -v pkill >/dev/null 2>&1 || apt-get install -y procps tmux 2>/dev/null || true
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || true
 fi
@@ -498,13 +511,13 @@ export PATH="$TOOLBIN:$PATH"
 {api_line}
 {_rcsecrets.source_snippet()}
 # Tailscale: a Daytona cloud sandbox isn't on your tailnet, so a private
-# PREFECT_API_URL (e.g. a Tailscale IP) is unreachable by default. If a
-# TS_AUTHKEY secret was delivered, join the tailnet — ROOTLESS: the sandbox
-# has no sudo and runs as a non-root user, so install the static binaries to
-# $HOME and run tailscaled in userspace mode with a $HOME state dir + socket.
-# Egress is via the SOCKS5 proxy (the userspace HTTP proxy proved unreliable —
-# curl/httpx bypassed it and tried a direct connect; SOCKS5h works), so the
-# worker's httpx routes through ALL_PROXY=socks5h and needs the socksio extra.
+# PREFECT_API_URL is unreachable by default. ROOTLESS (no sudo): install the
+# static binaries to $HOME and run tailscaled in userspace mode (SOCKS5 on
+# 1055). Then run a tiny localhost->SOCKS TCP forwarder so the worker reaches
+# Prefect at http://127.0.0.1:4200 — a RAW TCP relay, so BOTH the HTTP polls
+# AND the events websocket tunnel through (per-library proxies like ALL_PROXY
+# work for httpx but NOT Prefect's events websocket, which then times out and
+# kills the worker ~40s in).
 if [ -n "${{TS_AUTHKEY:-}}" ]; then
   export PATH="$HOME/.local/bin:$PATH"
   TS_SOCK="$HOME/.tailscaled.sock"
@@ -518,31 +531,67 @@ if [ -n "${{TS_AUTHKEY:-}}" ]; then
         && cp "/tmp/tailscale_${{TSVER}}_amd64/tailscale" "/tmp/tailscale_${{TSVER}}_amd64/tailscaled" "$HOME/.local/bin/"
     fi
   fi
-  "$HOME/.local/bin/tailscaled" --tun=userspace-networking \
-    --state="$HOME/.tailscaled.state" --socket="$TS_SOCK" \
-    --socks5-server=localhost:1055 >/tmp/tailscaled.log 2>&1 &
+  pgrep -f "tailscaled --tun=userspace" >/dev/null 2>&1 || \
+    "$HOME/.local/bin/tailscaled" --tun=userspace-networking \
+      --state="$HOME/.tailscaled.state" --socket="$TS_SOCK" \
+      --socks5-server=localhost:1055 >/tmp/tailscaled.log 2>&1 &
   sleep 2
   "$HOME/.local/bin/tailscale" --socket="$TS_SOCK" up --authkey="$TS_AUTHKEY" \
     --hostname="po-daytona-$(hostname)" --accept-routes >/tmp/tsup.log 2>&1 \
     || echo "WARN: tailscale up failed (see /tmp/tsup.log)" >&2
-  # Wait for the tailnet path to the dispatcher to come up (NAT traversal/DERP).
-  for _ in $(seq 1 15); do
-    curl -fsS -m 4 --socks5-hostname localhost:1055 -o /dev/null \
-      {api_health_url} && break || sleep 2
+  # localhost:4200 -> SOCKS5(1055) -> {fwd_host}:{fwd_port} raw TCP forwarder.
+  cat > "$HOME/.po-forwarder.py" <<'FWEOF'
+import asyncio
+from python_socks.async_.asyncio import Proxy
+TH, TP = "{fwd_host}", {fwd_port}
+async def handle(r, w):
+    try:
+        s = await Proxy.from_url("socks5://127.0.0.1:1055").connect(dest_host=TH, dest_port=TP)
+        rr, rw = await asyncio.open_connection(sock=s)
+    except Exception:
+        try: w.close()
+        except Exception: pass
+        return
+    async def pipe(a, b):
+        try:
+            while True:
+                d = await a.read(65536)
+                if not d: break
+                b.write(d); await b.drain()
+        except Exception: pass
+        finally:
+            try: b.close()
+            except Exception: pass
+    await asyncio.gather(pipe(r, rw), pipe(rr, w))
+async def main():
+    srv = await asyncio.start_server(handle, "127.0.0.1", 4200)
+    async with srv: await srv.serve_forever()
+asyncio.run(main())
+FWEOF
+  TOOLPY="$(uv tool dir 2>/dev/null)/prefect-orchestration/bin/python"
+  pkill -f po-forwarder.py 2>/dev/null || true
+  nohup "$TOOLPY" "$HOME/.po-forwarder.py" >/tmp/po-forwarder.log 2>&1 &
+  for _ in $(seq 1 20); do
+    curl -fsS -m 4 -o /dev/null http://127.0.0.1:4200/api/health && break || sleep 2
   done
-  export ALL_PROXY=socks5h://localhost:1055
-  export NO_PROXY=localhost,127.0.0.1
+  export PREFECT_API_URL=http://127.0.0.1:4200/api
 fi
 if ! command -v prefect >/dev/null 2>&1; then
   echo "ERROR: prefect not in po tool env — bake packs via build_image or sync" >&2
   exit 1
 fi
-# Launch the worker via nohup in THIS shell, which already has the tailnet
-# proxy (ALL_PROXY) + PREFECT_API_URL + PATH exported — tmux new-session does
-# not reliably propagate them, and a tmux command string mis-parses pipes.
-# (Agent role sessions the flow spawns still use tmux; only the worker differs.)
-pkill -f "prefect worker start" 2>/dev/null || true
-nohup prefect worker start --pool {escaped_pool} --type process \
+# process.exec runs as root; Claude Code refuses --dangerously-skip-permissions
+# as root unless IS_SANDBOX=1. The worker passes its env to agent subprocesses.
+export IS_SANDBOX=1
+# Launch the worker via nohup in THIS shell (which has PREFECT_API_URL + PATH).
+# Pass IS_SANDBOX via `env` explicitly — the agent's claude subprocess inherits
+# the worker's os.environ (agent_session._clean_env copies it), and Claude Code
+# needs IS_SANDBOX=1 to allow --dangerously-skip-permissions as root.
+# Kill any stale worker first (portable; procps may be freshly installed).
+pkill -f "prefect worker start" 2>/dev/null || \
+  for p in /proc/[0-9]*; do grep -qa "prefect worker start" "$p/cmdline" 2>/dev/null && kill "$(basename "$p")" 2>/dev/null; done
+sleep 1
+nohup env IS_SANDBOX=1 prefect worker start --pool {escaped_pool} --type process \
   > /tmp/po-worker.log 2>&1 &
 WORKER_PID=$!
 sleep 6
@@ -555,6 +604,11 @@ fi
 """,
                 timeout=300,
             )
+            # Ship bd + dolt so flows that shell out to bd work in the sandbox.
+            try:
+                self.install_bd_tools(op)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[rclaude-driver] WARNING: bd/dolt install failed: {exc}")
             return
 
         if self._is_ssh(op):
@@ -753,6 +807,61 @@ su - coder -c "
         out.sort(key=lambda t: 0 if t[0] == "prefect-orchestration" else 1)
         return out
 
+    def push_rig(self, handle: EnvHandle, rig_path: Path) -> str:
+        """Deliver the rig into the env; return the remote rig path (or "").
+
+        Non-daytona drivers rely on git/ssh (the rig is already present on the
+        remote) and return "" — no rig_path remap. Daytona has no public IP, so
+        tar the rig (incl .beads, minus .git/.venv) -> fs upload -> extract to
+        <home>/rig, and return that absolute path so the dispatched flow + the
+        run-dir mirror-back target the sandbox copy.
+        """
+        op = handle.opaque
+        if not self._is_daytona(op):
+            return ""
+        import subprocess
+
+        sid = op["sandbox_id"]
+        be = self._daytona_backend()
+        home = be.exec(sid, ["bash", "-lc", "echo $HOME"]).strip() or "/home/daytona"
+        remote_rig = f"{home}/rig"
+        excl: list[str] = []
+        for pat in self._PACK_EXCLUDES:
+            excl += ["--exclude", pat]
+        tar = subprocess.run(
+            ["tar", "-czf", "-", *excl, "-C", str(rig_path), "."],
+            capture_output=True, check=True, timeout=300,
+        )
+        be.upload_bytes(sid, "/tmp/po-rig.tgz", tar.stdout)
+        self._daytona_exec(
+            op,
+            f"rm -rf {shlex.quote(remote_rig)} && mkdir -p {shlex.quote(remote_rig)} && "
+            f"tar -xzf /tmp/po-rig.tgz -C {shlex.quote(remote_rig)} && rm -f /tmp/po-rig.tgz && "
+            # Drop the dispatcher's embedded-dolt port pointer so the sandbox's
+            # bd starts its OWN dolt server against the delivered .beads/dolt.
+            f"rm -f {shlex.quote(remote_rig)}/.beads/dolt-server.port",
+            timeout=300,
+        )
+        return remote_rig
+
+    def install_bd_tools(self, op: Mapping[str, Any]) -> None:
+        """Upload the bd + dolt binaries (gzipped) so flows can use bd in the
+        sandbox. Local-only fork has no release URL, so ship the dispatcher's
+        binaries. No-op when a tool isn't on the dispatcher's PATH."""
+        import gzip
+        import shutil
+
+        be = self._daytona_backend()
+        sid = op["sandbox_id"]
+        for tool in ("dolt", "bd"):  # dolt first (bd depends on it)
+            local = shutil.which(tool)
+            if not local:
+                continue
+            be.upload_bytes(sid, f"/tmp/{tool}.gz", gzip.compress(Path(local).read_bytes()))
+            be.exec(sid, ["bash", "-lc",
+                f"mkdir -p $HOME/.local/bin && gunzip -c /tmp/{tool}.gz > $HOME/.local/bin/{tool} "
+                f"&& chmod +x $HOME/.local/bin/{tool} && rm -f /tmp/{tool}.gz"])
+
     def sync_packs(self, handle: EnvHandle) -> None:
         """Mirror local editable packs to the remote and reinstall the po tool.
 
@@ -793,9 +902,10 @@ su - coder -c "
         )
         for name, _ in extras:
             argv += f' --with-editable "$HOME/.po-packs/{rel[name]}"'
-        # socksio gives the worker's httpx SOCKS5 support, needed when the
-        # daytona worker reaches a private Prefect via the tailnet SOCKS proxy.
-        argv += " --with socksio"
+        # python-socks powers the daytona localhost->SOCKS forwarder that
+        # tunnels the worker's HTTP + events-websocket through the tailnet.
+        # (socksio kept for httpx SOCKS as a belt-and-suspenders.)
+        argv += " --with python-socks --with socksio"
 
         install_script = rf"""
 set -uo pipefail
