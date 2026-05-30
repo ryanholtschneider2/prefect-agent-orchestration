@@ -1,7 +1,7 @@
 [project]
 name = "po-formulas-cloud-rclaude"
 version = "0.1.0"
-description = "po env driver: cloud VMs (DigitalOcean/Hetzner/SSH) via rclaude.devenv"
+description = "po env driver: cloud VMs (DigitalOcean/Hetzner/SSH) + Daytona sandboxes via rclaude"
 requires-python = ">=3.11"
 dependencies = [
     "prefect-orchestration",
@@ -9,6 +9,7 @@ dependencies = [
 
 [project.optional-dependencies]
 rclaude = ["rclaude"]
+daytona = ["rclaude[daytona]"]
 
 [project.entry-points."po.env_drivers"]
 rclaude = "po_formulas_cloud_rclaude.driver:RClaudeEnvDriver"

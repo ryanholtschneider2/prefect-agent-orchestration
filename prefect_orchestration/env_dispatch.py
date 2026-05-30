@@ -69,14 +69,32 @@ def run_with_env(
     _push_rig(record, rig_path)
     _maybe_push_identity(record, handle, drv)
 
+    # Drivers without a reachable rig endpoint (e.g. daytona — no public IP)
+    # deliver the rig directly and return its remote path; remap rig_path so
+    # the dispatched flow (and the mirror-back) target the remote copy.
+    remote_rig = ""
+    if rig_path is not None and hasattr(drv, "push_rig"):
+        try:
+            remote_rig = drv.push_rig(handle, rig_path) or ""
+        except Exception as exc:  # noqa: BLE001
+            typer.echo(f"warning: rig delivery failed: {exc}", err=True)
+    dispatch_kwargs = dict(kwargs)
+    if remote_rig:
+        dispatch_kwargs["rig_path"] = remote_rig
+        typer.echo(f"[po] rig delivered to {remote_rig}")
+
     if issue_id:
         _stamp_bead(issue_id, env_name)
 
-    terminal_state = _run_async_dispatch(record, formula, kwargs, issue_id)
+    terminal_state = _run_async_dispatch(record, formula, dispatch_kwargs, issue_id)
     typer.echo(f"[po] flow terminal: {terminal_state}")
 
     if issue_id and rig_path:
-        remote_path = _remote_run_dir(formula, issue_id)
+        remote_path = (
+            f"{remote_rig}/.planning/{formula}/{issue_id}"
+            if remote_rig
+            else _remote_run_dir(formula, issue_id)
+        )
         local_path = rig_path / ".planning" / formula / issue_id
         try:
             drv.fs_download(handle, remote_path, local_path)

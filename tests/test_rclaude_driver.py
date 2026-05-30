@@ -128,7 +128,7 @@ def test_health_ssh_ok(monkeypatch):
     """health() returns EnvHealth(ok=True) when SSH responds."""
     driver = RClaudeEnvDriver()
     handle = _make_handle()
-    monkeypatch.setattr(driver, "_ssh", lambda ip, key, script, **kw: "ok")
+    monkeypatch.setattr(driver, "_ssh", lambda op, script, **kw: "ok")
 
     result = driver.health(handle)
     assert result.ok is True
@@ -170,7 +170,153 @@ def test_ensure_rig_remote_returns_url(monkeypatch):
     """ensure_rig_remote() returns the correct SSH URL after init."""
     driver = RClaudeEnvDriver()
     handle = _make_handle(ip="5.6.7.8")
-    monkeypatch.setattr(driver, "_ssh", lambda ip, key, script, **kw: "")
+    monkeypatch.setattr(driver, "_ssh", lambda op, script, **kw: "")
 
     url = driver.ensure_rig_remote(handle)
     assert url == "ssh://root@5.6.7.8/home/coder/rig-remote.git"
+
+
+# ---------------------------------------------------------------------------
+# ssh backend (own-host path)
+# ---------------------------------------------------------------------------
+
+
+def _ssh_handle() -> EnvHandle:
+    return EnvHandle(
+        driver_name="rclaude",
+        opaque={
+            "backend": "ssh",
+            "host": "laptop",
+            "ssh_target": "ryan@laptop.ts",
+            "ssh_user": "ryan",
+            "ssh_addr": "laptop.ts",
+            "ssh_key": "/home/u/.ssh/id_rsa",
+            "api_url": "",
+        },
+    )
+
+
+def test_provision_ssh_resolves_host(monkeypatch):
+    """provision(backend=ssh) resolves an rclaude host and stores ssh fields, no VM."""
+    import po_formulas_cloud_rclaude.driver as drv_mod
+
+    fake_spec = MagicMock()
+    fake_spec.ssh_target = "ryan@laptop.ts"
+    fake_spec.user = "ryan"
+    fake_spec.address = "laptop.ts"
+    fake_spec.key_path = "/home/u/.ssh/id_rsa"
+
+    with (
+        patch.object(drv_mod, "_RCLAUDE", True),
+        patch.object(drv_mod, "_resolve_host", return_value=fake_spec),
+        patch.object(drv_mod.Path, "exists", return_value=True),
+    ):
+        handle = RClaudeEnvDriver().provision("laptop", "", {"backend": "ssh"})
+
+    assert handle.opaque["backend"] == "ssh"
+    assert handle.opaque["ssh_target"] == "ryan@laptop.ts"
+    assert "droplet_id" not in handle.opaque
+
+
+def test_ssh_opts_targets_user_not_root():
+    """_ssh_opts for ssh backend ends with user@addr, not root@ip."""
+    driver = RClaudeEnvDriver()
+    opts = driver._ssh_opts(_ssh_handle().opaque)
+    assert opts[-1] == "ryan@laptop.ts"
+    assert "-i" in opts and "/home/u/.ssh/id_rsa" in opts
+
+
+def test_ensure_rig_remote_ssh_is_noop():
+    """ssh backend uses the remote's existing working tree — no bare remote."""
+    assert RClaudeEnvDriver().ensure_rig_remote(_ssh_handle()) == ""
+
+
+def test_fs_download_ssh_mirrors_planning_root_by_issue(monkeypatch):
+    """For ssh hosts, fs_download pulls every `.planning/*/<issue>/` subtree
+    from the remote (formula-agnostic) into a dispatcher-local cache — not the
+    dispatcher-guessed `<formula>` path that may not exist on the remote."""
+    import po_formulas_cloud_rclaude.driver as drv_mod
+
+    calls = {}
+    monkeypatch.setattr(
+        drv_mod.subprocess, "run", lambda argv, **kw: calls.setdefault("argv", argv)
+    )
+    drv = RClaudeEnvDriver()
+    # core passes local_path = <remote-rig>/.planning/<guessed-formula>/<issue>
+    remote_run = Path("/home/ryan/rig/.planning/software-dev-edit/abc")
+    drv.fs_download(_ssh_handle(), ".planning/software-dev-edit/abc", remote_run)
+
+    argv = calls["argv"]
+    assert argv[0] == "rsync"
+    # source is the remote .planning ROOT (not the guessed formula subdir)
+    assert argv[-2] == "ryan@laptop.ts:/home/ryan/rig/.planning/"
+    # include filter scopes to the issue across all formula dirs
+    assert "--include=/*/abc/***" in argv
+    assert argv[-1].endswith("/.cache/po/env-runs/")
+
+
+def test_push_credentials_merges_rclaude_store_to_tmpfs(monkeypatch):
+    """push_credentials resolves the host's rclaude secrets, merges PO's
+    env_dict, and writes them to rclaude's tmpfs file — never .bashrc/disk."""
+    import po_formulas_cloud_rclaude.driver as drv_mod
+
+    monkeypatch.setattr(
+        drv_mod._rcsecrets, "resolve", lambda scope: {"GITHUB_TOKEN": "ghp_x"}
+    )
+    drv = RClaudeEnvDriver()
+    scripts = []
+    monkeypatch.setattr(drv, "_ssh", lambda op, script, **kw: scripts.append(script))
+    drv.push_credentials(_ssh_handle(), {"ANTHROPIC_API_KEY": "sk"}, None)
+
+    import base64 as _b64
+    import re
+
+    joined = "\n".join(scripts)
+    assert "/dev/shm/rclaude/secrets.env" in joined
+    assert ".bashrc" not in joined
+    assert "$HOME/.po-env" not in joined
+    # payload is base64-encoded in the script; decode and confirm the merge
+    m = re.search(r"echo ([A-Za-z0-9+/=]+) \| base64 -d", joined)
+    decoded = _b64.b64decode(m.group(1)).decode()
+    assert "GITHUB_TOKEN" in decoded and "ANTHROPIC_API_KEY" in decoded
+
+
+def test_teardown_ssh_scrubs_secrets(monkeypatch):
+    drv = RClaudeEnvDriver()
+    scripts = []
+    monkeypatch.setattr(drv, "_ssh", lambda op, script, **kw: scripts.append(script))
+    drv.teardown(_ssh_handle())
+    assert any("rm -f /dev/shm/rclaude/secrets.env" in sc for sc in scripts)
+
+
+def test_start_worker_ssh_sources_secrets(monkeypatch):
+    import po_formulas_cloud_rclaude.driver as drv_mod
+
+    monkeypatch.setattr(drv_mod, "_central_api_url", lambda stored="": "http://h:4200/api")
+    drv = RClaudeEnvDriver()
+    captured = {}
+    monkeypatch.setattr(
+        drv, "_ssh", lambda op, script, **kw: captured.setdefault("s", script)
+    )
+    drv.start_worker(_ssh_handle(), "po-env-laptop")
+    assert "/dev/shm/rclaude/secrets.env" in captured["s"]
+
+
+def test_start_worker_ssh_sets_api_url_and_no_coder(monkeypatch):
+    """start_worker on ssh host exports PREFECT_API_URL and never uses `su - coder`."""
+    import po_formulas_cloud_rclaude.driver as drv_mod
+
+    captured = {}
+    monkeypatch.setattr(
+        drv_mod, "_central_api_url", lambda stored="": "http://100.1.2.3:4200/api"
+    )
+    driver = RClaudeEnvDriver()
+    monkeypatch.setattr(
+        driver, "_ssh", lambda op, script, **kw: captured.setdefault("script", script)
+    )
+    driver.start_worker(_ssh_handle(), "po-env-laptop")
+
+    script = captured["script"]
+    assert "PREFECT_API_URL=http://100.1.2.3:4200/api" in script
+    assert "su - coder" not in script
+    assert "prefect worker start --pool po-env-laptop" in script

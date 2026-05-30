@@ -249,7 +249,11 @@ def env_up(
     else:
         typer.echo("warning: ~/.claude/ not found; skipping identity push", err=True)
 
-    # 4. Push credentials
+    # 4. Push credentials. Secrets are owned by the driver's secret store
+    #    (e.g. `rclaude secrets`); the driver resolves + injects them. PO only
+    #    forwards ANTHROPIC_API_KEY (if set) + OAuth creds, and always calls
+    #    push_credentials so the driver injects the host's stored secrets even
+    #    when PO has nothing of its own to add.
     env_dict: dict[str, str] = {}
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if api_key:
@@ -258,17 +262,10 @@ def env_up(
     creds_path = Path.home() / ".claude" / ".credentials.json"
     if with_auth and creds_path.exists():
         oauth_creds = creds_path.read_bytes()
-    if env_dict or oauth_creds is not None:
-        try:
-            drv.push_credentials(handle, env_dict, oauth_creds)
-        except Exception as exc:
-            typer.echo(f"warning: credential push failed: {exc}", err=True)
-    else:
-        typer.echo(
-            "warning: no ANTHROPIC_API_KEY set and --with-auth not passed; "
-            "no credentials pushed",
-            err=True,
-        )
+    try:
+        drv.push_credentials(handle, env_dict, oauth_creds)
+    except Exception as exc:
+        typer.echo(f"warning: credential push failed: {exc}", err=True)
 
     # 5. Start worker
     pool_name = f"po-env-{name}"
@@ -361,6 +358,83 @@ def env_down(
     typer.echo(f"env '{name}' removed")
 
 
+@env_app.command("stop")
+def env_stop(
+    name: str = typer.Argument(..., help="Env name to suspend."),
+) -> None:
+    """Suspend an env (keep disk, pause compute). Driver must support it."""
+    try:
+        record = read_env(name)
+    except EnvNotFound:
+        typer.echo(f"error: no env '{name}'; run po env up first", err=True)
+        raise typer.Exit(1)
+
+    drivers = load_drivers()
+    drv = drivers.get(record.driver)
+    if drv is None:
+        typer.echo(f"error: driver '{record.driver}' not registered", err=True)
+        raise typer.Exit(1)
+    if not hasattr(drv, "suspend"):
+        typer.echo(
+            f"error: driver '{record.driver}' does not support suspend/resume",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    handle = EnvHandle(driver_name=record.driver, opaque=record.opaque)
+    try:
+        drv.suspend(handle)
+    except NotImplementedError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"env '{name}' suspended  →  resume with: po env start {name}")
+
+
+@env_app.command("start")
+def env_start(
+    name: str = typer.Argument(..., help="Env name to resume."),
+) -> None:
+    """Resume a suspended env: bring the box back, re-deliver secrets, restart worker."""
+    try:
+        record = read_env(name)
+    except EnvNotFound:
+        typer.echo(f"error: no env '{name}'; run po env up first", err=True)
+        raise typer.Exit(1)
+
+    drivers = load_drivers()
+    drv = drivers.get(record.driver)
+    if drv is None:
+        typer.echo(f"error: driver '{record.driver}' not registered", err=True)
+        raise typer.Exit(1)
+    if not hasattr(drv, "resume"):
+        typer.echo(
+            f"error: driver '{record.driver}' does not support suspend/resume",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    handle = EnvHandle(driver_name=record.driver, opaque=record.opaque)
+    try:
+        drv.resume(handle)
+    except NotImplementedError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    # tmpfs secrets cleared + worker died on suspend; re-establish both.
+    # OAuth + clones live on disk and survive, so only stored secrets are pushed.
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    env_dict = {"ANTHROPIC_API_KEY": api_key} if api_key else {}
+    try:
+        drv.push_credentials(handle, env_dict, None)
+    except Exception as exc:
+        typer.echo(f"warning: credential re-push failed: {exc}", err=True)
+    try:
+        drv.start_worker(handle, record.pool)
+    except Exception as exc:
+        typer.echo(f"warning: worker restart failed: {exc}", err=True)
+    typer.echo(f"env '{name}' resumed  →  worker on pool {record.pool}")
+
+
 @env_app.command("attach")
 def env_attach(
     name: str = typer.Argument(..., help="Env name to attach to."),
@@ -387,6 +461,43 @@ def env_attach(
         typer.echo("error: driver returned empty attach argv", err=True)
         raise typer.Exit(1)
     os.execvp(argv[0], argv)
+
+
+@env_app.command("sync-packs")
+def env_sync_packs(
+    name: str = typer.Argument(..., help="Env name to sync local packs to."),
+) -> None:
+    """Mirror locally-editable formula packs to a remote env.
+
+    Bridges the gap the worker bootstrap can't: editable / local-only packs
+    (not on PyPI) are copied to the remote and its `po` tool env rebuilt so
+    every formula is importable by the remote worker. Requires the env's
+    driver to implement `sync_packs` (e.g. the rclaude ssh backend).
+    """
+    try:
+        record = read_env(name)
+    except EnvNotFound:
+        typer.echo(f"error: no env '{name}'; run po env up first", err=True)
+        raise typer.Exit(1)
+
+    drivers = load_drivers()
+    if record.driver not in drivers:
+        typer.echo(
+            f"error: driver '{record.driver}' not registered; cannot sync", err=True
+        )
+        raise typer.Exit(1)
+
+    drv = drivers[record.driver]
+    if not hasattr(drv, "sync_packs"):
+        typer.echo(
+            f"error: driver '{record.driver}' does not support sync-packs", err=True
+        )
+        raise typer.Exit(1)
+
+    handle = EnvHandle(driver_name=record.driver, opaque=record.opaque)
+    typer.echo(f"syncing local editable packs to env '{name}'...")
+    drv.sync_packs(handle)  # type: ignore[attr-defined]
+    typer.echo("[po] pack sync complete")
 
 
 @env_app.command("reap")
