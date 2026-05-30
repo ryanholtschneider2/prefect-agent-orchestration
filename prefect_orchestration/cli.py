@@ -2108,9 +2108,17 @@ def main() -> None:
             registry = _commands.load_commands()
             if first in registry:
                 fn = registry[first]
-                kwargs = _parse_kwargs(argv[1:])
+                # Leading bare tokens are positional subcommands (e.g.
+                # `po director start`); everything from the first `--` on is
+                # parsed as kwargs. Commands that take only kwargs are
+                # unaffected (no leading positionals to collect).
+                rest = list(argv[1:])
+                pos: list[str] = []
+                while rest and not rest[0].startswith("-"):
+                    pos.append(rest.pop(0))
+                kwargs = _parse_kwargs(rest)
                 try:
-                    result = fn(**kwargs)
+                    result = fn(*pos, **kwargs)
                 except TypeError as exc:
                     typer.echo(f"bad arguments for {first}: {exc}", err=True)
                     typer.echo(f"run `po show {first}` to see the signature", err=True)
