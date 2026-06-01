@@ -1028,6 +1028,145 @@ def test_run_env_checks_git_push_fail(monkeypatch):
     assert "128" in git_rows[0].message
 
 
+# -- cron check ---------------------------------------------------------
+
+
+@dataclass
+class _FakeCronDep:
+    name: str = "morning-pr-review"
+    flow_name: str = "software-dev-fast"
+    work_pool_name: str | None = "po"
+
+
+def _fake_cron_builder(deps: list[_FakeCronDep]):
+    def _build(orders_dir, **kwargs):
+        return deps
+
+    return _build
+
+
+def test_cron_check_no_orders_dir(tmp_path):
+    missing = tmp_path / "nope"
+    results = doctor_mod.run_cron_checks(missing)
+    assert len(results) == 1
+    assert results[0].status is Status.OK
+    assert "skipping" in results[0].message
+
+
+def test_cron_check_empty_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        doctor_mod._deployments,
+        "build_cron_deployments_from_order_dir",
+        _fake_cron_builder([]),
+    )
+    results = doctor_mod.run_cron_checks(tmp_path)
+    assert len(results) == 1
+    assert results[0].status is Status.OK
+    assert "no cron deployments" in results[0].message
+
+
+def test_cron_check_declared_not_live_warns(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        doctor_mod._deployments,
+        "build_cron_deployments_from_order_dir",
+        _fake_cron_builder([_FakeCronDep()]),
+    )
+    monkeypatch.setattr(
+        doctor_mod._deployments, "format_schedule", lambda d: "cron(0 9 * * 1-5)"
+    )
+    monkeypatch.setattr(doctor_mod, "_read_live_deployment_names", lambda: set())
+    monkeypatch.setattr(
+        doctor_mod,
+        "_check_env_pool_worker",
+        lambda pool, prefix: CheckResult(
+            name=f"{prefix}: pool-worker", status=Status.OK, message="ok"
+        ),
+    )
+    results = doctor_mod.run_cron_checks(tmp_path)
+    cron_rows = [r for r in results if r.name.startswith("cron: ")]
+    assert cron_rows[0].status is Status.WARN
+    assert "declared" in cron_rows[0].message
+    assert "po cron apply" in cron_rows[0].remediation
+
+
+def test_cron_check_live_is_ok(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        doctor_mod._deployments,
+        "build_cron_deployments_from_order_dir",
+        _fake_cron_builder([_FakeCronDep()]),
+    )
+    monkeypatch.setattr(
+        doctor_mod._deployments, "format_schedule", lambda d: "cron(0 9 * * 1-5)"
+    )
+    monkeypatch.setattr(
+        doctor_mod,
+        "_read_live_deployment_names",
+        lambda: {"software-dev-fast/morning-pr-review"},
+    )
+    monkeypatch.setattr(
+        doctor_mod,
+        "_check_env_pool_worker",
+        lambda pool, prefix: CheckResult(
+            name=f"{prefix}: pool-worker", status=Status.OK, message="ok"
+        ),
+    )
+    results = doctor_mod.run_cron_checks(tmp_path)
+    cron_rows = [r for r in results if r.name.startswith("cron: ")]
+    assert cron_rows[0].status is Status.OK
+    assert "live" in cron_rows[0].message
+    # one pool-worker row for the single pinned pool
+    pool_rows = [r for r in results if "pool-worker" in r.name]
+    assert len(pool_rows) == 1
+
+
+def test_cron_check_server_unknown_when_api_unset(tmp_path, monkeypatch):
+    monkeypatch.delenv("PREFECT_API_URL", raising=False)
+    monkeypatch.setattr(
+        doctor_mod._deployments,
+        "build_cron_deployments_from_order_dir",
+        _fake_cron_builder([_FakeCronDep()]),
+    )
+    monkeypatch.setattr(
+        doctor_mod._deployments, "format_schedule", lambda d: "cron(0 9 * * 1-5)"
+    )
+    monkeypatch.setattr(
+        doctor_mod,
+        "_check_env_pool_worker",
+        lambda pool, prefix: CheckResult(
+            name=f"{prefix}: pool-worker",
+            status=Status.WARN,
+            message="PREFECT_API_URL not set; skipping",
+        ),
+    )
+    results = doctor_mod.run_cron_checks(tmp_path)
+    cron_rows = [r for r in results if r.name.startswith("cron: ")]
+    # API unreachable -> server state unknown, row stays OK (not a false WARN)
+    assert cron_rows[0].status is Status.OK
+    assert "unknown" in cron_rows[0].message
+
+
+def test_doctor_cli_check_cron(monkeypatch, hide_pack_doctor_checks):
+    monkeypatch.setattr(
+        doctor_mod,
+        "run_cron_checks",
+        lambda orders_dir: [
+            CheckResult(name="cron orders", status=Status.OK, message="no orders dir")
+        ],
+    )
+    runner = CliRunner()
+    result = runner.invoke(app, ["doctor", "--check=cron"])
+    assert result.exit_code == 0
+    assert "SOURCE" in result.output
+    assert "cron orders" in result.output
+
+
+def test_doctor_cli_check_unknown_lists_cron(hide_pack_doctor_checks):
+    runner = CliRunner()
+    result = runner.invoke(app, ["doctor", "--check=bogus"])
+    assert result.exit_code == 1
+    assert "cron" in result.output
+
+
 def test_doctor_cli_check_envs(monkeypatch, hide_pack_doctor_checks):
     monkeypatch.setattr(
         doctor_mod,

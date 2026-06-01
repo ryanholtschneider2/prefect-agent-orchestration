@@ -574,6 +574,102 @@ def check_stale_locks(rig_path: Path | None = None) -> CheckResult:
     )
 
 
+def _read_live_deployment_names(timeout: float = 5.0) -> set[str] | None:
+    """Return `{flow_name/deployment_name}` for deployments live on the server.
+
+    Returns None when no Prefect API is configured or the server is
+    unreachable, so callers can render a `?` instead of a misleading
+    `declared`. Mirrors the CLI's `_cron_live_deployment_names` seam, kept
+    in doctor so the check has no import dependency on cli.
+    """
+    if not os.environ.get("PREFECT_API_URL"):
+        return None
+    try:
+        from prefect.client.orchestration import get_client
+
+        async def _fetch() -> set[str]:
+            async with get_client() as client:
+                deps = await client.read_deployments()
+                return {
+                    f"{getattr(d, 'flow_name', None) or '?'}/{d.name}" for d in deps
+                }
+
+        return asyncio.run(asyncio.wait_for(_fetch(), timeout=timeout))
+    except Exception:
+        return None
+
+
+def run_cron_checks(orders_dir: Path) -> list[CheckResult]:
+    """Health-check cron deployments declared by a directory of `*.toml` orders.
+
+    For each order built by `build_cron_deployments_from_order_dir`, emit one
+    row showing its schedule and whether it is live on the server. Then emit a
+    pool-worker row per distinct pinned pool so a missing worker (the reason a
+    schedule never fires) is visible.
+
+    NOT added to ALL_CHECKS — triggered only by ``po doctor --check=cron``.
+    """
+    name = "cron orders"
+    if not orders_dir.is_dir():
+        return [
+            CheckResult(
+                name=name,
+                status=Status.OK,
+                message=f"no orders dir at {orders_dir}; skipping",
+            )
+        ]
+
+    deployments = _deployments.build_cron_deployments_from_order_dir(
+        orders_dir,
+        tag_prefix="po-cron",
+    )
+    if not deployments:
+        return [
+            CheckResult(
+                name=name,
+                status=Status.OK,
+                message=f"no cron deployments built from {orders_dir}",
+            )
+        ]
+
+    live_names = _read_live_deployment_names()
+    results: list[CheckResult] = []
+    pools: set[str] = set()
+    for deployment in deployments:
+        dep_name = getattr(deployment, "name", "?")
+        flow_name = getattr(deployment, "flow_name", "?")
+        schedule = _deployments.format_schedule(deployment)
+        pool = getattr(deployment, "work_pool_name", None) or ""
+        if pool:
+            pools.add(pool)
+        if live_names is None:
+            status = Status.OK
+            server = "server state unknown (API unreachable)"
+        elif f"{flow_name}/{dep_name}" in live_names:
+            status = Status.OK
+            server = "live"
+        else:
+            status = Status.WARN
+            server = "declared, not yet applied"
+        results.append(
+            CheckResult(
+                name=f"cron: {dep_name}",
+                status=status,
+                message=f"{schedule} -> {server}",
+                remediation=(
+                    f"po cron apply --orders-dir {orders_dir}"
+                    if status is Status.WARN
+                    else ""
+                ),
+            )
+        )
+
+    for pool in sorted(pools):
+        results.append(_check_env_pool_worker(pool, f"cron-pool {pool}"))
+
+    return results
+
+
 def _compute_local_pack_hash() -> str:
     """12-char hex fingerprint of installed po.* packs + core version."""
     import hashlib

@@ -744,6 +744,161 @@ def _print_deployment_table(loaded: list[_deployments.LoadedDeployment]) -> None
         typer.echo(fmt.format(*row))
 
 
+cron_app = typer.Typer(
+    no_args_is_help=True,
+    help="Apply / list recurring cron deployments from a directory of *.toml orders.",
+)
+
+
+@cron_app.command("apply")
+def cron_apply(
+    orders_dir: Path = typer.Option(
+        ...,
+        "--orders-dir",
+        help="Directory of flat *.toml order files (cron/formula/params/tags/timezone).",
+    ),
+    work_pool: str = typer.Option(
+        "po", "--work-pool", help="Work pool to pin each cron deployment to."
+    ),
+    tag_prefix: str = typer.Option(
+        "po-cron",
+        "--tag-prefix",
+        help="Tag prefix applied to deployments lacking an explicit tags list.",
+    ),
+    default_timezone: str = typer.Option(
+        "UTC",
+        "--default-timezone",
+        help="Timezone for orders that omit a timezone key.",
+    ),
+) -> None:
+    """Build cron deployments from `--orders-dir` and apply them to Prefect."""
+    if not orders_dir.is_dir():
+        typer.echo(f"orders dir not found: {orders_dir}", err=True)
+        raise typer.Exit(2)
+
+    deployments = _deployments.build_cron_deployments_from_order_dir(
+        orders_dir,
+        tag_prefix=tag_prefix,
+        default_timezone=default_timezone,
+        work_pool_name=work_pool,
+    )
+    if not deployments:
+        typer.echo(f"no cron deployments built from {orders_dir} (no valid *.toml).")
+        raise typer.Exit(1)
+
+    if not _deployments.prefect_api_configured():
+        typer.echo(
+            "PREFECT_API_URL is not set — point it at a running Prefect server "
+            "(e.g. `prefect server start` → http://127.0.0.1:4200/api).",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    failures = 0
+    for deployment in deployments:
+        label = getattr(deployment, "name", "?")
+        try:
+            dep_id = _deployments.apply_deployment(deployment, work_pool=work_pool)
+        except Exception as exc:
+            typer.echo(f"  FAIL  {label}  ({exc})", err=True)
+            failures += 1
+            continue
+        typer.echo(f"  OK    {label}  → {dep_id}")
+    if failures:
+        raise typer.Exit(1)
+
+
+@cron_app.command("list")
+def cron_list(
+    orders_dir: Path = typer.Option(
+        ...,
+        "--orders-dir",
+        help="Directory of flat *.toml order files (cron/formula/params/tags/timezone).",
+    ),
+    work_pool: str = typer.Option(
+        "po", "--work-pool", help="Work pool the cron deployments would pin to."
+    ),
+    tag_prefix: str = typer.Option(
+        "po-cron",
+        "--tag-prefix",
+        help="Tag prefix applied to deployments lacking an explicit tags list.",
+    ),
+    default_timezone: str = typer.Option(
+        "UTC",
+        "--default-timezone",
+        help="Timezone for orders that omit a timezone key.",
+    ),
+) -> None:
+    """List cron deployments declared by `--orders-dir` without applying them.
+
+    Cross-checks against server state when a Prefect API is reachable so you
+    can see which declared deployments are already live.
+    """
+    if not orders_dir.is_dir():
+        typer.echo(f"orders dir not found: {orders_dir}", err=True)
+        raise typer.Exit(2)
+
+    deployments = _deployments.build_cron_deployments_from_order_dir(
+        orders_dir,
+        tag_prefix=tag_prefix,
+        default_timezone=default_timezone,
+        work_pool_name=work_pool,
+    )
+    if not deployments:
+        typer.echo(f"no cron deployments built from {orders_dir} (no valid *.toml).")
+        raise typer.Exit(1)
+
+    live_names = _cron_live_deployment_names()
+
+    rows = []
+    for deployment in deployments:
+        name = getattr(deployment, "name", "?")
+        flow_name = getattr(deployment, "flow_name", "?")
+        if live_names is None:
+            status = "?"
+        else:
+            status = "live" if f"{flow_name}/{name}" in live_names else "declared"
+        rows.append(
+            (
+                name,
+                flow_name,
+                _deployments.format_schedule(deployment),
+                status,
+            )
+        )
+    headers = ("DEPLOYMENT", "FLOW", "SCHEDULE", "SERVER")
+    widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
+    fmt = "  ".join(f"{{:<{w}}}" for w in widths)
+    typer.echo(fmt.format(*headers))
+    typer.echo(fmt.format(*("-" * w for w in widths)))
+    for row in rows:
+        typer.echo(fmt.format(*row))
+
+
+def _cron_live_deployment_names() -> set[str] | None:
+    """Return `{flow_name/deployment_name}` for deployments live on the server.
+
+    Returns None when no Prefect API is configured or the server is
+    unreachable, so callers can render a `?` instead of a misleading
+    `declared`.
+    """
+    if not _deployments.prefect_api_configured():
+        return None
+    try:
+        from prefect.client.orchestration import get_client
+
+        async def _fetch() -> set[str]:
+            async with get_client() as client:
+                deps = await client.read_deployments()
+                return {f"{d.flow_name or '?'}/{d.name}" for d in deps}
+
+        import anyio
+
+        return anyio.run(_fetch)
+    except Exception:  # noqa: BLE001 — server unreachable is non-fatal for `list`
+        return None
+
+
 @app.command()
 def logs(
     issue_id: str = typer.Argument(
@@ -818,7 +973,9 @@ def artifacts(
         ..., help="Beads issue id (e.g. prefect-orchestration-5i9)"
     ),
     verdicts: bool = typer.Option(
-        False, "--verdicts", help="Print only the bd-metadata verdicts (po.* keys on iter beads)."
+        False,
+        "--verdicts",
+        help="Print only the bd-metadata verdicts (po.* keys on iter beads).",
     ),
     open_: bool = typer.Option(
         False,
@@ -993,10 +1150,15 @@ def trace(
 @app.command()
 def doctor(
     check: str | None = typer.Option(
-        None, "--check", help="Run only a named check ('locks' or 'envs')."
+        None, "--check", help="Run only a named check ('locks', 'envs', or 'cron')."
     ),
     fix: bool = typer.Option(
         False, "--fix", help="For --check=locks: delete stale lock files."
+    ),
+    orders_dir: Path = typer.Option(
+        Path(".po-cron"),
+        "--orders-dir",
+        help="For --check=cron: directory of flat *.toml cron orders.",
     ),
 ) -> None:
     """Read-only health check of the full PO wiring.
@@ -1010,6 +1172,8 @@ def doctor(
 
     Pass --check=locks to scan for stale .retry.lock files only.
     Add --fix to delete any stale locks found.
+    Pass --check=cron --orders-dir <dir> to check declared cron deployments
+    against server state and pool-worker health.
     """
     if check == "locks":
         result = _doctor.check_stale_locks()
@@ -1027,9 +1191,15 @@ def doctor(
         report = _doctor.DoctorReport(results=results)
         typer.echo(_doctor.render_table(report))
         raise typer.Exit(report.exit_code)
+    elif check == "cron":
+        results = _doctor.run_cron_checks(orders_dir)
+        report = _doctor.DoctorReport(results=results)
+        typer.echo(_doctor.render_table(report))
+        raise typer.Exit(report.exit_code)
     elif check is not None:
         typer.echo(
-            f"Unknown --check value: {check!r}. Supported: 'locks', 'envs'", err=True
+            f"Unknown --check value: {check!r}. Supported: 'locks', 'envs', 'cron'",
+            err=True,
         )
         raise typer.Exit(1)
     else:
@@ -1569,7 +1739,9 @@ def resume(
             f"already complete: {', '.join(result.completed_steps)}"
         )
     else:
-        typer.echo(f"resuming {issue_id} — no prior verdicts on iter beads; running from top")
+        typer.echo(
+            f"resuming {issue_id} — no prior verdicts on iter beads; running from top"
+        )
     if result.reopened:
         typer.echo(f"reopened bead {issue_id}")
     typer.echo(result.flow_result)
@@ -1831,6 +2003,11 @@ app.add_typer(
     help="Manage remote cloud envs (provision, list, teardown, attach).",
 )
 
+app.add_typer(
+    cron_app,
+    name="cron",
+    help="Apply / list recurring cron deployments from a directory of *.toml orders.",
+)
 
 
 tui_app = typer.Typer(
