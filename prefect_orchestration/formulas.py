@@ -2,15 +2,12 @@
 
 Currently exposes one formula:
 
-* **`agent-step`** — single-agent-turn formula. Two ways to drive it:
-  - **Bead + role** (default): the bead's description IS the task spec;
-    `po.agent` metadata (or `--agent`) names the role to dispatch (e.g.
-    `triager`, `summarizer`), resolved from installed packs'
-    `agents/<role>/prompt.md`.
-  - **Inline prompt**: pass `--prompt "<text>"` (e.g. a schedule's
-    `[schedule.params] prompt=...`) to run the built-in generic
-    `prompt-runner` agent against a fresh per-run bead. Turnkey "run Claude
-    with this prompt on a cron" with no role/prompt.md authoring.
+* **`agent-step`** — single-agent-turn formula for leaf beads. The bead's
+  description IS the task spec; `--agent` (or `po.agent` metadata) names the
+  role to dispatch (e.g. `triager`, `summarizer`), resolved from installed
+  packs' `agents/<role>/prompt.md`. For "run Claude with an inline prompt"
+  (no pre-existing bead), use the `prompt` formula (`--prompt`, `--agent`,
+  `--fresh`) instead.
 
 Use case: a bead in a `graph_run` epic that needs ONE agent turn rather
 than a multi-step pipeline. Set:
@@ -148,56 +145,6 @@ def discover_agent_dir(role: str) -> Path:
     )
 
 
-def _mint_prompt_seed(issue_id: str, prompt: str, rig_path: str) -> str:
-    """Create a fresh per-run bead carrying an inline `prompt` as its task spec.
-
-    Used by the inline-prompt path so each scheduled fire is a NEW bead — a
-    standing bead would be closed after the first run and every later fire would
-    short-circuit on the closed-bead cache in `agent_step`.
-
-    Follows the scheduled-flow seed convention (engdocs/agent-step-adoption.md):
-    mint `<issue_id>-<utc-timestamp>`, low priority; on a fixed-prefix rig that
-    rejects `--id`, retry without it and parse the assigned id from stdout; treat
-    "already exists" as success. Returns the actual bead id (which may differ
-    from the requested one). Raises if `bd` is unavailable.
-    """
-    if shutil.which("bd") is None:
-        raise RuntimeError("agent-step inline prompt requires the `bd` CLI on PATH")
-    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
-    seed_id = f"{issue_id}-{stamp}"
-    title = (prompt.strip().splitlines()[0] if prompt.strip() else "scheduled prompt")[
-        :72
-    ]
-
-    def _create(with_id: bool) -> subprocess.CompletedProcess[str]:
-        cmd = ["bd", "create"]
-        if with_id:
-            cmd.append(f"--id={seed_id}")
-        cmd += ["--title", title, "--description", prompt, "--type", "task", "-p", "4"]
-        return subprocess.run(
-            cmd, capture_output=True, text=True, check=False, cwd=str(rig_path)
-        )
-
-    proc = _create(with_id=True)
-    err = (proc.stderr or "").lower()
-    if proc.returncode == 0:
-        return seed_id
-    if "already exists" in err:
-        return seed_id
-    if "prefix" in err and "mismatch" in err:
-        # Rig enforces an auto-id prefix — let bd assign one, parse it back.
-        proc2 = _create(with_id=False)
-        if proc2.returncode == 0:
-            # bd prints: "✓ Created issue: <id> — <title>"
-            m = _re.search(r"[Cc]reated issue:\s+(\S+)", proc2.stdout or "")
-            if m:
-                return m.group(1)
-        raise RuntimeError(
-            f"bd create (auto-id) failed: {(proc2.stderr or proc2.stdout).strip()}"
-        )
-    raise RuntimeError(f"bd create failed: {(proc.stderr or proc.stdout).strip()}")
-
-
 def _read_meta(issue_id: str, key: str, rig_path: str) -> str | None:
     """Read a single metadata key off a bead. None when bd missing or unset."""
     if shutil.which("bd") is None:
@@ -229,24 +176,16 @@ def agent_step_flow(
     rig: str,
     rig_path: str,
     agent: str | None = None,
-    prompt: str | None = None,
     verdict_keywords: str = "",
     parent_bead: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Single-agent-turn formula. Reads bead description as task spec.
+    """Single-agent-turn formula: run a named role against an existing bead.
 
-    Two ways to drive it:
-
-    * **Inline prompt** — pass `prompt="..."` (e.g. a schedule's
-      `[schedule.params] prompt=...`). Runs the built-in generic
-      `prompt-runner` agent against a fresh per-run bead whose description IS
-      the prompt. Each call mints a new bead so recurring schedules aren't
-      short-circuited by the closed-bead cache. `agent=` still overrides the
-      role if you want a specific persona to run the prompt.
-    * **Role + existing bead** — no `prompt`; resolve the role from `agent=` or
-      the bead's `po.agent` metadata and run against `issue_id` (the bead
-      description is the task spec). This is the original behavior.
+    Resolves the role from `--agent` or the bead's `po.agent` metadata and runs
+    it against `issue_id` (the bead description is the task spec). For "run Claude
+    with an inline prompt" (no pre-existing bead / role file), use the `prompt`
+    formula instead — `po run prompt --prompt "..." [--agent <role>] [--fresh]`.
 
     `verdict_keywords` is a comma-separated list (e.g. "approved,rejected")
     parsed from the bead's close-reason after the agent's turn.
@@ -257,32 +196,22 @@ def agent_step_flow(
     logger = get_run_logger()
     keywords = tuple(k.strip() for k in verdict_keywords.split(",") if k.strip())
 
-    if prompt:
-        # Inline-prompt path: generic prompt-runner against a fresh per-run bead.
-        role = agent or "prompt-runner"
-        # dry_run short-circuits bead minting (the engdoc convention) — the stub
-        # backend fakes the turn, so operate on issue_id directly.
-        seed_id = issue_id if dry_run else _mint_prompt_seed(issue_id, prompt, rig_path)
-        task: Any = prompt
-    else:
-        role = agent or _read_meta(issue_id, "po.agent", rig_path)
-        if not role:
-            raise ValueError(
-                f"agent-step formula: bead {issue_id} has no agent. Either "
-                "pass --agent=<role>, set bd metadata `po.agent=<role>`, or pass "
-                "--prompt=<text> to run the generic prompt-runner."
-            )
-        seed_id = issue_id
-        task = None  # bead description IS the task spec
+    role = agent or _read_meta(issue_id, "po.agent", rig_path)
+    if not role:
+        raise ValueError(
+            f"agent-step formula: bead {issue_id} has no agent. Pass --agent=<role> "
+            "or set bd metadata `po.agent=<role>` (for an inline prompt, use the "
+            "`prompt` formula instead)."
+        )
 
     agent_dir = discover_agent_dir(role)
-    logger.info("agent-step: bead=%s role=%s agent_dir=%s", seed_id, role, agent_dir)
+    logger.info("agent-step: bead=%s role=%s agent_dir=%s", issue_id, role, agent_dir)
 
     try:
         result = agent_step(
             agent_dir=agent_dir,
-            task=task,
-            seed_id=seed_id,
+            task=None,  # bead description IS the task spec
+            seed_id=issue_id,
             rig_path=rig_path,
             verdict_keywords=keywords,
             dry_run=dry_run,
@@ -315,7 +244,6 @@ def agent_step_flow(
                 "rig": rig,
                 "rig_path": rig_path,
                 "agent": agent,
-                "prompt": prompt,
                 "verdict_keywords": verdict_keywords,
                 "parent_bead": parent_bead,
                 "dry_run": dry_run,

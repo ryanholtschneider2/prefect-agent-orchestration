@@ -1,4 +1,8 @@
-"""Inline-prompt path of the `agent-step` formula (prompt-runner)."""
+"""agent-step (role + existing bead) + the shared mint_seed_bead helper.
+
+Inline-prompt dispatch lives in the `prompt` formula now (--prompt/--agent/
+--fresh); agent-step is purely "run a named role against an existing bead".
+"""
 
 from __future__ import annotations
 
@@ -8,11 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 import prefect_orchestration.formulas as formulas_mod
-from prefect_orchestration.formulas import (
-    _mint_prompt_seed,
-    agent_step_flow,
-    discover_agent_dir,
-)
+from prefect_orchestration import beads_meta
+from prefect_orchestration.formulas import agent_step_flow, discover_agent_dir
 
 
 def _fake_result() -> SimpleNamespace:
@@ -27,50 +28,9 @@ def test_prompt_runner_agent_ships() -> None:
     assert (d / "prompt.md").is_file()
 
 
-def test_inline_prompt_dry_run_uses_prompt_runner_and_skips_mint(
+def test_agent_step_runs_named_role_against_the_bead(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: dict = {}
-    monkeypatch.setattr(
-        formulas_mod, "agent_step", lambda **kw: calls.update(kw) or _fake_result()
-    )
-    monkeypatch.setattr(
-        formulas_mod,
-        "_mint_prompt_seed",
-        lambda *a, **k: pytest.fail("dry_run must not mint a bead"),
-    )
-
-    out = agent_step_flow(
-        issue_id="x", rig="r", rig_path="/tmp", prompt="do the thing", dry_run=True
-    )
-
-    assert calls["seed_id"] == "x"  # dry_run operates on issue_id directly
-    assert calls["task"] == "do the thing"
-    assert Path(calls["agent_dir"]).name == "prompt-runner"
-    assert out["closed_by"] == "agent"
-
-
-def test_inline_prompt_mints_fresh_seed_when_not_dry_run(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: dict = {}
-    monkeypatch.setattr(
-        formulas_mod, "agent_step", lambda **kw: calls.update(kw) or _fake_result()
-    )
-    monkeypatch.setattr(
-        formulas_mod,
-        "_mint_prompt_seed",
-        lambda issue_id, prompt, rig_path: "minted-123",
-    )
-
-    agent_step_flow(issue_id="x", rig="r", rig_path="/tmp", prompt="p")
-
-    assert calls["seed_id"] == "minted-123"  # fresh per-run bead, not issue_id
-    assert calls["task"] == "p"
-
-
-def test_no_prompt_keeps_role_from_arg(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Without a prompt the original role+bead path is used (no minting)."""
     calls: dict = {}
     monkeypatch.setattr(
         formulas_mod, "agent_step", lambda **kw: calls.update(kw) or _fake_result()
@@ -79,18 +39,22 @@ def test_no_prompt_keeps_role_from_arg(monkeypatch: pytest.MonkeyPatch) -> None:
         formulas_mod, "discover_agent_dir", lambda role: Path(f"/agents/{role}")
     )
 
-    agent_step_flow(
-        issue_id="real-bead", rig="r", rig_path="/tmp", agent="prompt-runner"
-    )
+    agent_step_flow(issue_id="real-bead", rig="r", rig_path="/tmp", agent="triager")
 
     assert calls["seed_id"] == "real-bead"
     assert calls["task"] is None  # bead description IS the task spec
 
 
-def test_mint_prompt_seed_falls_back_to_auto_id_on_prefix_mismatch(
+def test_agent_step_errors_without_a_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(formulas_mod, "_read_meta", lambda *a, **k: None)
+    with pytest.raises(ValueError, match="no agent"):
+        agent_step_flow(issue_id="x", rig="r", rig_path="/tmp")
+
+
+def test_mint_seed_bead_falls_back_to_auto_id_on_prefix_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(formulas_mod.shutil, "which", lambda _x: "/usr/bin/bd")
+    monkeypatch.setattr(beads_meta, "_bd_available", lambda: True)
     seen: dict = {"n": 0}
 
     def fake_run(cmd, **_kw):
@@ -106,6 +70,19 @@ def test_mint_prompt_seed_falls_back_to_auto_id_on_prefix_mismatch(
             returncode=0, stdout="✓ Created issue: rig-abc — do x\n", stderr=""
         )
 
-    monkeypatch.setattr(formulas_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(beads_meta.subprocess, "run", fake_run)
 
-    assert _mint_prompt_seed("daily", "do x", "/tmp/rig") == "rig-abc"
+    assert beads_meta.mint_seed_bead("daily", "do x", rig_path="/tmp/rig") == "rig-abc"
+
+
+def test_mint_seed_bead_uses_requested_id_on_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(beads_meta, "_bd_available", lambda: True)
+    monkeypatch.setattr(
+        beads_meta.subprocess,
+        "run",
+        lambda cmd, **_kw: SimpleNamespace(returncode=0, stdout="ok", stderr=""),
+    )
+    got = beads_meta.mint_seed_bead("feature-x", "the goal", rig_path="/tmp/rig")
+    assert got.startswith("feature-x-")  # <prefix>-<utc-timestamp>

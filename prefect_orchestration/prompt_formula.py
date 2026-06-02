@@ -24,6 +24,7 @@ from prefect import flow, get_run_logger
 from prefect.artifacts import create_markdown_artifact
 from prefect.runtime import flow_run
 
+from prefect_orchestration.beads_meta import mint_seed_bead
 from prefect_orchestration.agent_session import (
     AgentSession,
     ClaudeCliBackend,
@@ -192,23 +193,40 @@ def prompt_run(
     prompt: str,
     rig_path: str,
     role: str = "general",
+    agent: str | None = None,
     model: str = "opus",
     label: str | None = None,
+    fresh: bool = False,
     dry_run: bool = False,
     create_bead: bool = True,
     close_on_success: bool = True,
 ) -> dict[str, Any]:
-    """Send one prompt to one Claude agent session."""
+    """Send one prompt to one Claude agent session.
+
+    `--agent` is the universal "who runs it" knob (overrides the default
+    `role`); the same flag selects the agent on every formula. `--fresh` mints a
+    unique per-run bead instead of the deterministic prompt-slug bead — use it
+    for recurring schedules so each fire is a new bead rather than reopening a
+    closed one.
+    """
     logger = get_run_logger()
     rig_path_p = Path(rig_path).expanduser().resolve()
     if not rig_path_p.exists():
         raise FileNotFoundError(f"rig_path does not exist: {rig_path_p}")
 
+    # --agent overrides the default role; one knob across all formulas.
+    role = agent or role
     label = label or _slug_from_prompt(prompt)
 
     bd_id: str | None = None
     if create_bead and not dry_run and _bd_available(rig_path_p):
-        bd_id = _bd_create(rig_path_p, label, prompt, role, model)
+        if fresh:
+            # Unique per-run bead (recurring schedules can't reuse a closed one).
+            bd_id = mint_seed_bead(
+                f"prompt-{label}", prompt, rig_path=rig_path_p, label=_BD_LABEL
+            )
+        else:
+            bd_id = _bd_create(rig_path_p, label, prompt, role, model)
         if bd_id:
             logger.info("created bead: %s", bd_id)
         else:
