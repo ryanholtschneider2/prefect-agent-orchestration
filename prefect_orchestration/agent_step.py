@@ -324,6 +324,7 @@ def agent_step(
         "role_step_bead_id": target_bead,
         "iter": iter_n if iter_n is not None else "",
         "step": step or "",
+        "verdict_keywords": verdict_keywords,
         **ctx,
     }
     if task is not None:
@@ -449,7 +450,15 @@ def _read_bead_status(bead_id: str, rig_path: str) -> dict[str, Any] | None:
         return None
     return {
         "status": (row.get("status") or "open").lower(),
-        "closure_reason": row.get("closure_reason") or row.get("reason") or "",
+        # bd's JSON key is `close_reason`; older/other shapes used
+        # `closure_reason`/`reason`. Read all so verdict parsing works across
+        # bd versions (an empty reason here silently zeroes every verdict).
+        "closure_reason": (
+            row.get("close_reason")
+            or row.get("closure_reason")
+            or row.get("reason")
+            or ""
+        ),
         "notes": row.get("notes") or "",
     }
 
@@ -650,11 +659,45 @@ def _default_close_block(ctx: dict[str, Any]) -> str:
 
     Pack-specific guidance (e.g. critic vs lint vs generic) can override
     by passing `role_step_close_block` in ctx.
+
+    When `ctx["verdict_keywords"]` is set (tuple of valid keywords like
+    ("approved","rejected")), the block enumerates them with concrete
+    `bd close` example lines per keyword. This avoids agents (esp. codex)
+    inventing their own keywords like `APPROVED` (uppercase, no colon) or
+    `OK` that the orchestrator's keyword-scan doesn't match — which forces
+    a NEEDS_CHANGES default and wastes a full critic loop.
     """
     bead = ctx.get("role_step_bead_id") or ctx.get("seed_id", "<bead>")
+    kws = ctx.get("verdict_keywords") or ()
+    if isinstance(kws, str):
+        kws = tuple(k.strip() for k in kws.split(",") if k.strip())
+
+    keyword_section = ""
+    if kws:
+        # Build one-line examples per keyword so the agent literally sees
+        # the wire format. The orchestrator parses the leading keyword
+        # token from the close-reason, case-insensitive (see
+        # `_result_from_closed_bead`), so lowercase + colon is canonical.
+        examples = "\n".join(
+            f'  - `bd close {bead} --reason "{kw}: <one-line summary>"`' for kw in kws
+        )
+        kw_list = " | ".join(f"`{kw}`" for kw in kws)
+        keyword_section = (
+            f"\n**Required verdict keyword (case-insensitive):** {kw_list}.\n"
+            "Use EXACTLY one of these as the first token in the close reason, "
+            "followed by `:` then a one-line summary. Examples:\n\n"
+            f"{examples}\n\n"
+            "Do NOT invent new keywords. Do NOT use uppercase variants alone "
+            "(no `APPROVED`, no `OK`, no `LGTM` — the formula scans the "
+            f"close-reason for the listed keywords only).\n"
+        )
+
     return (
         "\n\n# REQUIRED FINAL STEP — close your bead\n\n"
-        f"Your turn is NOT complete until you close `{bead}`. "
+        f"Your turn is NOT complete until you close `{bead}` via `bd close`. "
+        "Writing a verdict in markdown / commit messages / your reply text "
+        "does NOT count — the orchestrator only reads the bd close reason.\n"
+        f"{keyword_section}"
         "Last action of the turn:\n\n"
         f'```bash\nbd close {bead} --reason "<keyword>: <one-line summary>"\n```\n\n'
         "**Stuck or need a human decision?** Don't leave the bead open silently — "

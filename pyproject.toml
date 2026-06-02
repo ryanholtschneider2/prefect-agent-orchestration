@@ -39,6 +39,7 @@ po = "prefect_orchestration.cli:main"
 [project.entry-points."po.formulas"]
 agent-step = "prefect_orchestration.formulas:agent_step_flow"
 prompt = "prefect_orchestration.prompt_formula:prompt_run"
+goal-loop = "prefect_orchestration.goal_loop:goal_loop"
 skill-evals = "prefect_orchestration.skill_evals:skill_evals"
 
 # Pack-contributed `po doctor` checks. The `po` skill ships from core, so

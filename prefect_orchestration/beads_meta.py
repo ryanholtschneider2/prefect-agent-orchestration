@@ -11,8 +11,10 @@ back to a JSON file under `$RUN_DIR/metadata.json`.
 
 from __future__ import annotations
 
+import datetime as _dt
 import graphlib
 import json
+import re as _re
 import shutil
 import subprocess
 import threading
@@ -217,6 +219,80 @@ def create_child_bead(
     raise RuntimeError(
         f"bd create {child_id} failed (rc={proc.returncode}): {stderr.strip()}"
     )
+
+
+def mint_seed_bead(
+    prefix: str,
+    description: str,
+    *,
+    rig_path: Path | str | None = None,
+    title: str | None = None,
+    priority: int = 4,
+    label: str | None = None,
+) -> str:
+    """Create a fresh, uniquely-named bead carrying `description` as its task spec.
+
+    For prompt-driven / scheduled formulas that need a NEW bead per run so
+    recurring fires aren't short-circuited by the closed-bead cache in
+    `agent_step`. Mints `<prefix>-<utc-timestamp>`; on a fixed-prefix rig that
+    rejects `--id`, retries without it and parses the assigned id from bd's
+    "Created issue: <id>" line. Treats "already exists" as success. Returns the
+    actual bead id (may differ from the requested one). Raises if `bd` is absent.
+    """
+    if not _bd_available():
+        raise NotImplementedError("mint_seed_bead requires the `bd` CLI on PATH")
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
+    seed_id = f"{prefix}-{stamp}"
+    if title:
+        ttl = title
+    else:
+        first = (
+            description.strip().splitlines()[0]
+            if description.strip()
+            else "scheduled task"
+        )
+        ttl = first[:72]
+
+    def _create(with_id: bool) -> subprocess.CompletedProcess[str]:
+        cmd = ["bd", "create"]
+        if with_id:
+            cmd.append(f"--id={seed_id}")
+        cmd += [
+            "--title",
+            ttl,
+            "--description",
+            description,
+            "--type",
+            "task",
+            "-p",
+            str(priority),
+        ]
+        if label:
+            cmd += ["--label", label]
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(rig_path) if rig_path is not None else None,
+        )
+
+    proc = _create(with_id=True)
+    err = (proc.stderr or "").lower()
+    if proc.returncode == 0 or "already exists" in err:
+        return seed_id
+    if "prefix" in err and "mismatch" in err:
+        # Rig enforces an auto-id prefix — let bd assign one, parse it back.
+        proc2 = _create(with_id=False)
+        if proc2.returncode == 0:
+            # bd prints: "✓ Created issue: <id> — <title>"
+            m = _re.search(r"[Cc]reated issue:\s+(\S+)", proc2.stdout or "")
+            if m:
+                return m.group(1)
+        raise RuntimeError(
+            f"bd create (auto-id) failed: {(proc2.stderr or proc2.stdout).strip()}"
+        )
+    raise RuntimeError(f"bd create failed: {(proc.stderr or proc.stdout).strip()}")
 
 
 def close_issue(
