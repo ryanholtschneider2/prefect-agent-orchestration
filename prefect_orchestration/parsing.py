@@ -129,7 +129,12 @@ def read_bead_verdict(
             return result
         except KeyError:
             raise
-        except (FileNotFoundError, ValueError, subprocess.TimeoutExpired, OSError) as exc:
+        except (
+            FileNotFoundError,
+            ValueError,
+            subprocess.TimeoutExpired,
+            OSError,
+        ) as exc:
             last_exc = exc
             logger.warning(
                 "read_bead_verdict: attempt %d/3 failed for %s.%s: %s",
