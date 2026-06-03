@@ -21,28 +21,37 @@ without collision.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
 
-def read_bead_verdict(
+# Delays (seconds) between retry attempts. Index 0 = before attempt 1, index 1 = before attempt 2.
+_RETRY_DELAYS: list[float] = [0.5, 1.0]
+_RETRY_TIMEOUT: int = 10
+
+# Process-local cache keyed on (bead_id, name). Populated on every successful read.
+# Returned (with a warning) when all bd retries are exhausted.
+_verdict_cache: dict[tuple[str, str], dict] = {}
+
+
+def _bd_show_once(
     bead_id: str,
     name: str,
     *,
-    rig_path: Path | str | None = None,
+    rig_path: Path | str | None,
+    timeout: int,
 ) -> dict[str, Any]:
-    """Read a verdict stamped on bead ``bead_id`` at metadata key ``po.<name>``.
+    """Single attempt to read ``po.<name>`` from bead ``bead_id``.
 
-    Shells ``bd show <bead_id> --json`` and returns the parsed value at
-    ``metadata.po.<name>``. The value is whatever the agent wrote via
-    ``bd update <bead_id> --metadata '{"po.<name>": {...}}'`` — usually
-    a JSON object, but scalars work too.
-
-    Raises ``FileNotFoundError`` when the bead doesn't exist, and
-    ``KeyError`` if the bead exists but lacks the expected metadata key
-    (agent skipped the metadata stamp — usually a prompt regression).
+    Raises ``FileNotFoundError`` or ``ValueError`` on bd/parse failures.
+    Raises ``KeyError`` when the bead exists but lacks the key (semantic
+    failure — callers must not retry this).
+    Raises ``subprocess.TimeoutExpired`` when bd takes longer than ``timeout``.
     """
     proc = subprocess.run(
         ["bd", "show", bead_id, "--json"],
@@ -50,6 +59,7 @@ def read_bead_verdict(
         text=True,
         check=False,
         cwd=str(rig_path) if rig_path is not None else None,
+        timeout=timeout,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         raise FileNotFoundError(
@@ -85,6 +95,61 @@ def read_bead_verdict(
     if isinstance(value, dict):
         return value
     return {"value": value}
+
+
+def read_bead_verdict(
+    bead_id: str,
+    name: str,
+    *,
+    rig_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Read a verdict stamped on bead ``bead_id`` at metadata key ``po.<name>``.
+
+    Shells ``bd show <bead_id> --json`` and returns the parsed value at
+    ``metadata.po.<name>``. The value is whatever the agent wrote via
+    ``bd update <bead_id> --metadata '{"po.<name>": {...}}'`` — usually
+    a JSON object, but scalars work too.
+
+    Raises ``FileNotFoundError`` when the bead doesn't exist, and
+    ``KeyError`` if the bead exists but lacks the expected metadata key
+    (agent skipped the metadata stamp — usually a prompt regression).
+
+    Retries up to 3 times (with ``_RETRY_DELAYS`` backoff and a per-attempt
+    timeout) on transient bd failures. On exhausted retries, returns a
+    cached verdict from a prior successful read if available. ``KeyError``
+    (missing metadata key) is never retried — it is a semantic failure.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            result = _bd_show_once(
+                bead_id, name, rig_path=rig_path, timeout=_RETRY_TIMEOUT
+            )
+            _verdict_cache[(bead_id, name)] = result
+            return result
+        except KeyError:
+            raise
+        except (FileNotFoundError, ValueError, subprocess.TimeoutExpired, OSError) as exc:
+            last_exc = exc
+            logger.warning(
+                "read_bead_verdict: attempt %d/3 failed for %s.%s: %s",
+                attempt + 1,
+                bead_id,
+                name,
+                str(exc)[:200],
+            )
+            if attempt < len(_RETRY_DELAYS):
+                time.sleep(_RETRY_DELAYS[attempt])
+
+    cached = _verdict_cache.get((bead_id, name))
+    if cached is not None:
+        logger.warning(
+            "read_bead_verdict: bd unreachable after 3 attempts for %s.%s; returning cached verdict",
+            bead_id,
+            name,
+        )
+        return cached
+    raise last_exc  # type: ignore[misc]
 
 
 def prompt_for_bead_verdict(
