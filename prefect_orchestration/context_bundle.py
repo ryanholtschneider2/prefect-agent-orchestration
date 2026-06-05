@@ -10,11 +10,18 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from prefect_orchestration.beads_meta import _resolve_binary
+
 
 def _bd_show(bead_id: str, rig_path: Path) -> str:
+    # Resolve bd vs br through the seam so a `br` rig isn't probed with a
+    # hardcoded `bd` (prefect-orchestration-q7e).
+    binary = _resolve_binary(rig_path)
+    if binary is None:
+        return ""
     try:
         r = subprocess.run(
-            ["bd", "show", bead_id],
+            [binary, "show", bead_id],
             capture_output=True,
             text=True,
             cwd=rig_path,
