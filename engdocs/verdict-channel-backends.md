@@ -48,8 +48,53 @@ Landed (the verifiable core seam):
 - `doctor.check_beads_dolt_mode` reports SQLite-WAL health for a br rig and is
   unchanged for dolt rigs.
 
-Deferred (cross-repo follow-up): threading `br` through the *write*-side
-`beads_meta` shellouts (`claim_issue`/`close_issue`/`create_child_bead`/
-`mint_seed_bead`) and updating the pack's agent prompts
-(`po-formulas-software-dev`) to emit `br comments add`. A literal full
-`software_dev_full`-against-br run needs both.
+## Write-side shellouts (`prefect-orchestration-9xa.1`)
+
+The four `beads_meta` write helpers resolve `bd` vs `br` through
+`_resolve_binary(rig_path)` (same backend selection as the read side) instead
+of hardcoding `bd`:
+
+| helper | dolt (`bd`) | br |
+|---|---|---|
+| `claim_issue` | `bd update <id> --status in_progress --assignee <a>` | same, binary swap (flag-identical) |
+| `close_issue` | `bd close <id> [--reason <r>]` | same, binary swap (flag-identical) |
+| `create_child_bead` | `bd create --id=<child> --title … --deps parent-child:<p>` → returns `child_id` | `br create <title-positional> … --deps parent-child:<p> --json` → returns the **br-assigned id** |
+| `mint_seed_bead` | `bd create [--id=…] --title … --label <l>` | `br create <title-positional> … --labels <l> --json` → returns the br-assigned id |
+
+A missing binary is handled exactly as a missing `bd` was: `claim_issue` /
+`close_issue` no-op; `create_child_bead` / `mint_seed_bead` raise
+`NotImplementedError`.
+
+### br create has no explicit id — the one behavioral gap
+
+`br create` mints its own id (there is no `--id` flag), so on br
+`create_child_bead` / `mint_seed_bead` **cannot honor a caller-chosen id** and
+return the br-assigned id parsed from `--json` instead. Two consequences:
+
+1. **Callers must use the return value**, not the requested `child_id`. The
+   real-br round-trip in `tests/test_beads_meta.py` asserts the returned id
+   differs from the requested one.
+2. **No idempotency by requested id on br.** bd treats an `--id` collision as a
+   no-op (retry-safe); br can't look a bead up by a caller-chosen id, so a
+   retry mints a fresh bead. Dedupe on the returned id.
+
+This matters for a *literal* full `software_dev_full`-against-br run because
+`agent_step` derives a deterministic iter id (`<seed>.<step>.iter<N>`) and
+currently ignores `create_child_bead`'s return value (it reuses the computed
+id for the cache probe, description stamp, and verdict read). Making
+`agent_step` consume the returned id — or giving br an explicit-id affordance —
+is the remaining follow-up before the loop runs end-to-end on br.
+
+## Still deferred
+
+- **`agent_step` deterministic-id consumption on br** (above) — the convergence
+  ladder must thread the br-assigned id instead of the computed `<seed>.<step>.iterN`.
+- **`BeadsStore` metadata bus** — `get`/`set`/`all` still use
+  `bd … --set-metadata` for non-verdict state (`po.run_dir`, `po.rig_path`,
+  `po.iter_cap`). br has no per-issue metadata at all; re-homing those keys
+  (likely onto comments, like the verdict channel) is its own slice.
+- **Pack agent prompts** (`po-formulas-software-dev`, a separate repo / PR) —
+  roles still emit `bd update <id> --metadata` to write verdicts. They need to
+  emit the br form (`br comments add <id> 'po-verdict:<role>:<json>'`) on a br
+  rig, ideally routed through `beads_backend.write_verdict` so the prompt stays
+  backend-agnostic.
