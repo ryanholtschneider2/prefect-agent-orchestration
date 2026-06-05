@@ -34,6 +34,34 @@ DiscoverMode = Literal["ids", "deps", "both"]
 VALID_DISCOVER_MODES: tuple[str, ...] = ("ids", "deps", "both")
 
 
+def iter_bead_id(seed_id: str, step: str, iter_n: int) -> str:
+    """Canonical iter-bead id: ``<seed>-<step>-iter<N>``.
+
+    Hyphen-separated (not the legacy ``<seed>.<step>.iter<N>``) so
+    ``beads_rust`` (``br``), which rejects dots in issue ids, accepts the id
+    verbatim. This is the single source of truth: every iter-bead id the
+    orchestrator constructs — in core and in packs — routes through here, so
+    the convention can never drift between the writer (`agent_step`) and the
+    readers (`resume`, `artifacts`, the pack's terminal-iter scan).
+
+    `step` may itself contain hyphens (e.g. ``plan-critic``,
+    ``full-test-gate``); :func:`iter_bead_re` parses those back out via a
+    non-greedy capture anchored on the literal seed prefix.
+    """
+    return f"{seed_id}-{step}-iter{iter_n}"
+
+
+def iter_bead_re(seed_id: str) -> _re.Pattern[str]:
+    """Compiled matcher for iter beads under *seed_id*.
+
+    Captures ``(step, iter_n)`` from an id produced by :func:`iter_bead_id`:
+    ``group(1)`` is the step (may contain hyphens), ``group(2)`` is the
+    iteration number. The seed is matched as an escaped literal prefix, so a
+    hyphen-bearing seed (``prefect-orchestration-5w3``) stays unambiguous.
+    """
+    return _re.compile(rf"^{_re.escape(seed_id)}-(.+?)-iter(\d+)$")
+
+
 class MetadataStore(Protocol):
     def get(self, key: str, default: str | None = None) -> str | None: ...
     def set(self, key: str, value: str) -> None: ...

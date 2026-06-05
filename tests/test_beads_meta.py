@@ -17,7 +17,11 @@ from typing import Any
 import pytest
 
 from prefect_orchestration import beads_meta
-from prefect_orchestration.beads_meta import resolve_seed_bead
+from prefect_orchestration.beads_meta import (
+    iter_bead_id,
+    iter_bead_re,
+    resolve_seed_bead,
+)
 
 
 @pytest.fixture
@@ -160,19 +164,19 @@ def test_create_child_bead_forwards_blocks_flag(
     monkeypatch.setattr(beads_meta.subprocess, "run", _fake_run)
     out = beads_meta.create_child_bead(
         "parent",
-        "parent.iter2",
+        "parent-iter2",
         title="t",
         description="d",
         rig_path=tmp_path,
-        blocks="parent.iter1",
+        blocks="parent-iter1",
     )
-    assert out == "parent.iter2"
+    assert out == "parent-iter2"
     assert captured, "no shellout recorded"
     cmd = captured[0]
     assert "--parent" not in cmd
     assert "--deps" in cmd
     deps_idx = cmd.index("--deps")
-    assert cmd[deps_idx + 1] == "parent-child:parent,blocks:parent.iter1"
+    assert cmd[deps_idx + 1] == "parent-child:parent,blocks:parent-iter1"
 
 
 def test_create_child_bead_emits_parent_child_dep_by_default(
@@ -412,10 +416,10 @@ def test_create_child_bead_br_omits_id_uses_positional_title_and_json(
     captured = _capture_run(monkeypatch, stdout='{"id": "bd-9zz"}')
     out = beads_meta.create_child_bead(
         "parent",
-        "parent.iter2",
+        "parent-iter2",
         title="my title",
         description="d",
-        blocks="parent.iter1",
+        blocks="parent-iter1",
     )
     # br assigns its own id; the function returns it, not the requested one.
     assert out == "bd-9zz"
@@ -426,7 +430,7 @@ def test_create_child_bead_br_omits_id_uses_positional_title_and_json(
     assert "my title" in cmd
     assert "--json" in cmd
     deps_idx = cmd.index("--deps")
-    assert cmd[deps_idx + 1] == "parent-child:parent,blocks:parent.iter1"
+    assert cmd[deps_idx + 1] == "parent-child:parent,blocks:parent-iter1"
 
 
 def test_create_child_bead_br_falls_back_to_requested_id_when_json_idless(
@@ -435,9 +439,9 @@ def test_create_child_bead_br_falls_back_to_requested_id_when_json_idless(
     _force_backend(monkeypatch, "br")
     _capture_run(monkeypatch, stdout="not json")
     out = beads_meta.create_child_bead(
-        "parent", "parent.iter2", title="t", description="d"
+        "parent", "parent-iter2", title="t", description="d"
     )
-    assert out == "parent.iter2"
+    assert out == "parent-iter2"
 
 
 def test_create_child_bead_missing_binary_raises(
@@ -445,7 +449,7 @@ def test_create_child_bead_missing_binary_raises(
 ) -> None:
     monkeypatch.setattr(beads_meta.shutil, "which", lambda _name: None)
     with pytest.raises(NotImplementedError):
-        beads_meta.create_child_bead("parent", "p.iter1", title="t", description="d")
+        beads_meta.create_child_bead("parent", "p-iter1", title="t", description="d")
 
 
 def test_mint_seed_bead_br_parses_json_id_and_uses_labels(
@@ -503,9 +507,9 @@ def test_real_br_write_side_round_trip(
     assert seed  # a real br id was parsed back
 
     child = beads_meta.create_child_bead(
-        seed, "round.iter1", title="iter 1", description="d", rig_path=tmp_path
+        seed, "round-iter1", title="iter 1", description="d", rig_path=tmp_path
     )
-    assert child and child != "round.iter1"  # br minted its own id
+    assert child and child != "round-iter1"  # br minted its own id
 
     beads_meta.claim_issue(child, "po-worker", rig_path=tmp_path)
     row = beads_meta._bd_show(child, rig_path=tmp_path)
@@ -516,3 +520,38 @@ def test_real_br_write_side_round_trip(
     beads_meta.close_issue(child, notes="complete: done", rig_path=tmp_path)
     row = beads_meta._bd_show(child, rig_path=tmp_path)
     assert row is not None and row["status"] == "closed"
+
+
+# ─── iter-bead id helpers (br-ready hyphen convention) ──────────────────
+
+
+def test_iter_bead_id_hyphenated() -> None:
+    """Iter ids use hyphens (br rejects dots) — `<seed>-<step>-iter<N>`."""
+    assert iter_bead_id("courtpro-0qt", "ralph", 1) == "courtpro-0qt-ralph-iter1"
+    assert iter_bead_id("seed", "build", 3) == "seed-build-iter3"
+
+
+def test_iter_bead_id_hyphenated_step() -> None:
+    """A hyphen-bearing step (`plan-critic`) survives round-trip parsing."""
+    bid = iter_bead_id("prefect-orchestration-5w3", "plan-critic", 2)
+    assert bid == "prefect-orchestration-5w3-plan-critic-iter2"
+    m = iter_bead_re("prefect-orchestration-5w3").match(bid)
+    assert m is not None
+    assert m.group(1) == "plan-critic"
+    assert m.group(2) == "2"
+
+
+def test_iter_bead_re_round_trips_id() -> None:
+    """`iter_bead_re` captures (step, iter_n) for ids from `iter_bead_id`."""
+    seed = "iss-1"
+    pat = iter_bead_re(seed)
+    m = pat.match(iter_bead_id(seed, "triage", 1))
+    assert m is not None and (m.group(1), m.group(2)) == ("triage", "1")
+
+
+def test_iter_bead_re_rejects_foreign_seed_and_dotted_legacy() -> None:
+    """The matcher is seed-anchored and rejects the legacy dotted form."""
+    pat = iter_bead_re("iss-1")
+    assert pat.match("other-2-build-iter1") is None  # different seed
+    assert pat.match("iss-1.build.iter1") is None  # legacy dotted id
+    assert pat.match("iss-1") is None  # the seed itself is not an iter bead

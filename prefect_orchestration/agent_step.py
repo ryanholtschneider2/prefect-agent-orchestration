@@ -13,7 +13,7 @@ bead's description for the task spec, does the work, then `bd close`s the
 bead with a reason whose keyword encodes the verdict. `agent_step`:
 
 1. **Resolves the target bead.** When `iter_n` is set, creates / reuses
-   `<seed>.<step>.iter<N>` (idempotent — if the child bead already exists,
+   `<seed>-<step>-iter<N>` (idempotent — if the child bead already exists,
    reuse it without erroring). Otherwise the seed itself IS the target.
 2. **Resumability.** If the target bead is already closed, parses its
    close-reason and returns the verdict without running the agent. Re-runs
@@ -148,6 +148,7 @@ from prefect_orchestration.beads_meta import (
     _bd_show,
     close_issue,
     create_child_bead,
+    iter_bead_id,
 )
 from prefect_orchestration.role_config import resolve_role_runtime
 from prefect_orchestration.role_sessions import RoleSessionStore
@@ -172,7 +173,7 @@ class AgentStepResult:
     `verdict`/`summary` are populated when `verdict_keywords` was set
     AND the bead's close-reason matched a keyword. `reply` is the agent's
     raw last reply text (useful when no verdict parsing is requested).
-    `bead_id` is the bead the agent operated on (seed or `<seed>.<step>.iter<N>`).
+    `bead_id` is the bead the agent operated on (seed or `<seed>-<step>-iter<N>`).
     `from_cache` is True when the bead was already closed at entry and the
     agent did NOT run (resumability path).
     """
@@ -233,7 +234,7 @@ def agent_step(
         ``seed_id``, ``rig_path``, ``role_step_bead_id``, ``iter``,
         ``step``, ``run_dir`` (when caller supplies it).
     iter_n
-        When set, operate on `<seed_id>.<step>.iter<N>`; create if absent.
+        When set, operate on `<seed_id>-<step>-iter<N>`; create if absent.
         When unset, the seed bead itself is the target.
     step
         Bead name segment for the child iter bead. Required when
@@ -273,7 +274,7 @@ def agent_step(
     if iter_n is None:
         target_bead = seed_id
     elif step:
-        target_bead = f"{seed_id}.{step}.iter{iter_n}"
+        target_bead = iter_bead_id(seed_id, step, iter_n)
     else:
         raise ValueError(f"agent_step: iter_n={iter_n} requires step= (role={role!r})")
 
@@ -309,7 +310,7 @@ def agent_step(
     # re-opens the bead.
     if iter_n is not None and closed_state is None and _bd_available():
         # Thread the backend-assigned id back through `target_bead`. On bd the
-        # explicit `<seed>.<step>.iterN` id is honored and the return matches
+        # explicit `<seed>-<step>-iter<N>` id is honored and the return matches
         # the input; on br (no `--id` flag) the backend mints its own id and
         # returns it, so the computed id refers to a phantom bead. Everything
         # downstream — the description stamp, the convergence-ladder status

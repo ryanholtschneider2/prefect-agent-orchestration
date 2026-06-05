@@ -72,7 +72,7 @@ def test_all_present(
         run_dir,
         rig_path,
         monkeypatch,
-        bd_outputs={"proj-abc": "issue body", "proj-abc.build.iter1": "step spec"},
+        bd_outputs={"proj-abc": "issue body", "proj-abc-build-iter1": "step spec"},
     )
     text = out.read_text()
 
