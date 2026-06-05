@@ -405,6 +405,27 @@ def _load_flow_outcome(run_dir: Path | None) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+def _load_preview_url(run_dir: Path | None) -> str | None:
+    """Read `<run_dir>/preview_url.txt` if present and non-empty; None otherwise.
+
+    The `software-dev-agentic` worker writes this file mid-run, so live
+    in-flight session cards get a preview link before the flow stamps
+    `po.preview_url` bead metadata at the end (on a critic pass). Value is
+    stripped; whitespace-only / empty content is treated as absent.
+    """
+    if run_dir is None:
+        return None
+    try:
+        p = run_dir / "preview_url.txt"
+        if not p.is_file():
+            return None
+        text = p.read_text().strip()
+    except OSError as exc:
+        logger.debug("preview_url load failed for %s: %s", run_dir, exc)
+        return None
+    return text or None
+
+
 def _run_dir_for_issue(issue_id: str) -> Path | None:
     """Resolve the seed bead's `po.run_dir` metadata to a Path.
 
@@ -439,16 +460,30 @@ def to_json_list(groups: list[IssueGroup]) -> list[dict]:
             fr, "expected_start_time", None
         )
         end = getattr(fr, "end_time", None)
-        # Annotate non-Completed flows with flow_outcome.json data when
-        # the formula's exception guard wrote one. Completed flows skip
-        # the lookup; missing/invalid file → all fields None.
+        # Resolve the seed bead's run_dir once for non-Completed flows, then
+        # read flow_outcome.json + preview_url.txt from it. Completed flows
+        # skip the lookup (finished board cards get preview_url from stamped
+        # `po.preview_url` bead metadata; this path is for live in-flight
+        # cards). Missing/invalid file → fields stay None.
         outcome: dict | None = None
+        preview_url: str | None = None
         if str(state).upper() != "COMPLETED":
+            run_dir: Path | None = None
             try:
-                outcome = _load_flow_outcome(_run_dir_for_issue(g.issue_id))
+                run_dir = _run_dir_for_issue(g.issue_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("run_dir lookup failed for %s: %s", g.issue_id, exc)
+                run_dir = None
+            try:
+                outcome = _load_flow_outcome(run_dir)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("flow_outcome lookup failed for %s: %s", g.issue_id, exc)
                 outcome = None
+            try:
+                preview_url = _load_preview_url(run_dir)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("preview_url lookup failed for %s: %s", g.issue_id, exc)
+                preview_url = None
         rows.append(
             {
                 "issue_id": g.issue_id,
@@ -467,6 +502,7 @@ def to_json_list(groups: list[IssueGroup]) -> list[dict]:
                 "terminal_role": outcome.get("terminal_role") if outcome else None,
                 "terminal_iter": outcome.get("terminal_iter") if outcome else None,
                 "exception_class": outcome.get("exception_class") if outcome else None,
+                "preview_url": preview_url,
             }
         )
     return rows

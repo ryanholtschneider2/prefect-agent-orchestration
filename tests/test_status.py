@@ -384,6 +384,7 @@ def test_status_no_flow_outcome_file_renders_unchanged(
         "terminal_role": None,
         "terminal_iter": None,
         "exception_class": None,
+        "preview_url": None,
     }
 
 
@@ -426,6 +427,86 @@ def test_status_completed_state_skips_annotation(
     assert called["n"] == 0
     assert rows[0]["work_landed"] is None
     assert rows[0]["exception_class"] is None
+    # preview_url shares the COMPLETED short-circuit — finished cards get
+    # the link from stamped bead metadata, not this path.
+    assert rows[0]["preview_url"] is None
+
+
+# ─── prefect-orchestration-9aa: preview_url annotation ───────────────
+
+
+def _preview_group(issue_id: str, state_name: str = "Running"):
+    """A single in-flight IssueGroup keyed by issue_id."""
+    t0 = datetime(2026, 6, 5, 10, 0, tzinfo=timezone.utc)
+    return _status.IssueGroup(
+        issue_id=issue_id,
+        latest=FakeFlowRun(
+            id="x",
+            name="software_dev_agentic/abc",
+            tags=[f"issue_id:{issue_id}"],
+            state_name=state_name,
+            start_time=t0,
+        ),
+        extras=[],
+        current_step="-",
+    )
+
+
+def test_status_to_json_with_preview_url(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """preview_url.txt present + non-empty → in-flight JSON row carries it."""
+    run_dir = tmp_path / "run-pv"
+    run_dir.mkdir()
+    (run_dir / "preview_url.txt").write_text("https://preview.example.com/abc\n")
+    monkeypatch.setattr(
+        _status,
+        "_run_dir_for_issue",
+        lambda iid: run_dir if iid == "issue-pv" else None,
+    )
+
+    rows = _status.to_json_list([_preview_group("issue-pv")])
+    assert len(rows) == 1
+    # Trailing newline is stripped.
+    assert rows[0]["preview_url"] == "https://preview.example.com/abc"
+
+
+def test_status_to_json_preview_url_absent(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No preview_url.txt in the run-dir → preview_url is None."""
+    run_dir = tmp_path / "run-nopv"
+    run_dir.mkdir()  # exists but has no preview_url.txt
+    monkeypatch.setattr(_status, "_run_dir_for_issue", lambda _iid: run_dir)
+
+    rows = _status.to_json_list([_preview_group("issue-nopv")])
+    assert rows[0]["preview_url"] is None
+
+
+def test_status_to_json_preview_url_empty(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Empty preview_url.txt → preview_url is None (not '')."""
+    run_dir = tmp_path / "run-emptypv"
+    run_dir.mkdir()
+    (run_dir / "preview_url.txt").write_text("")
+    monkeypatch.setattr(_status, "_run_dir_for_issue", lambda _iid: run_dir)
+
+    rows = _status.to_json_list([_preview_group("issue-emptypv")])
+    assert rows[0]["preview_url"] is None
+
+
+def test_status_to_json_preview_url_whitespace(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whitespace-only preview_url.txt → preview_url is None after strip."""
+    run_dir = tmp_path / "run-wspv"
+    run_dir.mkdir()
+    (run_dir / "preview_url.txt").write_text("   \n\t  \n")
+    monkeypatch.setattr(_status, "_run_dir_for_issue", lambda _iid: run_dir)
+
+    rows = _status.to_json_list([_preview_group("issue-wspv")])
+    assert rows[0]["preview_url"] is None
 
 
 # ─── partition_zombies ───────────────────────────────────────────────
