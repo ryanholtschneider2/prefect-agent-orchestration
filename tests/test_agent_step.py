@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 import prefect_orchestration.agent_step as agent_step_mod
+from prefect_orchestration import iter_bead_ids
 from prefect_orchestration.agent_session import (
     RateLimitError,
     StepTimeoutError,
@@ -241,6 +242,112 @@ def test_agent_step_adopts_backend_assigned_iter_id(
     assert result.verdict == "approved"
     assert stamped == [br_id]  # description stamped on the real bead
     assert "seed.plan.iter1" not in fake_bd  # phantom id never materialized
+
+
+def test_agent_step_br_records_iter_id_map(
+    tmp_path: Path,
+    fake_bd: dict,
+    fake_session: _FakeSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On br, the first call records the convention→real-id mapping in the
+    run-dir so later calls can resolve the real bead instead of re-minting."""
+    _write_prompt(tmp_path / "agents", "builder")
+    fake_bd["seed"] = {
+        "id": "seed",
+        "status": "open",
+        "title": "s",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+    run_dir = tmp_path / "run"
+    br_id = "br-real-1"
+
+    def br_create_child_bead(parent: str, child_id: str, **_kw: Any) -> str:
+        fake_bd[br_id] = {
+            "id": br_id,
+            "status": "open",
+            "title": _kw.get("title", ""),
+            "metadata": {},
+            "closure_reason": "",
+            "notes": "",
+        }
+        return br_id
+
+    monkeypatch.setattr(agent_step_mod, "create_child_bead", br_create_child_bead)
+
+    original = fake_session.prompt
+
+    def closing_prompt(text: str, **kw: Any) -> str:
+        fake_bd[br_id]["status"] = "closed"
+        fake_bd[br_id]["closure_reason"] = "complete: built"
+        return original(text, **kw)
+
+    fake_session.prompt = closing_prompt  # type: ignore[assignment]
+
+    result = agent_step(
+        agent_dir=tmp_path / "agents" / "builder",
+        task="Build it.",
+        seed_id="seed",
+        rig_path=str(tmp_path),
+        run_dir=str(run_dir),
+        iter_n=1,
+        step="build",
+        verdict_keywords=("complete",),
+    )
+    assert result.bead_id == br_id
+    # The mapping persists under the convention key for the next call.
+    assert iter_bead_ids.lookup(run_dir, "seed.build.iter1") == br_id
+
+
+def test_agent_step_br_reentry_resolves_recorded_id_no_remint(
+    tmp_path: Path,
+    fake_bd: dict,
+    fake_session: _FakeSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-entry for an already-completed br role-step must resolve the recorded
+    real id, short-circuit on the cache, and NOT re-mint a fresh bead — this is
+    the fix for the phantom-id re-dispatch loop (prefect-orchestration-99k)."""
+    _write_prompt(tmp_path / "agents", "builder")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    # Prior call already recorded the mapping and the real bead is closed.
+    iter_bead_ids.record(run_dir, "seed.build.iter1", "br-real-1")
+    fake_bd["br-real-1"] = {
+        "id": "br-real-1",
+        "status": "closed",
+        "title": "build iter 1 for seed",
+        "metadata": {},
+        "closure_reason": "complete: built earlier",
+        "notes": "",
+    }
+
+    create_calls = {"n": 0}
+
+    def exploding_create(parent: str, child_id: str, **_kw: Any) -> str:
+        create_calls["n"] += 1
+        return "br-real-2"  # a fresh mint — must NOT happen on re-entry
+
+    monkeypatch.setattr(agent_step_mod, "create_child_bead", exploding_create)
+
+    result = agent_step(
+        agent_dir=tmp_path / "agents" / "builder",
+        task="Build it.",
+        seed_id="seed",
+        rig_path=str(tmp_path),
+        run_dir=str(run_dir),
+        iter_n=1,
+        step="build",
+        verdict_keywords=("complete",),
+    )
+    assert result.from_cache is True
+    assert result.bead_id == "br-real-1"
+    assert result.verdict == "complete"
+    assert create_calls["n"] == 0  # no re-mint, no phantom re-dispatch
+    # No agent turn was run on the cache short-circuit.
+    assert fake_session.prompts == []
 
 
 # ─── resumability ───────────────────────────────────────────────────

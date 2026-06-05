@@ -209,3 +209,86 @@ def test_no_iter_n(
     text = out.read_text()
     step_section = text.split("## This role-step")[1].split("---")[0]
     assert "(empty)" in step_section
+
+
+# ─── backend-aware binary + adopted-id resolution (prefect-orchestration-99k) ──
+
+
+def _capture_show_ids(
+    monkeypatch: pytest.MonkeyPatch, binary: str = "bd"
+) -> list[list[str]]:
+    """Patch `_resolve_binary` + `subprocess.run`; record every show cmd."""
+    import prefect_orchestration.context_bundle as cb
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kw: Any) -> MagicMock:
+        calls.append(cmd)
+        return _fake_bd_show(stdout="step spec")
+
+    monkeypatch.setattr(cb, "_resolve_binary", lambda _rig: binary)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return calls
+
+
+def test_uses_resolved_backend_binary(
+    run_dir: Path, rig_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a br rig the bundle must shell `br show`, not the hardcoded `bd`."""
+    calls = _capture_show_ids(monkeypatch, binary="br")
+    build_context_md(
+        run_dir=run_dir, rig_path=rig_path, issue_id="proj-abc", role="build", iter_n=1
+    )
+    assert calls, "expected at least one show shellout"
+    assert all(c[0] == "br" for c in calls)
+
+
+def test_resolves_iter_bead_id_from_map(
+    run_dir: Path, rig_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the run-dir records the real (br-minted) id, show it — not the
+    phantom `<issue>.<role>.iterN` convention id."""
+    from prefect_orchestration import iter_bead_ids
+
+    iter_bead_ids.record(run_dir, "proj-abc.build.iter1", "br-real-1")
+    calls = _capture_show_ids(monkeypatch)
+    build_context_md(
+        run_dir=run_dir, rig_path=rig_path, issue_id="proj-abc", role="build", iter_n=1
+    )
+    shown = [c[2] for c in calls if len(c) > 2 and c[1] == "show"]
+    assert "br-real-1" in shown
+    assert "proj-abc.build.iter1" not in shown
+
+
+def test_explicit_iter_bead_id_override_wins(
+    run_dir: Path, rig_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit `iter_bead_id` is used verbatim (no map lookup, no compute)."""
+    from prefect_orchestration import iter_bead_ids
+
+    iter_bead_ids.record(run_dir, "proj-abc.build.iter1", "br-mapped")
+    calls = _capture_show_ids(monkeypatch)
+    build_context_md(
+        run_dir=run_dir,
+        rig_path=rig_path,
+        issue_id="proj-abc",
+        role="build",
+        iter_n=1,
+        iter_bead_id="explicit-id",
+    )
+    shown = [c[2] for c in calls if len(c) > 2 and c[1] == "show"]
+    assert "explicit-id" in shown
+    assert "br-mapped" not in shown
+
+
+def test_falls_back_to_convention_id_without_map(
+    run_dir: Path, rig_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No map, no override → use the `<issue>.<role>.iterN` convention id
+    (correct on dolt where that id is honored)."""
+    calls = _capture_show_ids(monkeypatch)
+    build_context_md(
+        run_dir=run_dir, rig_path=rig_path, issue_id="proj-abc", role="build", iter_n=1
+    )
+    shown = [c[2] for c in calls if len(c) > 2 and c[1] == "show"]
+    assert "proj-abc.build.iter1" in shown

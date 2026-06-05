@@ -149,6 +149,7 @@ from prefect_orchestration.beads_meta import (
     close_issue,
     create_child_bead,
 )
+from prefect_orchestration import iter_bead_ids
 from prefect_orchestration.role_config import resolve_role_runtime
 from prefect_orchestration.role_sessions import RoleSessionStore
 from prefect_orchestration.templates import render_template
@@ -264,16 +265,40 @@ def agent_step(
     ctx = dict(ctx or {})
     role = session_role or Path(agent_dir).name
 
-    # FAST PATH: compute target bead id from naming convention (zero
-    # shellouts) and check status FIRST. If the bead is already closed,
-    # return cached verdict — skip every other side effect (run-dir
-    # mkdir, metadata stamping, child-bead probe). This collapses 4
-    # bd shellouts per cached call to 1, taking cache-hit time from
-    # ~10s/step down to ~0.5s/step.
+    # Resolve run_dir up front (cheap path math; the mkdir stays in the slow
+    # path). Needed before the fast-path probe so we can consult the
+    # iter-bead-id map: caller-supplied wins; else fall through to
+    # `<rig>/.planning/agent-step/<seed>/`. The caller-supplied path is the
+    # formula's canonical run-dir (e.g. `<rig>/.planning/<formula>/<seed>/`),
+    # shared across every agent_step call in that run so role-sessions.json
+    # and the iter-bead-id map all land in one place — and `po artifacts` /
+    # `po watch` find them via the seed bead's `po.run_dir` metadata stamp.
+    rig_path_p = Path(rig_path).expanduser().resolve()
+    if run_dir is not None:
+        run_dir_p = Path(run_dir).expanduser().resolve()
+    else:
+        run_dir_p = rig_path_p / ".planning" / "agent-step" / seed_id
+
+    # FAST PATH: resolve the target bead id (zero shellouts) and check status
+    # FIRST. If the bead is already closed, return cached verdict — skip every
+    # other side effect (run-dir mkdir, metadata stamping, child-bead probe).
+    # This collapses 4 bd shellouts per cached call to 1.
+    #
+    # The orchestrator names this role-step by the convention
+    # `<seed>.<step>.iterN`. On dolt that id is honored verbatim, so it IS the
+    # real bead. On br `create` mints its own flat id (no `--id` flag), so the
+    # convention id is a phantom — a prior call records the real id under the
+    # convention key, and we adopt it here so the cache check, the
+    # description stamp, the prompts, and the convergence ladder all target
+    # the bead that actually exists (rather than missing the cache and
+    # re-minting a fresh bead every re-entry). On dolt the lookup misses and
+    # we fall back to the convention id, so behavior is unchanged there.
+    convention_key: str | None = None
     if iter_n is None:
         target_bead = seed_id
     elif step:
-        target_bead = f"{seed_id}.{step}.iter{iter_n}"
+        convention_key = iter_bead_ids.convention_id(seed_id, step, iter_n)
+        target_bead = iter_bead_ids.lookup(run_dir_p, convention_key) or convention_key
     else:
         raise ValueError(f"agent_step: iter_n={iter_n} requires step= (role={role!r})")
 
@@ -288,19 +313,6 @@ def agent_step(
         )
 
     # SLOW PATH: bead is open or missing — do full setup.
-    # Resolve run_dir: caller-supplied wins; else fall through to
-    # `<rig>/.planning/agent-step/<seed>/`. The caller-supplied path is
-    # the formula's canonical run-dir (e.g.
-    # `<rig>/.planning/<formula>/<seed>/` where <formula> is the pack's chosen name),
-    # shared across every
-    # agent_step call in that formula run so role-sessions.json and
-    # verdicts/ all land in one place — and `po artifacts` / `po watch`
-    # find them via the seed bead's `po.run_dir` metadata stamp.
-    rig_path_p = Path(rig_path).expanduser().resolve()
-    if run_dir is not None:
-        run_dir_p = Path(run_dir).expanduser().resolve()
-    else:
-        run_dir_p = rig_path_p / ".planning" / "agent-step" / seed_id
     run_dir_p.mkdir(parents=True, exist_ok=True)
     _stamp_run_dir_meta(seed_id, rig_path_p, run_dir_p)
 
@@ -322,6 +334,12 @@ def agent_step(
             description=f"Auto-created by agent_step ({role}, iter {iter_n}).",
             rig_path=rig_path,
         )
+        # Persist the convention→real-id mapping so subsequent calls for this
+        # same role-step (re-entry, the convergence ladder, CONTEXT.md) resolve
+        # the existing bead instead of re-minting. No-op on dolt where the
+        # adopted id equals the convention id.
+        if convention_key is not None and target_bead != convention_key:
+            iter_bead_ids.record(run_dir_p, convention_key, target_bead)
 
     # Stamp the task spec onto the bead description (canonical task source).
     full_ctx: dict[str, Any] = {
