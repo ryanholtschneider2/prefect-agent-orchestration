@@ -45,28 +45,28 @@ def test_list_completed_steps_with_issue_id_walks_bd(
     tmp_path: Path, monkeypatch
 ) -> None:
     """With issue_id supplied, _list_completed_steps queries bd for iter beads."""
-    fake_rows = json.dumps([
-        {
-            "id": "iss-1.triage.iter1",
-            "metadata": {"po.triage": {"complexity": "moderate"}},
-        },
-        {
-            "id": "iss-1.plan.iter1",
-            "metadata": {"po.plan": {"verdict": "approved"}},
-        },
-        {
-            "id": "iss-1.plan.iter2",
-            "metadata": {"po.run_dir": "/tmp/x"},  # bookkeeping only — no verdict
-        },
-    ])
+    fake_rows = json.dumps(
+        [
+            {
+                "id": "iss-1.triage.iter1",
+                "metadata": {"po.triage": {"complexity": "moderate"}},
+            },
+            {
+                "id": "iss-1.plan.iter1",
+                "metadata": {"po.plan": {"verdict": "approved"}},
+            },
+            {
+                "id": "iss-1.plan.iter2",
+                "metadata": {"po.run_dir": "/tmp/x"},  # bookkeeping only — no verdict
+            },
+        ]
+    )
 
     class _FakeProc:
         returncode = 0
         stdout = fake_rows
 
-    monkeypatch.setattr(
-        "subprocess.run", lambda *a, **kw: _FakeProc()
-    )
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: _FakeProc())
     out = resume._list_completed_steps(tmp_path, issue_id="iss-1")
     assert out == ["plan-iter-1", "triage-iter-1"]
 
@@ -93,10 +93,12 @@ def test_resume_does_not_archive_run_dir(tmp_path: Path, monkeypatch) -> None:
     )
     monkeypatch.setattr(resume, "_load_formula", lambda name: lambda **kw: "ok")
     monkeypatch.setattr(resume, "_bd_show_status", lambda iid: "open")
+
     # Stub bd list to return no iter beads.
     class _Empty:
         returncode = 0
         stdout = "[]"
+
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: _Empty())
 
     res = resume.resume_issue("iss-1", force=True)
@@ -122,9 +124,11 @@ def test_resume_sets_po_resume_env_during_flow_call(
     )
     monkeypatch.setattr(resume, "_bd_show_status", lambda iid: "open")
     monkeypatch.delenv("PO_RESUME", raising=False)
+
     class _Empty:
         returncode = 0
         stdout = "[]"
+
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: _Empty())
 
     captured: dict[str, str | None] = {}
@@ -153,9 +157,11 @@ def test_resume_restores_prior_po_resume_env(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setattr(resume, "_bd_show_status", lambda iid: "open")
     monkeypatch.setattr(resume, "_load_formula", lambda name: lambda **kw: "ok")
     monkeypatch.setenv("PO_RESUME", "prior-value")
+
     class _Empty:
         returncode = 0
         stdout = "[]"
+
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: _Empty())
 
     resume.resume_issue("iss-3", force=True)
@@ -191,9 +197,11 @@ def test_resume_reopens_closed_bead(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(resume, "_bd_show_status", lambda iid: "closed")
     reopen_calls: list[str] = []
     monkeypatch.setattr(resume, "_bd_reopen", lambda iid: reopen_calls.append(iid))
+
     class _Empty:
         returncode = 0
         stdout = "[]"
+
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: _Empty())
 
     res = resume.resume_issue("iss-4", force=True)

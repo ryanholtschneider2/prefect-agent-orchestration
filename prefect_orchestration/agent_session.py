@@ -576,9 +576,8 @@ class StubBackend:
         # 1. Find the iter bead ID. The close block always renders a
         #    literal `bd close <bead> --reason ...` line; the resumed-
         #    turn prompt renders `bd show <bead>`.
-        bead_match = (
-            _re.search(r"bd\s+close\s+(\S+)\s+--reason", prompt)
-            or _re.search(r"bd\s+show\s+(\S+)", prompt)
+        bead_match = _re.search(r"bd\s+close\s+(\S+)\s+--reason", prompt) or _re.search(
+            r"bd\s+show\s+(\S+)", prompt
         )
         if not bead_match:
             return self._legacy_verdict_file(prompt, sid)
@@ -600,7 +599,10 @@ class StubBackend:
                 payload = _STUB_VERDICTS.get(key, {"ok": True})
                 _sp.run(
                     [
-                        "bd", "update", bead_id, "--metadata",
+                        "bd",
+                        "update",
+                        bead_id,
+                        "--metadata",
                         json.dumps({f"po.{key}": payload}),
                     ],
                     cwd=str(cwd),
@@ -620,8 +622,13 @@ class StubBackend:
             kws = _re.findall(r"`([\w\-]+)`", kw_match.group(1))
             # Prefer affirmative keywords when multiple offered.
             for preferred in (
-                "approved", "complete", "passed", "synthesized", "no-recurring",
-                "no", "true",
+                "approved",
+                "complete",
+                "passed",
+                "synthesized",
+                "no-recurring",
+                "no",
+                "true",
             ):
                 if preferred in kws:
                     keyword = preferred

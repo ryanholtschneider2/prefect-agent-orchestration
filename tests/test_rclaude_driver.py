@@ -292,7 +292,9 @@ def test_teardown_ssh_scrubs_secrets(monkeypatch):
 def test_start_worker_ssh_sources_secrets(monkeypatch):
     import po_formulas_cloud_rclaude.driver as drv_mod
 
-    monkeypatch.setattr(drv_mod, "_central_api_url", lambda stored="": "http://h:4200/api")
+    monkeypatch.setattr(
+        drv_mod, "_central_api_url", lambda stored="": "http://h:4200/api"
+    )
     drv = RClaudeEnvDriver()
     captured = {}
     monkeypatch.setattr(

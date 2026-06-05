@@ -23,8 +23,12 @@ class FakeBackend:
     def __init__(self):
         self.calls = []
 
-    def provision_vm(self, *, name, from_snapshot="", tags=None, auto_stop_minutes=0, **kw):
-        self.calls.append(("provision_vm", from_snapshot, tuple(tags or []), auto_stop_minutes))
+    def provision_vm(
+        self, *, name, from_snapshot="", tags=None, auto_stop_minutes=0, **kw
+    ):
+        self.calls.append(
+            ("provision_vm", from_snapshot, tuple(tags or []), auto_stop_minutes)
+        )
         return types.SimpleNamespace(id="sb-77")
 
     def destroy_vm(self, sid):
@@ -90,10 +94,14 @@ def test_push_credentials_daytona_tmpfs_and_oauth():
             _handle(), {"ANTHROPIC_API_KEY": "sk-x"}, b'{"oauth":1}'
         )
     # secret payload written to tmpfs via exec
-    assert any(c[0] == "exec" and "/dev/shm/rclaude/secrets.env" in c[2] for c in be.calls)
+    assert any(
+        c[0] == "exec" and "/dev/shm/rclaude/secrets.env" in c[2] for c in be.calls
+    )
     # OAuth creds uploaded to disk at 0600
     assert any(
-        c[0] == "upload_text" and c[1].endswith(".claude/.credentials.json") and c[2] == "600"
+        c[0] == "upload_text"
+        and c[1].endswith(".claude/.credentials.json")
+        and c[2] == "600"
         for c in be.calls
     )
 
@@ -149,8 +157,12 @@ def test_sync_packs_daytona_delivers_and_installs(monkeypatch, tmp_path):
     be = FakeBackend()
     d = RClaudeEnvDriver()
     monkeypatch.setattr(
-        d, "_local_editable_packs",
-        lambda: [("prefect-orchestration", str(core)), ("po-formulas-software-dev", str(pack))],
+        d,
+        "_local_editable_packs",
+        lambda: [
+            ("prefect-orchestration", str(core)),
+            ("po-formulas-software-dev", str(pack)),
+        ],
     )
     with patch.object(RClaudeEnvDriver, "_daytona_backend", return_value=be):
         d.sync_packs(_handle())
@@ -172,7 +184,7 @@ def test_start_worker_daytona_wires_tailscale():
     script = next(c[2] for c in be.calls if c[0] == "exec")
     # Conditional tailnet join + localhost->SOCKS forwarder so HTTP AND the
     # events websocket reach a private Prefect at 127.0.0.1.
-    assert 'TS_AUTHKEY' in script and "tailscale up" in script
+    assert "TS_AUTHKEY" in script and "tailscale up" in script
     assert "socks5-server=localhost:1055" in script
     assert ".po-forwarder.py" in script
     assert "export PREFECT_API_URL=http://127.0.0.1:4200/api" in script

@@ -112,8 +112,11 @@ def _list_completed_steps(run_dir: Path, issue_id: str | None = None) -> list[st
 
         proc = _sp.run(
             ["bd", "list", "--parent", issue_id, "--all", "--json"],
-            cwd=str(run_dir.parent.parent.parent)  # rig root: .planning/<formula>/<seed>/
-            if run_dir.exists() else None,
+            cwd=str(
+                run_dir.parent.parent.parent
+            )  # rig root: .planning/<formula>/<seed>/
+            if run_dir.exists()
+            else None,
             capture_output=True,
             text=True,
             check=False,

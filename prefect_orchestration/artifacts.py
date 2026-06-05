@@ -160,7 +160,11 @@ def _collect_verdicts(run_dir: Path) -> list[Section]:
                     if key in {"po.run_dir", "po.rig_path"}:
                         continue
                     label = f"{m.group(1)}-iter-{m.group(2)} {key}"
-                    body = json.dumps(value, indent=2) if isinstance(value, (dict, list)) else str(value)
+                    body = (
+                        json.dumps(value, indent=2)
+                        if isinstance(value, (dict, list))
+                        else str(value)
+                    )
                     sections.append(Section(label=label, path=run_dir, body=body))
 
     # Legacy fallback for pre-migration run dirs.
