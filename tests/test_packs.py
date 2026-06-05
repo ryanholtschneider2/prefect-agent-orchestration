@@ -132,6 +132,154 @@ def test_install_rejects_command_collision_with_core_verb(
     assert "po uninstall" in msg
 
 
+def test_install_is_additive_preserves_existing_packs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Installing a new pack must re-list every pack already in the env so
+    `uv tool install --reinstall` doesn't evict them (prefect-orchestration-7zi)."""
+    existing = packs.PackInfo(
+        name="po-formulas-software-dev",
+        version="0.1",
+        source="editable",
+        source_detail="/abs/software-dev",
+        contributions={"po.formulas": ["software-dev-full"]},
+    )
+    monkeypatch.setattr(packs, "discover_packs", lambda: [existing])
+
+    called: list[list[str]] = []
+
+    def fake_run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        called.append(args)
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(packs, "_run_uv", fake_run)
+    packs.install("/abs/po-director", editable=True)
+
+    argv = called[0]
+    # The existing editable pack is preserved by path...
+    assert "--with-editable" in argv
+    assert "/abs/software-dev" in argv
+    # ...and the new pack is added in the same single reinstall.
+    assert "/abs/po-director" in argv
+    assert argv.count("--reinstall") == 1
+    assert argv.count(packs.CORE_DISTRIBUTION) == 1
+
+
+def test_two_sequential_editable_installs_both_survive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Acceptance #1/#3: install A then B → the second reinstall lists both.
+
+    Models the tool-env state growing across two installs the way uv would,
+    and asserts neither pack is dropped from the argv."""
+    state: list[packs.PackInfo] = []
+    monkeypatch.setattr(packs, "discover_packs", lambda: list(state))
+
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str]) -> subprocess.CompletedProcess[str]:
+        calls.append(list(args))
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(packs, "_run_uv", fake_run)
+
+    # Install A; uv then has A in the env.
+    packs.install("/abs/pack-a", editable=True)
+    state.append(
+        packs.PackInfo(
+            name="po-formulas-a",
+            version="0.1",
+            source="editable",
+            source_detail="/abs/pack-a",
+            contributions={"po.formulas": ["a"]},
+        )
+    )
+
+    # Install B; the second reinstall must still carry A.
+    packs.install("/abs/pack-b", editable=True)
+    state.append(
+        packs.PackInfo(
+            name="po-formulas-b",
+            version="0.1",
+            source="editable",
+            source_detail="/abs/pack-b",
+            contributions={"po.formulas": ["b"]},
+        )
+    )
+
+    second = calls[1]
+    assert "/abs/pack-a" in second
+    assert "/abs/pack-b" in second
+    assert second.count("--reinstall") == 1
+
+
+def test_install_dedups_reinstall_of_same_pack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-installing an already-present pack must not list it twice."""
+    existing = packs.PackInfo(
+        name="po-formulas-software-dev",
+        version="0.1",
+        source="pypi",
+        contributions={"po.formulas": ["software-dev-full"]},
+    )
+    monkeypatch.setattr(packs, "discover_packs", lambda: [existing])
+
+    called: list[list[str]] = []
+    monkeypatch.setattr(
+        packs,
+        "_run_uv",
+        lambda args: (
+            called.append(args)
+            or subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="", stderr=""
+            )
+        ),
+    )
+    packs.install("po-formulas-software-dev")
+    argv = called[0]
+    assert argv.count("po-formulas-software-dev") == 1
+
+
+def test_uninstall_keeps_other_pack(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acceptance #2: uninstalling A keeps B installed."""
+    a = packs.PackInfo(
+        name="po-formulas-a",
+        version="0.1",
+        source="editable",
+        source_detail="/abs/pack-a",
+        contributions={"po.formulas": ["a"]},
+    )
+    b = packs.PackInfo(
+        name="po-formulas-b",
+        version="0.1",
+        source="editable",
+        source_detail="/abs/pack-b",
+        contributions={"po.formulas": ["b"]},
+    )
+    monkeypatch.setattr(packs, "discover_packs", lambda: [a, b])
+
+    called: list[list[str]] = []
+    monkeypatch.setattr(
+        packs,
+        "_run_uv",
+        lambda args: (
+            called.append(args)
+            or subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="", stderr=""
+            )
+        ),
+    )
+    packs.uninstall("po-formulas-a")
+    argv = called[0]
+    assert "/abs/pack-b" in argv
+    assert "/abs/pack-a" not in argv
+
+
 def test_install_maps_uv_failure_to_packerror(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(args: list[str]) -> subprocess.CompletedProcess[str]:
         raise subprocess.CalledProcessError(1, args, stderr="boom")
@@ -261,10 +409,13 @@ def test_update_named_one_pack(monkeypatch: pytest.MonkeyPatch) -> None:
         ),
     )
     refreshed = packs.update("po-formulas-b")
+    # Only the named pack is reported as refreshed...
     assert refreshed == ["po-formulas-b"]
     argv = called[0]
     assert "po-formulas-b" in argv
-    assert "po-formulas-a" not in argv
+    # ...but the env stays whole — refreshing one pack must NOT evict the
+    # others (same additive footgun as install, prefect-orchestration-7zi).
+    assert "po-formulas-a" in argv
 
 
 # ---- find_uv -----------------------------------------------------------------

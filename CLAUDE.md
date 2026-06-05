@@ -798,6 +798,17 @@ change — entry-point metadata is written at install time, not on
 code reload, and `po packs update` refreshes it for every installed pack.
 `po packs list` lists what's installed and what each contributes.
 
+**`po packs install` / `update` / `uninstall` are additive (fixed
+prefect-orchestration-7zi).** Each verb enumerates the packs already in
+the tool env and re-lists them all in the single `uv tool install
+--reinstall` call, so installing, refreshing, or removing one pack never
+evicts the others. (Earlier these built `--reinstall <core> --with
+<just-the-target>`, and because `--reinstall` rebuilds the env from
+exactly the given `--with` set, installing e.g. `po-director` silently
+dropped every software-dev formula until a full reinstall.) You can run
+`po packs install --editable A` then `po packs install --editable B` and
+keep both; `po packs uninstall A` keeps B.
+
 **Warning — `uv pip install -e <core>` evicts other editable packs.** Running
 `uv pip install -e .` directly (instead of `po packs install --editable`)
 will uninstall any other editable installs in the venv (e.g.
