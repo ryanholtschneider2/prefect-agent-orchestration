@@ -90,11 +90,40 @@ a retry/resume mints a fresh iter bead because the cache probe on the computed
 id never hits on br. Acceptable for a forward run; revisit if br resume becomes
 a requirement.)
 
+## Metadata stamps are dolt-only — `_metadata_binary` (prefect-orchestration-q7e)
+
+Arbitrary per-issue metadata (`bd update … --set-metadata`) is a dolt-only
+concept; `br update` has no `--set-metadata` flag. The non-verdict UI stamps
+(`po.run_dir`, `po.rig_path`, `po.pack_path`, `po.prefect_run_url`, and the
+`session_<role>` keys `BeadsStore`/`RoleSessionStore` persist) therefore can't
+live on a br rig. Before q7e they nevertheless shelled a **hardcoded `bd`** —
+which on a br rig is still on `PATH` but resolves no dolt database, so every
+per-role-step `build_registry` printed two `Error: no beads database found`
+lines mid-flow (found by the br smoke, qr5).
+
+`beads_meta._metadata_binary(rig_path)` is the seam for these writes: it
+returns `"bd"` **only** when `resolve_backend(rig_path) == "dolt"` and `bd` is
+on `PATH`, else `None`. Callers (`build_registry`'s run-location stamp,
+`run_handles.stamp_run_url_on_bead`, `agent_step._stamp_run_dir_meta`,
+`BeadsStore.set`/`_show_metadata`, `auto_store`) treat `None` as "skip" — a
+clean no-op on br instead of a raw `bd` shellout. `BeadsStore.set` raises
+`NotImplementedError` on br so `RoleSessionStore.set` falls back to its run-dir
+`role-sessions.json` tier (session resume still works on br via JSON).
+Read/`--description` ops that *both* backends support (`bd show`,
+`bd update --description`, the `context_bundle` bd-show) instead route through
+`_resolve_binary`, which returns the correct `bd`/`br` binary.
+
+The consequence on br: `po logs/artifacts/sessions/retry/watch` can't resolve
+the run-dir from bead metadata (there is none); they fall back to their other
+discovery paths. Re-homing these keys onto br comments (like the verdict
+channel) remains future work.
+
 ## Still deferred
 
-- **`BeadsStore` metadata bus** — `get`/`set`/`all` still use
-  `bd … --set-metadata` for non-verdict state (`po.run_dir`, `po.rig_path`,
-  `po.iter_cap`). br has no per-issue metadata at all; re-homing those keys
+- **`BeadsStore` metadata bus re-homing** — `get`/`set`/`all` are now
+  dolt-gated (see `_metadata_binary` above) so they no longer shell raw `bd`
+  on br, but the keys themselves (`po.run_dir`, `po.rig_path`, `po.iter_cap`,
+  …) still have no br home. br has no per-issue metadata; re-homing them
   (likely onto comments, like the verdict channel) is its own slice.
 - **Pack agent prompts** (`po-formulas-software-dev`, a separate repo / PR;
   tracked as bead **prefect-orchestration-ysw**) — roles still emit
