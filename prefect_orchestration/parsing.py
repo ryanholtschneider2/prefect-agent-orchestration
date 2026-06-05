@@ -20,13 +20,14 @@ without collision.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import subprocess
 import time
 from pathlib import Path
 from typing import Any
+
+from prefect_orchestration.beads_backend import read_verdict, resolve_backend
 
 logger = logging.getLogger(__name__)
 
@@ -46,55 +47,25 @@ def _bd_show_once(
     rig_path: Path | str | None,
     timeout: int,
 ) -> dict[str, Any]:
-    """Single attempt to read ``po.<name>`` from bead ``bead_id``.
+    """Single attempt to read the ``<name>`` verdict from bead ``bead_id``.
 
-    Raises ``FileNotFoundError`` or ``ValueError`` on bd/parse failures.
-    Raises ``KeyError`` when the bead exists but lacks the key (semantic
+    Delegates to the resolved backend (:mod:`prefect_orchestration.beads_backend`):
+    dolt reads ``metadata["po.<name>"]``; br reads the latest
+    ``po-verdict:<name>:<json>`` comment. Exception contract is identical
+    across backends so the retry/cache wrapper below is backend-agnostic:
+
+    Raises ``FileNotFoundError`` or ``ValueError`` on CLI/parse failures.
+    Raises ``KeyError`` when the bead exists but lacks the verdict (semantic
     failure — callers must not retry this).
-    Raises ``subprocess.TimeoutExpired`` when bd takes longer than ``timeout``.
+    Raises ``subprocess.TimeoutExpired`` when the CLI takes longer than ``timeout``.
     """
-    proc = subprocess.run(
-        ["bd", "show", bead_id, "--json"],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=str(rig_path) if rig_path is not None else None,
+    return read_verdict(
+        bead_id,
+        name,
+        backend=resolve_backend(rig_path),
+        rig_path=rig_path,
         timeout=timeout,
     )
-    if proc.returncode != 0 or not proc.stdout.strip():
-        raise FileNotFoundError(
-            f"bd show {bead_id} returned no rows "
-            f"(rc={proc.returncode}, stderr={proc.stderr[:200]!r})"
-        )
-    try:
-        rows = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"bd show {bead_id} --json was not parseable:\n{proc.stdout[:500]}"
-        ) from exc
-    issue = rows[0] if isinstance(rows, list) else rows
-    if not isinstance(issue, dict):
-        raise FileNotFoundError(f"bd show {bead_id} returned no issue rows")
-    metadata = issue.get("metadata") or {}
-    key = f"po.{name}"
-    if key not in metadata:
-        raise KeyError(
-            f"bead {bead_id} has no metadata key {key!r}. "
-            f"Agent likely skipped the `bd update ... --metadata '{{\"{key}\": ...}}'` step. "
-            f"Available keys: {sorted(metadata.keys())}"
-        )
-    value = metadata[key]
-    # `--set-metadata k=v` stores values as strings, even if v looks like JSON.
-    # `--metadata '<json>'` stores native objects. Accept both shapes — if the
-    # stored value is a string that parses as JSON, decode it for the caller.
-    if isinstance(value, str):
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return {"value": value}
-    if isinstance(value, dict):
-        return value
-    return {"value": value}
 
 
 def read_bead_verdict(

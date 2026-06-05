@@ -404,18 +404,26 @@ def check_uv_tool_fresh() -> CheckResult:
 
 
 def check_beads_dolt_mode() -> CheckResult:
-    """Warn when the rig's `.beads/` is on embedded-dolt (single-writer).
+    """Health-check the rig's `.beads/` backend (dolt-mode or br SQLite-WAL).
 
-    Concurrent `po run` flows hit "another process holds the exclusive lock"
-    when `.beads/` runs in embedded mode. Recommended setup is
-    `bd init --server` (see CLAUDE.md → "Beads backend (dolt-server)").
-    No-op outside a rig (no `.beads/metadata.json` in cwd).
+    For a **dolt** rig: warn when `.beads/` is on embedded-dolt (single-writer)
+    — concurrent `po run` flows hit "another process holds the exclusive lock".
+    Recommended setup is `bd init --server` (see CLAUDE.md → "Beads backend
+    (dolt-server)").
+
+    For a **br** rig (metadata.json has `database`/`jsonl_export`, no
+    `dolt_mode`): OK iff the SQLite db is in WAL journal mode (WAL lets
+    concurrent readers proceed alongside a writer); WARN otherwise.
+
+    No-op outside a rig (no `.beads/metadata.json` in cwd). Name kept for
+    import compatibility.
     """
     import json
     from pathlib import Path
 
     name = "beads dolt mode"
-    meta_path = Path.cwd() / ".beads" / "metadata.json"
+    beads_dir = Path.cwd() / ".beads"
+    meta_path = beads_dir / "metadata.json"
     if not meta_path.exists():
         return CheckResult(
             name=name, status=Status.OK, message="no .beads/ in cwd; skipping"
@@ -429,6 +437,9 @@ def check_beads_dolt_mode() -> CheckResult:
             message=f".beads/metadata.json unreadable: {exc}",
             remediation="repair or re-init .beads/",
         )
+    # br rig: no dolt_mode, but database + jsonl_export. Health = SQLite-WAL.
+    if "dolt_mode" not in meta and "database" in meta and "jsonl_export" in meta:
+        return _check_br_wal(name, beads_dir, meta)
     mode = meta.get("dolt_mode")
     if mode == "server":
         db = meta.get("dolt_database", "?")
@@ -444,6 +455,43 @@ def check_beads_dolt_mode() -> CheckResult:
             "re-init with `bd init --server` for concurrent po-run safety; "
             "see CLAUDE.md → 'Beads backend (dolt-server)'"
         ),
+    )
+
+
+def _check_br_wal(name: str, beads_dir: Path, meta: dict) -> CheckResult:
+    """SQLite-WAL health check for a br (`beads_rust`) rig."""
+    import sqlite3
+
+    db_path = beads_dir / meta.get("database", "beads.db")
+    if not db_path.exists():
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message=f"br rig: {db_path.name} missing",
+            remediation="re-init the br workspace (`br init`)",
+        )
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message=f"br rig: {db_path.name} unreadable: {exc}",
+            remediation="re-init the br workspace (`br init`)",
+        )
+    if str(journal_mode).lower() == "wal":
+        return CheckResult(
+            name=name, status=Status.OK, message=f"br (SQLite-WAL, db={db_path.name})"
+        )
+    return CheckResult(
+        name=name,
+        status=Status.WARN,
+        message=f"br rig: journal_mode={journal_mode!r} (not WAL — readers block on writes)",
+        remediation="enable WAL: `sqlite3 .beads/beads.db 'PRAGMA journal_mode=WAL'`",
     )
 
 

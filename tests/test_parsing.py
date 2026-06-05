@@ -254,3 +254,43 @@ def test_read_bead_verdict_populates_cache_on_success() -> None:
         mock_run.return_value = _mock_run_ok({"po.triage": {"x": 1}})
         read_bead_verdict("test-1", "triage")
     assert parsing_module._verdict_cache[("test-1", "triage")] == {"x": 1}
+
+
+# ---------------------------------------------------------------------------
+# br backend read path (delegated via beads_backend.read_verdict)
+# ---------------------------------------------------------------------------
+
+
+def _br_show_stdout(comments: list[dict]) -> str:
+    """Mimic `br show <id> --json` (1-element list with a comments array)."""
+    return json.dumps([{"id": "test-1", "title": "t", "comments": comments}])
+
+
+def test_read_bead_verdict_br_latest_comment_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(parsing_module, "resolve_backend", lambda _rig: "br")
+    comments = [
+        {"id": 1, "text": 'po-verdict:triage:{"complexity": "trivial"}'},
+        {"id": 2, "text": 'po-verdict:triage:{"complexity": "moderate"}'},
+    ]
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = _br_show_stdout(comments)
+        mock_run.return_value.stderr = ""
+        assert read_bead_verdict("test-1", "triage") == {"complexity": "moderate"}
+
+
+def test_read_bead_verdict_br_missing_comment_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(parsing_module, "resolve_backend", lambda _rig: "br")
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = _br_show_stdout(
+            [{"id": 1, "text": "po-verdict:linter:{}"}]
+        )
+        mock_run.return_value.stderr = ""
+        with pytest.raises(KeyError):
+            read_bead_verdict("test-1", "triage")
+    assert mock_run.call_count == 1  # KeyError is a semantic failure: no retry

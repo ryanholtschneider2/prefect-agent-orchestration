@@ -24,6 +24,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Literal, Protocol
 
+from prefect_orchestration.beads_backend import (
+    BINARY,
+    normalize_dep_rows,
+    resolve_backend,
+)
+
 DiscoverMode = Literal["ids", "deps", "both"]
 VALID_DISCOVER_MODES: tuple[str, ...] = ("ids", "deps", "both")
 
@@ -413,9 +419,11 @@ def _bd_dep_list(
     `rig_path` (when set) becomes the shellout's `cwd` so bd resolves the
     rig's `.beads/` instead of the Python process cwd.
     """
-    if not _bd_available():
+    backend = resolve_backend(rig_path)
+    binary = BINARY[backend]
+    if shutil.which(binary) is None:
         return []
-    cmd = ["bd", "dep", "list", issue_id, f"--direction={direction}", "--json"]
+    cmd = [binary, "dep", "list", issue_id, f"--direction={direction}", "--json"]
     if edge_type is not None:
         cmd += ["--type", edge_type]
     proc = subprocess.run(
@@ -431,7 +439,8 @@ def _bd_dep_list(
         rows = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return []
-    return rows if isinstance(rows, list) else []
+    rows = rows if isinstance(rows, list) else []
+    return normalize_dep_rows(rows, direction=direction, backend=backend)
 
 
 def _bd_show(
@@ -442,10 +451,11 @@ def _bd_show(
 
     `rig_path` (when set) becomes the shellout's `cwd`.
     """
-    if not _bd_available():
+    binary = BINARY[resolve_backend(rig_path)]
+    if shutil.which(binary) is None:
         return None
     proc = subprocess.run(
-        ["bd", "show", issue_id, "--json"],
+        [binary, "show", issue_id, "--json"],
         capture_output=True,
         text=True,
         check=False,

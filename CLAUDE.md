@@ -159,8 +159,9 @@ before declaring a release ready: `uv run python -m pytest tests/e2e/`.
 | `commands.py` | `po.commands` registry — `load_commands()`, `core_verbs()` (read off `app.registered_commands`), `find_command_collisions()`. |
 | `packs.py` | Pack lifecycle — `install`/`update`/`uninstall`/`packs` shell out to `uv tool` and introspect `importlib.metadata` for `po.*` EP groups. |
 | `agent_session.py` | `AgentSession` + `SessionBackend` Protocol (`ClaudeCliBackend`, `TmuxClaudeBackend`, `StubBackend`). Per-role `--resume <uuid>` + `--fork-session`. |
-| `beads_meta.py` | `MetadataStore` Protocol; `BeadsStore` (shells `bd`) + `FileStore` (JSON fallback); `claim_issue`/`close_issue`/`list_epic_children`. |
-| `parsing.py` | `read_bead_verdict(bead_id, name)` — reads `po.<name>` metadata off the iter bead via `bd show --json`. `prompt_for_bead_verdict()` is the prompt + read wrapper with PO_RESUME short-circuit. |
+| `beads_meta.py` | `MetadataStore` Protocol; `BeadsStore` (shells `bd`) + `FileStore` (JSON fallback); `claim_issue`/`close_issue`/`list_epic_children`. `_bd_dep_list`/`_bd_show` resolve the backend binary (`bd`/`br`) and normalize br dep rows via `beads_backend`. |
+| `beads_backend.py` | Backend-agnostic verdict + dep-graph seam. `resolve_backend(rig_path)` (`PO_BEADS_BACKEND` env > `.beads/metadata.json` sniff > `dolt`); `read_verdict`/`write_verdict` (dolt: `metadata["po.<name>"]`; br: append-only `po-verdict:<name>:<json>` comment, latest comment-`id` wins); `normalize_dep_rows` (re-keys br dep rows to `{"id",…}`). Prereq for adopting `beads_rust` (no per-issue metadata). |
+| `parsing.py` | `read_bead_verdict(bead_id, name)` — reads the `<name>` verdict off the iter bead; `_bd_show_once` delegates to `beads_backend.read_verdict(backend=resolve_backend(rig_path))` (retry/timeout/cached-fallback wrapper unchanged). `prompt_for_bead_verdict()` is the prompt + read wrapper with PO_RESUME short-circuit. |
 | `templates.py` | `{{var}}` substitution over a caller-supplied agents dir (`<dir>/<role>/prompt.md`). |
 | `role_config.py` | Per-role runtime config (`agents/<role>/config.toml`): `model` / `effort` / `start_command`. `resolve_role_runtime` precedence: per-role config > CLI flag (`PO_*_CLI` env stamped by `po run`) > shell env (`PO_*`) > None. Disjoint from `identity.toml` (persona). |
 | `artifacts.py`, `sessions.py`, `watch.py`, `retry.py`, `status.py`, `run_lookup.py`, `doctor.py`, `deployments.py` | Back the matching `po` subcommand. |
@@ -179,10 +180,15 @@ Three-legged stool:
   work is a bead; dependencies are edges.
 - **PO flows** — *how* to do it. Python `@flow`s in packs, composed of
   `@task` steps (one per role: triager, builder, critic, verifier, …).
-  Verdicts flow between steps via bd-metadata stamped on each iter
-  bead (`bd update <iter_id> --metadata '{"po.<role>": {...}}'`),
-  read back by `read_bead_verdict`. Not LLM-JSON parsing, not file
-  artifacts.
+  Verdicts flow between steps through a backend-agnostic seam
+  (`beads_backend`), read back by `read_bead_verdict`. Not LLM-JSON
+  parsing, not file artifacts. On the default **dolt** backend the verdict
+  is bd-metadata on the iter bead (`bd update <iter_id> --metadata
+  '{"po.<role>": {...}}'`); on the **br** (`beads_rust`) backend — which has
+  no per-issue metadata — it is an append-only comment
+  `po-verdict:<role>:<json>` (`br comments add`), latest comment wins.
+  Backend is selected by `PO_BEADS_BACKEND` or sniffed from
+  `.beads/metadata.json`; see `engdocs/verdict-channel-backends.md`.
 - **Prefect** — *when* and *where*. DAG scheduler, UI, retries, work
   pools, concurrency limits. Beads-deps compile to Prefect `wait_for=`.
 
