@@ -109,6 +109,15 @@ explicit `iter_bead_id`) and resolves its `show` through `_resolve_binary`, so
 the agent-facing CONTEXT.md "This role-step" section shows the real bead on br
 instead of an empty phantom lookup.
 
+Close-the-loop coverage lives at
+`tests/e2e/test_iter_bead_ids_br_roundtrip.py` — it drives the *real* `br`
+binary against a real rig and asserts the symptom is gone: br mints a flat id
+the dotted convention id can't resolve, the recorded map makes re-entry target
+that real id, and the rig ends with exactly seed + one iter bead (no
+phantom-triggered re-mint, iter count back to 1). Skipped when `br` is off
+PATH; the unit layer (`tests/test_agent_step.py`,
+`tests/test_iter_bead_ids.py`) covers the same logic with mocks.
+
 ## Still deferred
 
 - **`BeadsStore` metadata bus** — `get`/`set`/`all` still use
