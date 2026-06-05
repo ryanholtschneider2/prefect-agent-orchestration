@@ -27,7 +27,7 @@ workflow and dispatch boundary.
 | `agent_session.SessionBackend` (Protocol) | Swap `ClaudeCliBackend` → `StubBackend` (`--stub-backend`) → `TmuxClaudeBackend` (lurk-able via `tmux attach -t po-<issue>-<role>`); future `ClaudeAgentSdkBackend` (commercial API key), `GeminiCliBackend`, etc. |
 | `beads_meta.MetadataStore` (Protocol) | `BeadsStore` (uses `bd` CLI) or `FileStore` (local JSON fallback when beads isn't present). |
 | `beads_meta.{claim_issue, close_issue, list_epic_children}` | Minimal beads tracker ops; no-op when `bd` is absent. |
-| `parsing.read_bead_verdict` | Reads `po.<name>` metadata off an iter bead — the bd-as-truth convention for agent → orchestrator signals. |
+| `parsing.read_bead_verdict` | Reads the `<name>` verdict off an iter bead via the backend-agnostic `beads_backend` seam — the bd-as-truth convention for agent → orchestrator signals. On dolt this is `po.<name>` metadata; on `br` (beads_rust, no per-issue metadata) it's an append-only `po-verdict:<name>:<json>` comment, latest wins. Backend selected by `PO_BEADS_BACKEND` or sniffed from `.beads/metadata.json`. See `engdocs/verdict-channel-backends.md`. |
 | `templates.render_template` | `{{var}}` substitution over a caller-supplied prompts directory. |
 | `cli.app` (`po`) | Discovers formulas via the `po.formulas` entry-point group; `po list` / `po show <name>` / `po run <name> --args`. |
 | `context_bundle.build_context_md` | Per-role-step writes a single `<run_dir>/CONTEXT.md` concatenating bd-show + plan + triage + latest build diff + decision-log + pack CLAUDE.md excerpts. Role task.md tells the agent: *first action — `cat CONTEXT.md`, that's everything.* Saves 4–6 tool round-trips per role. |
@@ -619,12 +619,15 @@ po run software-dev-full --issue-id <id> --rig <name> --rig-path <path>
 - **Claude Code CLI is the worker, Prefect is the foreman.** Core doesn't
   model agents; it models subprocess sessions. Formula packs compose those
   into DAGs.
-- **Verdicts are bd-metadata, not LLM reply regex.** Agents stamp
-  `po.<step>` onto their iter bead (`bd update <iter_id> --metadata
-  '{"po.<step>": {...}}'`); orchestrators read it back via
-  `read_bead_verdict`. Single source of truth — same bead that
-  tracks status carries the verdict. No parsing prose, no second
-  artifact that can disagree with bd.
+- **Verdicts ride the bead, not LLM reply regex.** Agents stamp their
+  iter-bead verdict through the backend-agnostic `beads_backend` seam;
+  orchestrators read it back via `read_bead_verdict`. On dolt that's
+  `po.<step>` metadata (`bd update <iter_id> --metadata
+  '{"po.<step>": {...}}'`); on `br` (beads_rust, no per-issue metadata)
+  it's an append-only `po-verdict:<step>:<json>` comment, latest wins.
+  Single source of truth — same bead that tracks status carries the
+  verdict. No parsing prose, no second artifact that can disagree with bd.
+  See `engdocs/verdict-channel-backends.md`.
 - **Beads is the source of truth for task structure.** Dependencies map
   directly onto Prefect `wait_for=`. No polling daemon needed.
 - **Concurrency is a deploy concern, not a code concern.** Prefect
