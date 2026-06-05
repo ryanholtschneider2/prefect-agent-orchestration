@@ -10,12 +10,13 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from prefect_orchestration import iter_bead_ids
 from prefect_orchestration.beads_meta import _resolve_binary
 
 
 def _bd_show(bead_id: str, rig_path: Path) -> str:
     # Resolve bd vs br through the seam so a `br` rig isn't probed with a
-    # hardcoded `bd` (prefect-orchestration-q7e).
+    # hardcoded `bd` (prefect-orchestration-q7e / -99k).
     binary = _resolve_binary(rig_path)
     if binary is None:
         return ""
@@ -59,12 +60,24 @@ def build_context_md(
     role: str,
     iter_n: int | None,
     pack_path: str | None = None,
+    iter_bead_id: str | None = None,
 ) -> Path:
     """Write <run_dir>/CONTEXT.md bundling all role-relevant artifacts.
 
     Idempotent — overwritten on each role-step entry.
+
+    ``iter_bead_id`` — the backend-assigned id of this role-step's iter bead.
+    When omitted, it is resolved from the run-dir iter-bead-id map (recorded
+    by ``agent_step`` after ``create_child_bead``), falling back to the
+    ``<issue>.<role>.iterN`` convention id. On br rigs the convention id is a
+    phantom that ``br show`` can't resolve, so without the map the
+    "This role-step" section would be empty and send the agent hunting for a
+    non-existent bead; on dolt the convention id is the real id, so the
+    fallback is correct there.
     """
-    iter_bead_id = f"{issue_id}.{role}.iter{iter_n}" if iter_n is not None else None
+    if iter_bead_id is None and iter_n is not None:
+        convention_key = iter_bead_ids.convention_id(issue_id, role, iter_n)
+        iter_bead_id = iter_bead_ids.lookup(run_dir, convention_key) or convention_key
     step_text = _bd_show(iter_bead_id, rig_path) if iter_bead_id else "(empty)"
 
     conventions = "(empty)"

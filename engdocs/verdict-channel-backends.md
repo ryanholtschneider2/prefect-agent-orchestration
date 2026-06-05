@@ -85,10 +85,38 @@ This matters for a *literal* full `software_dev_full`-against-br run because
 input, on br the backend-minted id is threaded through the description stamp,
 the convergence-ladder status probes, and the verdict read. The computed id is
 only ever the *requested* id passed into `create_child_bead`; everything
-downstream targets the real bead. (br is still not idempotent by requested id —
-a retry/resume mints a fresh iter bead because the cache probe on the computed
-id never hits on br. Acceptable for a forward run; revisit if br resume becomes
-a requirement.)
+downstream targets the real bead.
+
+### Idempotency across calls — the convention→real-id map (`prefect-orchestration-99k`)
+
+9xa.1 only adopted the id *within a single call*. `agent_step` is stateless
+across calls, so the next re-entry for the same role-step recomputed the
+phantom convention id, missed the fast-path cache (`ISSUE_NOT_FOUND` on br),
+and `create_child_bead` minted *another* fresh bead — re-dispatching
+already-completed iters forever and re-nudging the agent about a bead that
+doesn't exist (observed in the br smoke: the builder closed its real `bd-22q`
+but kept being asked to close the phantom `bd-3ih.build.iter3`).
+
+`prefect_orchestration/iter_bead_ids.py` closes the gap with a best-effort
+run-dir-scoped map (`<run_dir>/iter-bead-ids.json`) of convention id →
+backend-assigned id. `agent_step` consults it before the fast-path probe (so
+re-entry resolves the real bead and the cache short-circuits — no re-mint, no
+phantom re-nudge) and records the mapping after `create_child_bead` adopts a
+divergent id. On dolt the convention id is honored, so the lookup misses and
+the caller falls back to it — byte-identical behavior, no map written.
+`context_bundle.build_context_md` consults the same map (and accepts an
+explicit `iter_bead_id`) and resolves its `show` through `_resolve_binary`, so
+the agent-facing CONTEXT.md "This role-step" section shows the real bead on br
+instead of an empty phantom lookup.
+
+Close-the-loop coverage lives at
+`tests/e2e/test_iter_bead_ids_br_roundtrip.py` — it drives the *real* `br`
+binary against a real rig and asserts the symptom is gone: br mints a flat id
+the dotted convention id can't resolve, the recorded map makes re-entry target
+that real id, and the rig ends with exactly seed + one iter bead (no
+phantom-triggered re-mint, iter count back to 1). Skipped when `br` is off
+PATH; the unit layer (`tests/test_agent_step.py`,
+`tests/test_iter_bead_ids.py`) covers the same logic with mocks.
 
 ## Metadata stamps are dolt-only — `_metadata_binary` (prefect-orchestration-q7e)
 
@@ -132,3 +160,11 @@ channel) remains future work.
   routed through `beads_backend.write_verdict` so the prompt stays
   backend-agnostic. Until this lands, a full `software_dev_full` run does **not**
   work end-to-end on br: roles can't record their verdicts.
+- **Pack graph-mode reconstruction** (`po-formulas-software-dev`, separate
+  repo) — `software_dev.py`'s watcher loop still discovers / counts iters by
+  scanning `bd list` for `<seed>.<step>.iter<N>` ids, which never exist on br.
+  The core `prefect-orchestration-99k` map makes `agent_step` itself idempotent
+  (re-entry no longer re-mints) and exposes the real ids at
+  `<run_dir>/iter-bead-ids.json`; the pack still needs to read that map (rather
+  than the convention-id scan) and pass `iter_bead_id` into `build_context_md`
+  so the graph-mode loop converges on br. Tracked as a pack-side follow-up.
