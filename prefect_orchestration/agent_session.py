@@ -546,11 +546,17 @@ class StubBackend:
     The prompt sent to the backend is the agent's role-identity
     (`prompt.md`); the actual task lives on the iter bead's description.
     StubBackend mimics what the agent would do: locate the iter bead
-    from the close-block, read its description via `bd show --json`,
-    scan for `bd update <same_bead> --metadata '{"po.<name>": ...}'`,
-    stamp a stub payload, and finally `bd close` the bead with a
-    canonical reason. Falls back to the legacy verdict-file shape for
-    not-yet-migrated callers.
+    from the close-block, read its description via `<bd|br> show --json`,
+    scan for a `--metadata '{"po.<name>": ...}'` verdict-write hint,
+    stamp a stub payload through the verdict seam, and finally close the
+    bead with a canonical reason. Falls back to the legacy verdict-file
+    shape for not-yet-migrated callers.
+
+    Every bead shellout resolves the backend binary from `cwd` via the
+    `beads_backend` seam (`resolve_backend`), so a stub/dry-run flow
+    against a `br` rig drives `br` rather than a hardcoded `bd` — which
+    on a non-dolt rig would only print `Error: no beads database found`
+    and silently fail to close the bead (prefect-orchestration-q7e).
     """
 
     captured_extra_env: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -570,46 +576,53 @@ class StubBackend:
         import re as _re
         import subprocess as _sp
 
+        from prefect_orchestration.beads_backend import (
+            BINARY,
+            resolve_backend,
+            write_verdict,
+        )
+
         sid = session_id or f"stub-{uuid.uuid4().hex[:8]}"
         self.captured_extra_env[sid] = dict(extra_env or {})
 
-        # 1. Find the iter bead ID. The close block always renders a
-        #    literal `bd close <bead> --reason ...` line; the resumed-
-        #    turn prompt renders `bd show <bead>`.
-        bead_match = _re.search(r"bd\s+close\s+(\S+)\s+--reason", prompt) or _re.search(
-            r"bd\s+show\s+(\S+)", prompt
-        )
+        # Resolve bd vs br from the rig once, up front. Every bead shellout
+        # below uses this binary so a stub run against a `br` rig never
+        # shells a hardcoded `bd` (prefect-orchestration-q7e).
+        backend = resolve_backend(cwd)
+        binary = BINARY[backend]
+
+        # 1. Find the iter bead ID. The close block renders a literal
+        #    `<bd|br> close <bead> --reason ...` line; the resumed-turn
+        #    prompt renders `<bd|br> show <bead>`. Match either binary so
+        #    the stub locates the bead regardless of the rig's backend.
+        bead_match = _re.search(
+            r"(?:bd|br)\s+close\s+(\S+)\s+--reason", prompt
+        ) or _re.search(r"(?:bd|br)\s+show\s+(\S+)", prompt)
         if not bead_match:
             return self._legacy_verdict_file(prompt, sid)
 
         bead_id = bead_match.group(1)
 
         # 2. Read the bead description (canonical task spec).
-        description = self._read_bead_description(bead_id, cwd)
+        description = self._read_bead_description(bead_id, cwd, binary)
 
-        # 3. Look for `bd update <bead_id> --metadata '{"po.<name>": ...}'`
-        #    in the description. Stamp a stub payload if present.
+        # 3. Look for a `--metadata '{"po.<name>": ...}'` verdict-write hint
+        #    in the description. Stamp a stub payload through the verdict
+        #    seam (dolt metadata vs br comment) if present.
         if description:
             md_match = _re.search(
-                rf"bd\s+update\s+{_re.escape(bead_id)}\s+--metadata\s+'\{{\"po\.([\w\-]+)\":",
+                rf"(?:bd|br)\s+update\s+{_re.escape(bead_id)}\s+--metadata\s+'\{{\"po\.([\w\-]+)\":",
                 description,
             )
             if md_match:
                 key = md_match.group(1)
                 payload = _STUB_VERDICTS.get(key, {"ok": True})
-                _sp.run(
-                    [
-                        "bd",
-                        "update",
-                        bead_id,
-                        "--metadata",
-                        json.dumps({f"po.{key}": payload}),
-                    ],
-                    cwd=str(cwd),
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
+                try:
+                    write_verdict(bead_id, key, payload, backend=backend, rig_path=cwd)
+                except Exception:  # noqa: BLE001
+                    # Best-effort: a stub verdict-write failure must not
+                    # crash the dry-run DAG exercise.
+                    pass
 
         # 4. Pick a verdict-keyword for the close-reason from the prompt's
         #    declared keywords (if any). Otherwise use a generic 'complete'.
@@ -638,7 +651,7 @@ class StubBackend:
 
         # 5. Close the bead so the orchestrator's caching path catches it.
         _sp.run(
-            ["bd", "close", bead_id, "--reason", f"{keyword}: stub backend"],
+            [binary, "close", bead_id, "--reason", f"{keyword}: stub backend"],
             cwd=str(cwd),
             capture_output=True,
             text=True,
@@ -647,11 +660,11 @@ class StubBackend:
 
         return "[dry-run] ack", sid
 
-    def _read_bead_description(self, bead_id: str, cwd: Path) -> str:
+    def _read_bead_description(self, bead_id: str, cwd: Path, binary: str) -> str:
         import subprocess as _sp
 
         proc = _sp.run(
-            ["bd", "show", bead_id, "--json"],
+            [binary, "show", bead_id, "--json"],
             cwd=str(cwd),
             capture_output=True,
             text=True,

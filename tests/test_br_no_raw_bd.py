@@ -200,3 +200,56 @@ def test_context_bundle_bd_show_empty_when_no_binary(tmp_path: Path) -> None:
     ):
         assert context_bundle._bd_show("seed-1", tmp_path) == ""
     run.assert_not_called()
+
+
+# ───────────────────────── StubBackend seam routing ─────────────────────────
+
+
+def _run_stub_capture(rig: Path) -> list[list[str]]:
+    """Run StubBackend against *rig* and return every captured argv.
+
+    Patches the subprocess layer both StubBackend (`agent_session`) and
+    the verdict seam (`beads_backend`) shell through, so no real `bd`/`br`
+    process is spawned — the test only inspects which binary was selected.
+    """
+    from prefect_orchestration.agent_session import StubBackend
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *a, **k):  # noqa: ANN001, ANN002, ANN003
+        calls.append(list(argv))
+        # `show --json` must return a parseable row so the description read
+        # (and downstream metadata scan) doesn't blow up.
+        stdout = '[{"id": "seed-1", "description": ""}]' if "show" in argv else ""
+        return type("R", (), {"returncode": 0, "stdout": stdout, "stderr": ""})()
+
+    prompt = (
+        "You are a builder.\n\n"
+        "# REQUIRED FINAL STEP\n"
+        'Last action:\n```bash\nbd close seed-1 --reason "<keyword>: ..."\n```\n'
+        "**Required verdict keyword (case-insensitive):** `complete` | `failed`.\n"
+    )
+    with (
+        patch("prefect_orchestration.agent_session.subprocess.run", fake_run),
+        patch("prefect_orchestration.beads_backend.subprocess.run", fake_run),
+    ):
+        StubBackend().run(prompt, session_id="s1", cwd=rig)
+    return calls
+
+
+def test_stub_backend_uses_br_binary_on_br_rig(tmp_path: Path) -> None:
+    # The bug's invariant: on a br rig NOTHING shells a hardcoded `bd`.
+    _br_rig(tmp_path)
+    calls = _run_stub_capture(tmp_path)
+    assert calls, "StubBackend made no bead shellout"
+    assert all(c[0] != "bd" for c in calls), f"raw bd leaked: {calls}"
+    assert any(c[0] == "br" for c in calls), f"expected a br shellout: {calls}"
+
+
+def test_stub_backend_uses_bd_binary_on_dolt_rig(tmp_path: Path) -> None:
+    # Dolt rigs are untouched — the stub still drives `bd`.
+    _dolt_rig(tmp_path)
+    calls = _run_stub_capture(tmp_path)
+    assert calls, "StubBackend made no bead shellout"
+    assert all(c[0] != "br" for c in calls), f"unexpected br on dolt rig: {calls}"
+    assert any(c[0] == "bd" for c in calls), f"expected a bd shellout: {calls}"
