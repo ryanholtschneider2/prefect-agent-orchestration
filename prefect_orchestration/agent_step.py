@@ -146,6 +146,8 @@ from prefect_orchestration.backend_select import adapt_backend_to_start_command
 from prefect_orchestration.beads_meta import (
     _bd_available,
     _bd_show,
+    _metadata_binary,
+    _resolve_binary,
     close_issue,
     create_child_bead,
 )
@@ -534,11 +536,16 @@ def _render_task(task: Path | str, ctx: dict[str, Any]) -> str:
 
 
 def _stamp_description(bead_id: str, description: str, rig_path: str) -> None:
-    """`bd update <bead> --description=<text>`. Best-effort; warnings only."""
-    if not _bd_available():
+    """`bd update <bead> --description=<text>`. Best-effort; warnings only.
+
+    `--description` exists on both bd and br, so resolve the binary through
+    the seam rather than hardcoding `bd` (prefect-orchestration-q7e).
+    """
+    binary = _resolve_binary(rig_path)
+    if binary is None:
         return
     subprocess.run(
-        ["bd", "update", bead_id, "--description", description],
+        [binary, "update", bead_id, "--description", description],
         check=False,
         capture_output=True,
         text=True,
@@ -554,12 +561,17 @@ def _stamp_run_dir_meta(seed_id: str, rig_path: Path, run_dir: Path) -> None:
     Idempotent: re-stamps on every call so a re-run with a different
     run_dir overrides the prior value. Best-effort; bd metadata write
     failures are logged but don't fail the agent step.
+
+    `--set-metadata` is dolt-only, so resolve via the seam and no-op on a
+    `br` rig rather than shelling a hardcoded `bd`
+    (prefect-orchestration-q7e).
     """
-    if not _bd_available():
+    binary = _metadata_binary(rig_path)
+    if binary is None:
         return
     for key, val in (("po.run_dir", str(run_dir)), ("po.rig_path", str(rig_path))):
         subprocess.run(
-            ["bd", "update", seed_id, "--set-metadata", f"{key}={val}"],
+            [binary, "update", seed_id, "--set-metadata", f"{key}={val}"],
             check=False,
             capture_output=True,
             text=True,

@@ -15,9 +15,11 @@ from prefect_orchestration.beads_meta import _resolve_binary
 
 
 def _bd_show(bead_id: str, rig_path: Path) -> str:
-    # Resolve the right beads binary for this rig (`bd` on dolt, `br` on
-    # beads_rust). Hardcoding `bd` returns nothing on a br-only rig.
-    binary = _resolve_binary(rig_path) or "bd"
+    # Resolve bd vs br through the seam so a `br` rig isn't probed with a
+    # hardcoded `bd` (prefect-orchestration-q7e / -99k).
+    binary = _resolve_binary(rig_path)
+    if binary is None:
+        return ""
     try:
         r = subprocess.run(
             [binary, "show", bead_id],

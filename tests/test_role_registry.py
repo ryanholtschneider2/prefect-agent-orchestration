@@ -129,10 +129,10 @@ def test_build_registry_threads_rig_path_through_every_bd_shellout(
         "prefect_orchestration.beads_meta.shutil.which",
         lambda _name: "/usr/bin/bd",
     )
-    monkeypatch.setattr(
-        "prefect_orchestration.run_handles.shutil.which",
-        lambda _name: "/usr/bin/bd",
-    )
+    # `run_handles` / `role_registry` now resolve the metadata binary via the
+    # seam (`beads_meta._metadata_binary`); a bare tmp_path with no
+    # `.beads/metadata.json` sniffs as the dolt backend, so `bd` is selected
+    # given the `beads_meta.shutil.which` patch above (prefect-orchestration-q7e).
 
     bd_calls: list[tuple[list[str], Any]] = []
 
@@ -209,8 +209,11 @@ def test_stamp_run_url_on_bead_passes_cwd(
     rig_path into its `bd update` shellout."""
     from prefect_orchestration.run_handles import stamp_run_url_on_bead
 
+    # `stamp_run_url_on_bead` resolves the metadata binary via the seam
+    # (`beads_meta._metadata_binary`); a bare tmp_path sniffs as dolt, so the
+    # `bd` binary is selected once it's on PATH (prefect-orchestration-q7e).
     monkeypatch.setattr(
-        "prefect_orchestration.run_handles.shutil.which",
+        "prefect_orchestration.beads_meta.shutil.which",
         lambda _name: "/usr/bin/bd",
     )
     monkeypatch.setenv("PREFECT_API_URL", "http://127.0.0.1:4200/api")

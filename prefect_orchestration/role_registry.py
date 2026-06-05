@@ -29,6 +29,8 @@ from prefect_orchestration.agent_session import (
 )
 from prefect_orchestration.beads_meta import (
     MetadataStore,
+    _metadata_binary,
+    _resolve_binary,
     auto_store,
     claim_issue,
     resolve_seed_bead,
@@ -220,9 +222,13 @@ def _resolve_pack_path(
     """
     if explicit is not None:
         return Path(explicit).expanduser().resolve()
-    if shutil.which("bd") is not None:
+    # `po.target_pack` is arbitrary per-issue metadata (dolt-only); skip the
+    # lookup entirely on a `br` rig rather than shelling a hardcoded `bd`
+    # (prefect-orchestration-q7e).
+    binary = _metadata_binary(rig_path_p)
+    if binary is not None:
         proc = subprocess.run(
-            ["bd", "show", issue_id, "--json"],
+            [binary, "show", issue_id, "--json"],
             capture_output=True,
             text=True,
             check=False,
@@ -285,10 +291,14 @@ def _resolve_tmux_scope(
 ) -> str:
     """Compute tmux scope: `{rig}-{epic}` for epic children, else `{rig}`."""
     epic_for_scope = parent_bead
-    if epic_for_scope is None and not dry_run and shutil.which("bd") is not None:
+    # `parent`/`epic` are core bead fields (both bd and br expose them), so
+    # resolve the binary through the seam instead of hardcoding `bd`
+    # (prefect-orchestration-q7e).
+    scope_binary = None if dry_run else _resolve_binary(rig_path_p)
+    if epic_for_scope is None and scope_binary is not None:
         try:
             res = subprocess.run(
-                ["bd", "show", issue_id, "--json"],
+                [scope_binary, "show", issue_id, "--json"],
                 capture_output=True,
                 check=False,
                 text=True,
@@ -348,11 +358,15 @@ def build_registry(
     pack_path_p = _resolve_pack_path(pack_path, issue_id, rig_path_p)
 
     # Stamp run location on the bead so `po logs/artifacts/sessions/retry/watch`
-    # can resolve issue → run_dir later. Best-effort.
-    if not dry_run and shutil.which("bd") is not None:
+    # can resolve issue → run_dir later. Best-effort, dolt-only:
+    # `--set-metadata` has no `br` equivalent, so resolve via the seam and
+    # skip on a `br` rig rather than shelling a hardcoded `bd`
+    # (prefect-orchestration-q7e).
+    meta_binary = None if dry_run else _metadata_binary(rig_path_p)
+    if meta_binary is not None:
         subprocess.run(
             [
-                "bd",
+                meta_binary,
                 "update",
                 issue_id,
                 "--set-metadata",
@@ -363,6 +377,8 @@ def build_registry(
                 f"po.pack_path={pack_path_p}",
             ],
             check=False,
+            capture_output=True,
+            text=True,
             cwd=str(rig_path_p),
         )
 
@@ -376,7 +392,7 @@ def build_registry(
     # parent-child walk (`resolve_seed_bead`) > self (solo run).
     if parent_bead is not None:
         seed_id = parent_bead
-    elif not dry_run and shutil.which("bd") is not None:
+    elif not dry_run and _resolve_binary(rig_path_p) is not None:
         try:
             seed_id = resolve_seed_bead(issue_id, rig_path=rig_path_p)
         except ValueError:

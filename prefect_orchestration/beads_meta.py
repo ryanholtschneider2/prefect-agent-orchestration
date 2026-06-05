@@ -57,8 +57,14 @@ class BeadsStore:
         return str(self.rig_path) if self.rig_path is not None else None
 
     def _show_metadata(self) -> dict[str, str]:
+        # Arbitrary per-issue metadata is a dolt-only concept; on a `br`
+        # rig there is nothing to read and shelling raw `bd` would print
+        # `Error: no beads database found` (prefect-orchestration-q7e).
+        binary = _metadata_binary(self.rig_path)
+        if binary is None:
+            return {}
         out = subprocess.run(
-            ["bd", "show", self.parent_id, "--json"],
+            [binary, "show", self.parent_id, "--json"],
             capture_output=True,
             text=True,
             check=True,
@@ -76,9 +82,20 @@ class BeadsStore:
         return self._show_metadata().get(key, default)
 
     def set(self, key: str, value: str) -> None:
+        # `br` has no `--set-metadata`; raise so seam-aware callers (e.g.
+        # `RoleSessionStore.set`) fall back to their run-dir JSON tier
+        # instead of shelling a hardcoded `bd` against a non-dolt rig.
+        binary = _metadata_binary(self.rig_path)
+        if binary is None:
+            raise NotImplementedError(
+                "BeadsStore.set requires the dolt backend (bd --set-metadata); "
+                "br rigs have no per-issue metadata channel"
+            )
         subprocess.run(
-            ["bd", "update", self.parent_id, "--set-metadata", f"{key}={value}"],
+            [binary, "update", self.parent_id, "--set-metadata", f"{key}={value}"],
             check=True,
+            capture_output=True,
+            text=True,
             cwd=self._cwd(),
         )
 
@@ -118,13 +135,19 @@ def auto_store(
     run_dir: Path,
     rig_path: Path | str | None = None,
 ) -> MetadataStore:
-    """Use beads if available and parent_id given; else file store.
+    """Use beads metadata if available and parent_id given; else file store.
 
     When `rig_path` is supplied, the constructed `BeadsStore` carries it
     so every bd shellout runs with `cwd=rig_path`. Required when the
     Python process cwd is not the rig (e.g. Prefect task runner).
+
+    Gated on :func:`_metadata_binary` (dolt-only), not bare
+    ``shutil.which("bd")``: on a `br` rig the `bd` binary is on PATH but
+    points at no dolt database, so a `BeadsStore` there would only emit
+    `Error: no beads database found`. Such rigs fall back to the run-dir
+    `FileStore` (prefect-orchestration-q7e).
     """
-    if parent_id and shutil.which("bd"):
+    if parent_id and _metadata_binary(rig_path) is not None:
         return BeadsStore(parent_id=parent_id, rig_path=rig_path)
     return FileStore(path=run_dir / "metadata.json")
 
@@ -148,6 +171,23 @@ def _resolve_binary(rig_path: Path | str | None = None) -> str | None:
     """
     binary = BINARY[resolve_backend(rig_path)]
     return binary if shutil.which(binary) is not None else None
+
+
+def _metadata_binary(rig_path: Path | str | None = None) -> str | None:
+    """Return the beads binary for arbitrary `--set-metadata` writes, else None.
+
+    Only the dolt backend (`bd`) supports per-issue arbitrary metadata;
+    `br` has no `--set-metadata` flag (see `beads_backend` module docstring).
+    Callers that stamp best-effort UI metadata (`po.run_dir`, `po.rig_path`,
+    `po.prefect_run_url`, role-session uuids, …) use this so they become a
+    clean no-op on a `br` rig rather than shelling a hardcoded `bd` that
+    finds no dolt database and prints `Error: no beads database found`
+    (prefect-orchestration-q7e). Returns `"bd"` only when the resolved
+    backend is dolt and `bd` is on PATH; `None` otherwise.
+    """
+    if resolve_backend(rig_path) != "dolt":
+        return None
+    return "bd" if shutil.which("bd") is not None else None
 
 
 def _parse_created_id(stdout: str) -> str | None:

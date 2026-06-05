@@ -19,10 +19,11 @@ right spot to also stamp the Logfire trace URL.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Mapping
+
+from prefect_orchestration.beads_meta import _metadata_binary
 
 
 def claude_session_jsonl(rig_path: Path, session_id: str) -> Path:
@@ -63,20 +64,29 @@ def stamp_run_url_on_bead(
 ) -> None:
     """Persist the Prefect UI URL onto the bead via `bd ... --set-metadata`.
 
-    Best-effort: skipped silently when bd is missing, in dry-run mode,
-    or when no URL can be composed.
+    Best-effort: skipped silently in dry-run mode, when no URL can be
+    composed, or on a non-dolt rig. `--set-metadata` is dolt-only, so the
+    binary is resolved through the seam (:func:`_metadata_binary`) rather
+    than a hardcoded `bd`; on a `br` rig this becomes a no-op instead of
+    shelling `bd` against a missing dolt database
+    (prefect-orchestration-q7e).
 
     `rig_path` (when set) becomes the bd shellout's `cwd` so it targets
     the rig's `.beads/` rather than the Python process cwd.
     """
-    if dry_run or shutil.which("bd") is None:
+    if dry_run:
+        return
+    binary = _metadata_binary(rig_path)
+    if binary is None:
         return
     url = prefect_run_url(flow_run_id)
     if not url:
         return
     subprocess.run(
-        ["bd", "update", issue_id, "--set-metadata", f"po.prefect_run_url={url}"],
+        [binary, "update", issue_id, "--set-metadata", f"po.prefect_run_url={url}"],
         check=False,
+        capture_output=True,
+        text=True,
         cwd=str(rig_path) if rig_path is not None else None,
     )
 
