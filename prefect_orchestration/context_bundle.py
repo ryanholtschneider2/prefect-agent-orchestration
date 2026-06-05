@@ -10,6 +10,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from prefect_orchestration.beads_meta import iter_bead_id
+
 
 def _bd_show(bead_id: str, rig_path: Path) -> str:
     try:
@@ -57,8 +59,8 @@ def build_context_md(
 
     Idempotent — overwritten on each role-step entry.
     """
-    iter_bead_id = f"{issue_id}.{role}.iter{iter_n}" if iter_n is not None else None
-    step_text = _bd_show(iter_bead_id, rig_path) if iter_bead_id else "(empty)"
+    iter_bead = iter_bead_id(issue_id, role, iter_n) if iter_n is not None else None
+    step_text = _bd_show(iter_bead, rig_path) if iter_bead else "(empty)"
 
     conventions = "(empty)"
     if pack_path and (Path(pack_path) / "CLAUDE.md").is_file():

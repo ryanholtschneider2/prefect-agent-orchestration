@@ -18,7 +18,7 @@ def _make_agent_step(script: dict[tuple[str, int], tuple[str, str]]):
         calls.append(kw)
         verdict, summary = script.get((kw["step"], kw["iter_n"]), ("", ""))
         return SimpleNamespace(
-            bead_id=f"{kw['seed_id']}.{kw['step']}.iter{kw['iter_n']}",
+            bead_id=f"{kw['seed_id']}-{kw['step']}-iter{kw['iter_n']}",
             verdict=verdict,
             summary=summary,
             from_cache=False,
