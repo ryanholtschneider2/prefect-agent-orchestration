@@ -94,27 +94,73 @@ def classify_spec(spec: str) -> str:
     return "pypi"
 
 
-def _install_argv(spec: str, *, editable: bool) -> list[str]:
+def _pack_with_args(pack: PackInfo) -> list[str]:
+    """Argv fragment that re-adds an already-installed pack to the tool env.
+
+    Editable packs are re-listed by their on-disk path (`--with-editable`)
+    so the live source stays wired; everything else rides along by
+    distribution name (`--with`).
+    """
+    if pack.source == "editable" and pack.source_detail:
+        return ["--with-editable", pack.source_detail]
+    return ["--with", pack.name]
+
+
+def _norm_dist(name: str) -> str:
+    """Normalize a distribution name for comparison (PEP 503-ish)."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _same_pack(pack: PackInfo, spec: str, *, editable: bool) -> bool:
+    """Best-effort: does `pack` already represent the pack named by `spec`?
+
+    Used to drop the pack being (re)installed from the preserved-existing
+    set so it isn't listed twice in the `uv tool install` argv. Matches on
+    resolved filesystem path for editable/local specs, else on normalized
+    distribution name.
+    """
+    if pack.source_detail and (editable or pack.source in ("editable", "local")):
+        try:
+            spec_path = Path(spec)
+            if (
+                spec_path.exists()
+                and Path(pack.source_detail).resolve() == spec_path.resolve()
+            ):
+                return True
+        except OSError:
+            pass
+    return _norm_dist(pack.name) == _norm_dist(spec)
+
+
+def _install_argv(
+    spec: str, *, editable: bool, existing: list[PackInfo] | None = None
+) -> list[str]:
     """Build `uv tool install …` argv for adding a pack alongside core.
 
-    Uses `--upgrade` on the core distribution with a `--with` (or
-    `--with-editable`) extra so the pack lands in the same tool env.
-    `--reinstall` forces uv to rewrite entry-point metadata for both
-    core and the extra pack (the "refresh EP metadata" footgun the
-    manual command had).
+    `--reinstall` on the core distribution rebuilds the tool env from
+    EXACTLY the `--with` / `--with-editable` set passed here — so to keep
+    the install additive we must re-list every pack already in the env
+    (`existing`) alongside the new one. Omitting them is the footgun that
+    evicted the software-dev packs when a Director pack was installed
+    (prefect-orchestration-7zi). Passing no `existing` reproduces the bare
+    single-pack argv (used by the direct argv unit tests).
     """
-    return [
-        "tool",
-        "install",
-        "--reinstall",
-        CORE_DISTRIBUTION,
-        "--with-editable" if editable else "--with",
-        spec,
-    ]
+    argv = ["tool", "install", "--reinstall", CORE_DISTRIBUTION]
+    for pack in existing or []:
+        if pack.name == CORE_DISTRIBUTION:
+            continue
+        argv += _pack_with_args(pack)
+    argv += ["--with-editable" if editable else "--with", spec]
+    return argv
 
 
 def install(spec: str, *, editable: bool = False) -> None:
-    """Install a pack. Disambiguates `spec` when `editable` is False.
+    """Install a pack additively, preserving every pack already installed.
+
+    Disambiguates `spec` when `editable` is False. Enumerates the packs
+    currently in the tool env and re-lists them in the same
+    `uv tool install --reinstall` call so installing a new pack never
+    evicts the others (prefect-orchestration-7zi).
 
     After uv finishes, audits any newly-discovered `po.commands` entries
     against the core-verb set and raises `PackError` on collision so
@@ -127,8 +173,14 @@ def install(spec: str, *, editable: bool = False) -> None:
         kind = classify_spec(spec)
         if kind == "path":
             eff_editable = True
+    existing = [
+        p
+        for p in discover_packs()
+        if p.name != CORE_DISTRIBUTION
+        and not _same_pack(p, spec, editable=eff_editable)
+    ]
     try:
-        _run_uv(_install_argv(spec, editable=eff_editable))
+        _run_uv(_install_argv(spec, editable=eff_editable, existing=existing))
     except subprocess.CalledProcessError as exc:
         raise PackError(
             f"po install {spec!r} failed (uv exited {exc.returncode}):\n"
@@ -191,10 +243,7 @@ def uninstall(name: str) -> None:
         ]
         argv: list[str] = ["tool", "install", "--reinstall", CORE_DISTRIBUTION]
         for pack in remaining:
-            if pack.source == "editable" and pack.source_detail:
-                argv += ["--with-editable", pack.source_detail]
-            else:
-                argv += ["--with", pack.name]
+            argv += _pack_with_args(pack)
         _run_uv(argv)
     except subprocess.CalledProcessError as exc:
         raise PackError(
@@ -206,31 +255,36 @@ def uninstall(name: str) -> None:
 def update(name: str | None = None) -> list[str]:
     """Reinstall one pack (or all) so EP metadata refreshes.
 
+    The `uv tool install --reinstall` always lists the FULL set of
+    installed packs so refreshing one never evicts the others — the same
+    additive-install footgun applies here (prefect-orchestration-7zi).
+    `name` only narrows the returned set (which packs the caller asked to
+    refresh); the env always stays whole.
+
     Returns the list of pack names that were refreshed.
     """
     packs = discover_packs()
+    all_packs = [p for p in packs if p.name != CORE_DISTRIBUTION]
     if name is None:
-        targets = [p for p in packs if p.name != CORE_DISTRIBUTION]
+        targets = all_packs
     else:
-        targets = [p for p in packs if p.name == name]
+        targets = [p for p in all_packs if p.name == name]
         if not targets:
             raise PackError(
                 f"no installed pack named {name!r}. Run `po packs` to see what's installed."
             )
 
-    if not targets:
+    if not all_packs:
         # Still reinstall core so its own EP metadata refreshes.
         _run_uv(["tool", "install", "--reinstall", CORE_DISTRIBUTION])
         return []
 
     # One aggregated reinstall keeps the tool env consistent and rewrites
-    # EP metadata for every extra in the same pass.
+    # EP metadata for every extra in the same pass. List ALL packs, not
+    # just the targets, so a single-pack refresh doesn't drop the rest.
     argv: list[str] = ["tool", "install", "--reinstall", CORE_DISTRIBUTION]
-    for pack in targets:
-        if pack.source == "editable" and pack.source_detail:
-            argv += ["--with-editable", pack.source_detail]
-        else:
-            argv += ["--with", pack.name]
+    for pack in all_packs:
+        argv += _pack_with_args(pack)
     try:
         _run_uv(argv)
     except subprocess.CalledProcessError as exc:
