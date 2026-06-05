@@ -134,20 +134,65 @@ def _bd_available() -> bool:
     return shutil.which("bd") is not None
 
 
+def _resolve_binary(rig_path: Path | str | None = None) -> str | None:
+    """Return the on-PATH beads binary (`bd` or `br`) for *rig_path*, else None.
+
+    Backend is chosen by :func:`beads_backend.resolve_backend` (env override >
+    `.beads/metadata.json` sniff > `dolt`); the mapped binary
+    (`BINARY[backend]`) is returned only when it's actually on `PATH`. The
+    write-side shellouts (`claim_issue` / `close_issue` / `create_child_bead`
+    / `mint_seed_bead`) treat a `None` result the same way they treated a
+    missing `bd`: a no-op (claim/close) or `NotImplementedError` (create/mint).
+    Mirrors the per-call resolution `_bd_show` / `_bd_dep_list` already do on
+    the read side.
+    """
+    binary = BINARY[resolve_backend(rig_path)]
+    return binary if shutil.which(binary) is not None else None
+
+
+def _parse_created_id(stdout: str) -> str | None:
+    """Pull the `id` out of a `br create --json` body, or None.
+
+    `br create --json` prints a single JSON object `{"id": ..., ...}` on
+    stdout (the auto-flush INFO line goes to stderr). Tolerant of stray
+    leading/trailing lines: tries the whole body first, then scans
+    line-by-line for the first object carrying an `id`. Used by the br
+    branches of `create_child_bead` / `mint_seed_bead`, which can't pass an
+    explicit id (br assigns its own) and so must read it back.
+    """
+    if not stdout or not stdout.strip():
+        return None
+    for candidate in (stdout, *stdout.splitlines()):
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and parsed.get("id"):
+            return str(parsed["id"])
+    return None
+
+
 def claim_issue(
     issue_id: str,
     assignee: str,
     rig_path: Path | str | None = None,
 ) -> None:
-    """Mark a beads issue in_progress + claim it. No-op if bd missing.
+    """Mark a beads issue in_progress + claim it. No-op if the binary is missing.
 
-    `rig_path` (when set) becomes the bd shellout's `cwd` so it targets
-    the rig's `.beads/` rather than the Python process cwd.
+    The binary (`bd` or `br`) is resolved from *rig_path* via
+    :func:`_resolve_binary`; `update --status in_progress --assignee` is a
+    flag-identical shellout on both. `rig_path` (when set) becomes the
+    shellout's `cwd` so it targets the rig's `.beads/` rather than the Python
+    process cwd.
     """
-    if not _bd_available():
+    binary = _resolve_binary(rig_path)
+    if binary is None:
         return
     subprocess.run(
-        ["bd", "update", issue_id, "--status", "in_progress", "--assignee", assignee],
+        [binary, "update", issue_id, "--status", "in_progress", "--assignee", assignee],
         check=False,
         cwd=str(rig_path) if rig_path is not None else None,
     )
@@ -164,52 +209,75 @@ def create_child_bead(
     priority: int = 2,
     blocks: str | None = None,
 ) -> str:
-    """Create a child bead with explicit id + parent edge.
+    """Create a child bead with a parent edge. Returns the created bead id.
 
-    Idempotent: if `child_id` already exists, returns it without
-    error. Returns the child id on success. NotImplementedError if
-    `bd` is missing (FileStore has no graph support — the
-    bead-mediated handoff requires bd).
+    NotImplementedError if neither `bd` nor `br` is on PATH (FileStore has
+    no graph support — the bead-mediated handoff requires a beads CLI).
 
-    Shells `bd create --id=<child_id> --parent=<parent_id> --title=...
-    --description=... --type=<type> -p <priority>` with
-    `cwd=rig_path`. On id collision (`bd` exits non-zero with
-    "already exists" stderr) we treat the call as a successful no-op
-    so callers retrying (Prefect task retry, ralph re-entry) reuse
-    the existing bead's state instead of erroring.
+    **dolt (`bd`)** — shells `bd create --id=<child_id> --title ...
+    --description ... --type <type> -p <priority> --deps parent-child:<id>`
+    and returns `child_id` (the explicit id is honored). On id collision
+    (`bd` exits non-zero with "already exists") we treat the call as a
+    successful no-op so callers retrying (Prefect task retry, ralph
+    re-entry) reuse the existing bead's state. Idempotent by `child_id`.
 
-    `blocks` (when set) emits `--deps blocks:<id>` so the new bead
-    is recorded as blocked-by `<id>` (the prior iter). Best-effort:
-    on the idempotent already-exists path the dep edge is NOT
-    re-applied (bd would no-op, but we don't shell out at all to
-    avoid a second call). If the dep edge needs to be added after
-    the fact, callers should `bd dep add` directly.
+    **br** — `br create` has no `--id` flag (br mints its own id), so the
+    requested `child_id` cannot be honored. We create with a positional
+    title + `--deps parent-child:<id>` + `--json` and return the
+    **br-assigned id** parsed from the JSON body. Callers MUST use the
+    return value rather than assuming `child_id` exists. Because br can't
+    look a bead up by a caller-chosen id, the br path is NOT idempotent by
+    `child_id` — a retry mints a fresh bead; dedupe on the returned id.
+
+    `blocks` (when set) appends `--deps blocks:<id>` so the new bead is
+    recorded as blocked-by `<id>` (the prior iter) on both backends.
     """
-    if not _bd_available():
+    binary = _resolve_binary(rig_path)
+    if binary is None:
         raise NotImplementedError(
-            "create_child_bead requires the `bd` CLI on PATH "
+            "create_child_bead requires the `bd` or `br` CLI on PATH "
             "(FileStore has no graph support)."
         )
-    # bd 1.0 rejects `--id` + `--parent` together; the working alternative
-    # is to express the parent edge via `--deps parent-child:<id>`.
+    backend = resolve_backend(rig_path)
+    # `--deps parent-child:<id>[,blocks:<id>]` is accepted by both bd and br.
     deps = [f"parent-child:{parent_id}"]
     if blocks:
         deps.append(f"blocks:{blocks}")
-    cmd = [
-        "bd",
-        "create",
-        f"--id={child_id}",
-        "--title",
-        title,
-        "--description",
-        description,
-        "--type",
-        issue_type,
-        "-p",
-        str(priority),
-        "--deps",
-        ",".join(deps),
-    ]
+    if backend == "br":
+        # br has no `--id` and takes the title positionally; read the
+        # br-assigned id back from `--json`.
+        cmd = [
+            binary,
+            "create",
+            title,
+            "--description",
+            description,
+            "--type",
+            issue_type,
+            "-p",
+            str(priority),
+            "--deps",
+            ",".join(deps),
+            "--json",
+        ]
+    else:
+        # bd 1.0 rejects `--id` + `--parent` together; express the parent
+        # edge via `--deps parent-child:<id>` instead.
+        cmd = [
+            binary,
+            "create",
+            f"--id={child_id}",
+            "--title",
+            title,
+            "--description",
+            description,
+            "--type",
+            issue_type,
+            "-p",
+            str(priority),
+            "--deps",
+            ",".join(deps),
+        ]
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -218,12 +286,14 @@ def create_child_bead(
         cwd=str(rig_path) if rig_path is not None else None,
     )
     if proc.returncode == 0:
+        if backend == "br":
+            return _parse_created_id(proc.stdout) or child_id
         return child_id
     stderr = (proc.stderr or "") + (proc.stdout or "")
     if "already exists" in stderr.lower():
         return child_id
     raise RuntimeError(
-        f"bd create {child_id} failed (rc={proc.returncode}): {stderr.strip()}"
+        f"{binary} create {child_id} failed (rc={proc.returncode}): {stderr.strip()}"
     )
 
 
@@ -243,10 +313,19 @@ def mint_seed_bead(
     `agent_step`. Mints `<prefix>-<utc-timestamp>`; on a fixed-prefix rig that
     rejects `--id`, retries without it and parses the assigned id from bd's
     "Created issue: <id>" line. Treats "already exists" as success. Returns the
-    actual bead id (may differ from the requested one). Raises if `bd` is absent.
+    actual bead id (may differ from the requested one). Raises if no beads CLI
+    is on PATH.
+
+    On a **br** rig the `--id` form never applies (br always mints its own id)
+    and labels use `--labels` rather than bd's `--label`: we create with a
+    positional title + `--json` and return the br-assigned id.
     """
-    if not _bd_available():
-        raise NotImplementedError("mint_seed_bead requires the `bd` CLI on PATH")
+    binary = _resolve_binary(rig_path)
+    if binary is None:
+        raise NotImplementedError(
+            "mint_seed_bead requires the `bd` or `br` CLI on PATH"
+        )
+    backend = resolve_backend(rig_path)
     stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d-%H%M%S")
     seed_id = f"{prefix}-{stamp}"
     if title:
@@ -258,6 +337,34 @@ def mint_seed_bead(
             else "scheduled task"
         )
         ttl = first[:72]
+
+    if backend == "br":
+        cmd = [
+            binary,
+            "create",
+            ttl,
+            "--description",
+            description,
+            "--type",
+            "task",
+            "-p",
+            str(priority),
+            "--json",
+        ]
+        if label:
+            cmd += ["--labels", label]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(rig_path) if rig_path is not None else None,
+        )
+        if proc.returncode == 0:
+            parsed = _parse_created_id(proc.stdout)
+            if parsed:
+                return parsed
+        raise RuntimeError(f"br create failed: {(proc.stderr or proc.stdout).strip()}")
 
     def _create(with_id: bool) -> subprocess.CompletedProcess[str]:
         cmd = ["bd", "create"]
@@ -306,13 +413,16 @@ def close_issue(
     notes: str | None = None,
     rig_path: Path | str | None = None,
 ) -> None:
-    """Close a beads issue. No-op if bd missing.
+    """Close a beads issue. No-op if the binary is missing.
 
-    `rig_path` (when set) becomes the bd shellout's `cwd`.
+    The binary (`bd` or `br`) is resolved from *rig_path*; `close [--reason]`
+    is flag-identical on both. `rig_path` (when set) becomes the shellout's
+    `cwd`.
     """
-    if not _bd_available():
+    binary = _resolve_binary(rig_path)
+    if binary is None:
         return
-    cmd = ["bd", "close", issue_id]
+    cmd = [binary, "close", issue_id]
     if notes:
         cmd += ["--reason", notes]
     subprocess.run(
