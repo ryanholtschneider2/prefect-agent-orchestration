@@ -79,22 +79,27 @@ return the br-assigned id parsed from `--json` instead. Two consequences:
    retry mints a fresh bead. Dedupe on the returned id.
 
 This matters for a *literal* full `software_dev_full`-against-br run because
-`agent_step` derives a deterministic iter id (`<seed>.<step>.iter<N>`) and
-currently ignores `create_child_bead`'s return value (it reuses the computed
-id for the cache probe, description stamp, and verdict read). Making
-`agent_step` consume the returned id — or giving br an explicit-id affordance —
-is the remaining follow-up before the loop runs end-to-end on br.
+`agent_step` derives a deterministic iter id (`<seed>.<step>.iter<N>`). As of
+9xa.1 the slow-path adopts `create_child_bead`'s return value as the canonical
+`target_bead`: on bd the explicit id is honored and the return matches the
+input, on br the backend-minted id is threaded through the description stamp,
+the convergence-ladder status probes, and the verdict read. The computed id is
+only ever the *requested* id passed into `create_child_bead`; everything
+downstream targets the real bead. (br is still not idempotent by requested id —
+a retry/resume mints a fresh iter bead because the cache probe on the computed
+id never hits on br. Acceptable for a forward run; revisit if br resume becomes
+a requirement.)
 
 ## Still deferred
 
-- **`agent_step` deterministic-id consumption on br** (above) — the convergence
-  ladder must thread the br-assigned id instead of the computed `<seed>.<step>.iterN`.
 - **`BeadsStore` metadata bus** — `get`/`set`/`all` still use
   `bd … --set-metadata` for non-verdict state (`po.run_dir`, `po.rig_path`,
   `po.iter_cap`). br has no per-issue metadata at all; re-homing those keys
   (likely onto comments, like the verdict channel) is its own slice.
-- **Pack agent prompts** (`po-formulas-software-dev`, a separate repo / PR) —
-  roles still emit `bd update <id> --metadata` to write verdicts. They need to
-  emit the br form (`br comments add <id> 'po-verdict:<role>:<json>'`) on a br
-  rig, ideally routed through `beads_backend.write_verdict` so the prompt stays
-  backend-agnostic.
+- **Pack agent prompts** (`po-formulas-software-dev`, a separate repo / PR;
+  tracked as bead **prefect-orchestration-ysw**) — roles still emit
+  `bd update <id> --metadata` to write verdicts. They need to emit the br form
+  (`br comments add <id> 'po-verdict:<role>:<json>'`) on a br rig, ideally
+  routed through `beads_backend.write_verdict` so the prompt stays
+  backend-agnostic. Until this lands, a full `software_dev_full` run does **not**
+  work end-to-end on br: roles can't record their verdicts.

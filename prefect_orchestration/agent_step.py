@@ -308,7 +308,14 @@ def agent_step(
     # avoids the bd 1.0 resurrection footgun where `bd create --id=<closed>`
     # re-opens the bead.
     if iter_n is not None and closed_state is None and _bd_available():
-        create_child_bead(
+        # Thread the backend-assigned id back through `target_bead`. On bd the
+        # explicit `<seed>.<step>.iterN` id is honored and the return matches
+        # the input; on br (no `--id` flag) the backend mints its own id and
+        # returns it, so the computed id refers to a phantom bead. Everything
+        # downstream — the description stamp, the convergence-ladder status
+        # probes, and the verdict read — must target the real bead, so adopt
+        # the returned id as canonical.
+        target_bead = create_child_bead(
             seed_id,
             target_bead,
             title=f"{step} iter {iter_n} for {seed_id}",

@@ -169,6 +169,80 @@ def test_agent_step_iter_creates_child_bead(
     assert "looks good" in result.summary
 
 
+def test_agent_step_adopts_backend_assigned_iter_id(
+    tmp_path: Path,
+    fake_bd: dict,
+    fake_session: _FakeSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a br rig, `create_child_bead` mints its own id (no `--id` flag).
+
+    `agent_step` must adopt the returned id as canonical and thread it through
+    the description stamp, the convergence-ladder status probes, and the verdict
+    read — NOT the computed `<seed>.<step>.iterN`, which is a phantom bead on br.
+    """
+    _write_prompt(tmp_path / "agents", "planner")
+    fake_bd["seed"] = {
+        "id": "seed",
+        "status": "open",
+        "title": "s",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+
+    # Mimic br: ignore the requested `<seed>.plan.iter1` and return a fresh id.
+    br_id = "po-7f3a9c"
+
+    def br_create_child_bead(parent: str, child_id: str, **_kw: Any) -> str:
+        assert child_id == "seed.plan.iter1"  # computed id is the requested one
+        fake_bd[br_id] = {
+            "id": br_id,
+            "status": "open",
+            "title": _kw.get("title", ""),
+            "metadata": {},
+            "closure_reason": "",
+            "notes": "",
+        }
+        return br_id  # br-assigned id, differs from the requested id
+
+    monkeypatch.setattr(agent_step_mod, "create_child_bead", br_create_child_bead)
+
+    # Capture which bead the description stamp targets — must be the br id.
+    stamped: list[str] = []
+    monkeypatch.setattr(
+        agent_step_mod,
+        "_stamp_description",
+        lambda bead_id, *_a, **_kw: stamped.append(bead_id),
+    )
+
+    # The agent closes the br-assigned bead (the phantom computed id stays absent).
+    original = fake_session.prompt
+
+    def closing_prompt(text: str, **kw: Any) -> str:
+        fake_bd[br_id]["status"] = "closed"
+        fake_bd[br_id]["closure_reason"] = "approved: br round-trip"
+        return original(text, **kw)
+
+    fake_session.prompt = closing_prompt  # type: ignore[assignment]
+
+    result = agent_step(
+        agent_dir=tmp_path / "agents" / "planner",
+        task="Plan task.",
+        seed_id="seed",
+        rig_path=str(tmp_path),
+        iter_n=1,
+        step="plan",
+        verdict_keywords=("approved", "rejected"),
+    )
+
+    assert result.bead_id == br_id  # operated on the returned id, not the computed
+    assert result.closed_by == "agent"
+    assert result.verdict == "approved"
+    assert stamped == [br_id]  # description stamped on the real bead
+    assert "seed.plan.iter1" not in fake_bd  # phantom id never materialized
+
+
 # ─── resumability ───────────────────────────────────────────────────
 
 
