@@ -169,8 +169,16 @@ def _resolve_binary(rig_path: Path | str | None = None) -> str | None:
     Mirrors the per-call resolution `_bd_show` / `_bd_dep_list` already do on
     the read side.
     """
-    binary = BINARY[resolve_backend(rig_path)]
-    return binary if shutil.which(binary) is not None else None
+    backend = resolve_backend(rig_path)
+    binary = BINARY[backend]
+    if shutil.which(binary) is not None:
+        return binary
+    # `br` and a migrated `bd` symlink are the same binary; if the mapped name
+    # isn't on PATH but the other is, use it (covers a `bd`->`br` symlink with
+    # no standalone `br`).
+    if backend == "br" and shutil.which("bd") is not None:
+        return "bd"
+    return None
 
 
 def _metadata_binary(rig_path: Path | str | None = None) -> str | None:

@@ -56,6 +56,7 @@ def test_resolve_backend_sniffs_dolt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("PO_BEADS_BACKEND", raising=False)
+    monkeypatch.setattr(beads_backend, "_bd_is_really_br", lambda: False)  # genuine dolt bd
     _write_meta(tmp_path, {"dolt_mode": "server", "database": "dolt"})
     assert resolve_backend(tmp_path) == "dolt"
 
@@ -72,7 +73,36 @@ def test_resolve_backend_default_dolt_when_no_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("PO_BEADS_BACKEND", raising=False)
+    monkeypatch.setattr(beads_backend, "_bd_is_really_br", lambda: False)  # genuine dolt bd
     assert resolve_backend(tmp_path) == "dolt"  # no .beads/ -> safe default
+
+
+def test_resolve_backend_downgrades_stale_dolt_to_br_when_binary_is_br(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # prefect-orchestration-3d7y: metadata.json still says dolt post-migration,
+    # but `bd` is now beads-rust → trust the binary, use br (no `--id` path).
+    monkeypatch.delenv("PO_BEADS_BACKEND", raising=False)
+    monkeypatch.setattr(beads_backend, "_bd_is_really_br", lambda: True)
+    _write_meta(tmp_path, {"dolt_mode": "server", "database": "dolt"})
+    assert resolve_backend(tmp_path) == "br"
+
+
+def test_resolve_backend_no_metadata_downgrades_when_binary_is_br(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PO_BEADS_BACKEND", raising=False)
+    monkeypatch.setattr(beads_backend, "_bd_is_really_br", lambda: True)
+    assert resolve_backend(tmp_path) == "br"  # absent metadata + br binary -> br
+
+
+def test_resolve_backend_env_dolt_forces_dolt_over_br_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An explicit operator override beats the binary probe.
+    monkeypatch.setenv("PO_BEADS_BACKEND", "dolt")
+    monkeypatch.setattr(beads_backend, "_bd_is_really_br", lambda: True)
+    assert resolve_backend(tmp_path) == "dolt"
 
 
 # ───────────────────────── read_verdict (br) ─────────────────────────
