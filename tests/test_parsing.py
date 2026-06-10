@@ -49,9 +49,15 @@ def _mock_run_fail() -> MagicMock:
 
 @pytest.fixture(autouse=True)
 def _reset_parsing_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Clear verdict cache + zero retry delays so tests run fast."""
+    """Clear verdict cache + zero retry delays so tests run fast.
+
+    Also pin the backend to dolt by default so these dolt-metadata-path tests
+    don't depend on the repo's own `.beads/metadata.json` (which is br) via
+    `resolve_backend(None)` -> cwd. The br-path test below overrides this.
+    """
     parsing_module._verdict_cache.clear()
     monkeypatch.setattr(parsing_module, "_RETRY_DELAYS", [0, 0])
+    monkeypatch.setattr(parsing_module, "resolve_backend", lambda *a, **k: "dolt")
 
 
 # ---------------------------------------------------------------------------

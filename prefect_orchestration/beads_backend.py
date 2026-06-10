@@ -25,8 +25,10 @@ consumers in ``beads_meta`` (``resolve_seed_bead`` / ``list_subgraph``).
 
 from __future__ import annotations
 
+import functools
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -37,20 +39,63 @@ BINARY: dict[str, str] = {"dolt": "bd", "br": "br"}
 _VERDICT_PREFIX = "po-verdict:"
 
 
+@functools.lru_cache(maxsize=1)
+def _bd_is_really_br() -> bool:
+    """True when the ``bd`` on PATH is actually beads-rust (``bd`` -> ``br``).
+
+    After the machine-wide ``bd``->``br`` migration the ``bd`` binary has no
+    ``--id`` / ``--set-metadata`` (it is a symlink to ``br``). A rig whose
+    ``.beads/metadata.json`` still names a dolt backend would otherwise take a
+    dolt code path (``bd create --id=…``) that the ``br`` binary rejects with
+    ``unexpected argument '--id'`` — silently breaking agentic dispatch
+    (prefect-orchestration-3d7y). We probe the binary (``bd --version`` prints
+    ``br <x.y.z>`` for beads-rust) so the *binary* is the ground truth, not a
+    stale metadata file. Cached for the process — the binary doesn't change
+    under us. Returns ``False`` when ``bd`` is absent or the probe fails (the
+    safe, behaviour-preserving answer for a genuine dolt rig).
+    """
+    bd = shutil.which("bd")
+    if bd is None:
+        return False
+    try:
+        proc = subprocess.run(
+            [bd, "--version"], capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.stdout.strip().lower().startswith("br")
+
+
 def resolve_backend(rig_path: Path | str | None) -> str:
     """Return the beads backend (``"dolt"`` or ``"br"``) for *rig_path*.
 
     Precedence: ``PO_BEADS_BACKEND`` env override > sniff
     ``<rig_path>/.beads/metadata.json`` (``dolt_mode`` present -> dolt;
     ``database`` + ``jsonl_export`` and no ``dolt_mode`` -> br) > default
-    ``"dolt"``. Falls back to ``"dolt"`` when the file is absent/unreadable —
-    safe, since it preserves today's behaviour for any non-br rig.
+    ``"dolt"`` — **except** that a sniffed/defaulted ``"dolt"`` is downgraded to
+    ``"br"`` when the on-PATH ``bd`` binary is actually beads-rust (see
+    :func:`_bd_is_really_br`). The binary is ground truth: a dolt code path
+    against a ``br`` binary fails, so a stale ``metadata.json`` left behind by
+    the migration must not win. Only an explicit ``PO_BEADS_BACKEND`` override
+    forces dolt against the binary's word.
     """
     env = os.environ.get("PO_BEADS_BACKEND")
     if env:
         env = env.strip().lower()
         if env in BINARY:
             return env
+    sniffed = _sniff_backend(rig_path)
+    if sniffed == "dolt" and _bd_is_really_br():
+        return "br"
+    return sniffed
+
+
+def _sniff_backend(rig_path: Path | str | None) -> str:
+    """The ``.beads/metadata.json`` sniff alone (no binary-capability guard).
+
+    ``dolt_mode`` present -> dolt; ``database`` + ``jsonl_export`` and no
+    ``dolt_mode`` -> br; absent/unreadable/ambiguous -> ``"dolt"``.
+    """
     base = Path(rig_path) if rig_path is not None else Path.cwd()
     try:
         meta = json.loads((base / ".beads" / "metadata.json").read_text())
