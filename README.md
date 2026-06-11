@@ -45,6 +45,33 @@ Substantial `po` runs write proof into one canonical run dir:
 
 `bd show <issue>` close notes point at the run dir, summary, and manifest. `po artifacts <issue>` renders the same summary and manifest so operators can inspect proof without hunting through the filesystem.
 
+## Scaffolding new artifacts (`po new`)
+
+Don't hand-roll a new pack, formula, skill, or agent — `po new` emits the
+standard shape:
+
+```bash
+po new pack    acme-tools                       # a new installable pack
+po new formula nightly-rollup --pack acme-tools # a @flow under po.formulas
+po new skill   billing        --pack acme-tools # SKILL.md + an evals/ suite
+po new agent   triage-bot     --pack acme-tools # prompt + cron formula + evals
+```
+
+`po new` is a `po.commands` utility op (pure transport — emits files from
+templates, no Prefect overhead). `--pack` points at an existing pack root;
+`formula`/`agent` register their entry point in that pack's `pyproject.toml`.
+`po new agent` also drops an eval suite so every new agent ships with evals by
+construction. A worked example of all four lives at
+[`examples/scaffold/po-hello/`](examples/scaffold/po-hello/); full reference in
+[`engdocs/creating-artifacts.md`](engdocs/creating-artifacts.md).
+
+```bash
+po new pack acme-tools
+po packs install --editable acme-tools
+po list                # shows `acme-tools-ping`
+po acme-tools-ping     # -> "acme-tools: pong"
+```
+
 ## Writing a pack
 
 A pack is a regular Python package with `@flow`s and entry points:

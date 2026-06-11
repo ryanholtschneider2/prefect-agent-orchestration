@@ -164,6 +164,10 @@ does orchestrated, multi-step, LLM-bearing work → `po.formulas`.
 An op that checks state, reports, or performs a one-shot action →
 `po.commands`.
 
+`po new` is itself an example: scaffolding artifacts is a one-shot
+filesystem op, so it ships as a `po.commands` callable (pure
+transport, no flow). See [`creating-artifacts.md`](creating-artifacts.md).
+
 ---
 
 ## 5. Compose before inventing

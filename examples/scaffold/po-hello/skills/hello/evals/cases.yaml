@@ -1,0 +1,19 @@
+# Eval cases for the `hello` skill.
+#
+#   po run skill-evals --pack po-hello --skill hello --dry-run   # CI-safe
+#   po run skill-evals --pack po-hello --skill hello             # real judge
+#   po run skill-evals --pack po-hello --skill hello --tier smoke
+
+cases:
+  - name: smoke-basic
+    tier: smoke
+    prompt: |
+      Ask a representative question this skill should answer well.
+    evaluators: [on-topic, concrete]
+
+  - name: regression-edge-case
+    tier: regression
+    prompt: |
+      Ask about a known footgun or edge case the skill must handle.
+    evaluators: [on-topic, concrete]
+    pass_threshold: 0.7

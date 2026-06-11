@@ -1,0 +1,19 @@
+# Rubric criteria for the `hello` skill. Each becomes an LLMJudge; cases
+# reference criteria by name in their `evaluators:` list.
+
+judge_model: claude-code
+pass_threshold: 0.75
+
+criteria:
+  - name: on-topic
+    rubric: |
+      Did the response substantively address the question using this skill's
+      conventions (not generic boilerplate)?
+    scoring_guide: |
+      1.0 = on-topic and specific. 0.5 = on-topic but thin. 0.0 = off-topic.
+  - name: concrete
+    rubric: |
+      Does the response include a concrete, runnable command or a specific,
+      actionable answer rather than vague description?
+    scoring_guide: |
+      1.0 = concrete and copy-pasteable. 0.5 = partially. 0.0 = vague.
