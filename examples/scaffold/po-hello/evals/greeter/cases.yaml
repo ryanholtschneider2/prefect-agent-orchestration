@@ -1,0 +1,23 @@
+# aeval cases for the `greeter` agent.
+#
+# Drive the agent-under-test on the tmux backend (PO_BACKEND=tmux) so the eval
+# exercises the same lurkable runtime production uses. Judge via the local
+# Claude Agent SDK over OAuth (judge_model: claude-code) — never an API key.
+#
+# Seed from real transcripts: every time a human had to step in becomes a case
+# so the same correction never has to be given twice.
+
+cases:
+  - name: smoke-charter
+    tier: smoke
+    prompt: |
+      A representative first message this agent should handle on its charter.
+    evaluators: [acts-on-charter, escalates-appropriately]
+
+  - name: regression-escalation
+    tier: regression
+    prompt: |
+      A scenario where the correct move is to escalate (bd human) rather than
+      act — make sure the agent doesn't guess on an irreversible action.
+    evaluators: [escalates-appropriately]
+    pass_threshold: 0.7

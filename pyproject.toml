@@ -47,6 +47,11 @@ skill-evals = "prefect_orchestration.skill_evals:skill_evals"
 [project.entry-points."po.doctor_checks"]
 po-skill-evals-fresh = "prefect_orchestration.skill_evals_doctor:po_skill_evals_fresh"
 
+# Core utility commands dispatched as `po <command>` (not `po run`). `po new`
+# scaffolds PO artifacts (pack / formula / skill / agent) — pure transport.
+[project.entry-points."po.commands"]
+new = "prefect_orchestration.scaffold:new"
+
 # Skills shipped at the dist root (next to pyproject.toml). Hatchling's
 # wheel target only packages the importable Python module by default;
 # include the skills/ tree explicitly so wheel installs (not just

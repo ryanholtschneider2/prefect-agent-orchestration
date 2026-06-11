@@ -157,6 +157,7 @@ before declaring a release ready: `uv run python -m pytest tests/e2e/`.
 |---|---|
 | `cli.py` | Typer entry point; discovers `po.formulas` + `po.deployments` + `po.commands` entry points; subcommands `list`/`show`/`run`/`logs`/`artifacts`/`sessions`/`watch`/`retry`/`status`/`deploy`/`doctor`/`packs` (sub-app: `install`/`update`/`uninstall`/`list`). `cli.main()` is the console-script entry: dispatches `po <command>` to `po.commands` callables, falls through to Typer for everything else. |
 | `commands.py` | `po.commands` registry — `load_commands()`, `core_verbs()` (read off `app.registered_commands`), `find_command_collisions()`. |
+| `scaffold.py` | `po new pack\|formula\|skill\|agent` — turnkey artifact scaffolding, registered as core's own `po.commands` `new` entry. Pure transport: emits files from in-code `string.Template` constants; `add_entry_point()` text-surgically inserts `po.*` EPs into a pack's pyproject (no TOML round-trip). See [`engdocs/creating-artifacts.md`](engdocs/creating-artifacts.md). |
 | `packs.py` | Pack lifecycle — `install`/`update`/`uninstall`/`packs` shell out to `uv tool` and introspect `importlib.metadata` for `po.*` EP groups. |
 | `agent_session.py` | `AgentSession` + `SessionBackend` Protocol (`ClaudeCliBackend`, `TmuxClaudeBackend`, `StubBackend`). Per-role `--resume <uuid>` + `--fork-session`. |
 | `beads_meta.py` | `MetadataStore` Protocol; `BeadsStore` (dolt-only metadata bus) + `FileStore` (JSON fallback); `claim_issue`/`close_issue`/`list_epic_children`. `_bd_dep_list`/`_bd_show` resolve the backend binary (`bd`/`br`) and normalize br dep rows via `beads_backend`. `_resolve_binary(rig_path)` → the bd/br binary for read/`--description` ops; `_metadata_binary(rig_path)` → `bd` only on dolt rigs (gates `--set-metadata` stamps so they no-op on br instead of shelling raw `bd` — prefect-orchestration-q7e). |
@@ -683,6 +684,7 @@ Background and rationale: `engdocs/formula-modes.md`. Migration plan
 |---|---|
 | List installed formulas | `po list` |
 | Show a formula's signature / docstring | `po show <formula>` |
+| Scaffold a new pack / formula / skill / agent in the standard shape | `po new pack\|formula\|skill\|agent <name> [--pack <root>] [--path <dir>]` (see [`engdocs/creating-artifacts.md`](engdocs/creating-artifacts.md)) |
 | Run a formula synchronously, now | `po run <formula> --args` |
 | Run a formula on a remote cloud env (push rig, dispatch on env's work pool, mirror run artifacts back) | `po run <formula> --env <name> [--rebuild] --args` |
 | Provision an ephemeral env, run a formula on it, then tear it down automatically (keep alive on failure by default; `--auto-down-on-failure` tears down even on failure; `--auto-down 0` disables the grace window) | `po run <formula> --env up --driver <name> [--auto-down 30m] [--auto-down-on-failure] --args` |

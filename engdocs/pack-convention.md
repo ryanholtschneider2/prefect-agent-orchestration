@@ -3,6 +3,11 @@
 The canonical shape of a PO pack. One source of truth for pack authors;
 everything else in engdocs should point here.
 
+> **Scaffolding shortcut:** `po new pack <name>` emits this shape for you, and
+> `po new formula|skill|agent <name> --pack <root>` adds correctly-shaped pieces
+> to an existing pack (registering their entry points). See
+> [`creating-artifacts.md`](creating-artifacts.md).
+
 ## What a pack is
 
 A **Python package** (has `pyproject.toml`) that contributes one or
