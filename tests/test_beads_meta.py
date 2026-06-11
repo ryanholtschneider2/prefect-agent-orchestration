@@ -11,6 +11,7 @@ to assert the walk direction, the cycle guard, and the no-bd fallback.
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -516,3 +517,83 @@ def test_real_br_write_side_round_trip(
     beads_meta.close_issue(child, notes="complete: done", rig_path=tmp_path)
     row = beads_meta._bd_show(child, rig_path=tmp_path)
     assert row is not None and row["status"] == "closed"
+
+
+# ─── bd/br shellout timeout hardening (prefect-orchestration-3e78) ────
+#
+# Every bd/br subprocess.run in core is now bounded by BD_SHELL_TIMEOUT_S so
+# a contended SQLite beads.db can't hang the whole flow indefinitely. These
+# tests monkeypatch subprocess.run to raise TimeoutExpired and assert each
+# helper degrades to its "bd unavailable" no-op (reads → None/[]/{}, writes →
+# log + continue) instead of propagating the raw TimeoutExpired.
+
+
+def _raise_timeout(*_a: Any, **_kw: Any) -> Any:
+    raise subprocess.TimeoutExpired(cmd="bd", timeout=beads_meta.BD_SHELL_TIMEOUT_S)
+
+
+@pytest.fixture
+def force_bd_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend `bd` is on PATH and the rig is a dolt backend."""
+    monkeypatch.setattr(beads_meta.shutil, "which", lambda _name: "/usr/bin/bd")
+    monkeypatch.setattr(beads_meta, "resolve_backend", lambda _rp=None: "dolt")
+
+
+def test_bd_show_degrades_to_none_on_timeout(
+    monkeypatch: pytest.MonkeyPatch, force_bd_backend: None
+) -> None:
+    monkeypatch.setattr(beads_meta.subprocess, "run", _raise_timeout)
+    assert beads_meta._bd_show("any-id", rig_path="/tmp") is None
+
+
+def test_bd_dep_list_degrades_to_empty_on_timeout(
+    monkeypatch: pytest.MonkeyPatch, force_bd_backend: None
+) -> None:
+    monkeypatch.setattr(beads_meta.subprocess, "run", _raise_timeout)
+    assert beads_meta._bd_dep_list("any-id", "up", rig_path="/tmp") == []
+
+
+def test_show_metadata_degrades_to_empty_on_timeout(
+    monkeypatch: pytest.MonkeyPatch, force_bd_backend: None
+) -> None:
+    monkeypatch.setattr(beads_meta.subprocess, "run", _raise_timeout)
+    store = beads_meta.BeadsStore(parent_id="seed", rig_path="/tmp")
+    assert store.all() == {}
+    assert store.get("po.iter_cap") is None
+
+
+def test_claim_issue_continues_on_timeout(
+    monkeypatch: pytest.MonkeyPatch, force_bd_backend: None
+) -> None:
+    monkeypatch.setattr(beads_meta.subprocess, "run", _raise_timeout)
+    # Best-effort write: must not raise.
+    beads_meta.claim_issue("any-id", "po-worker", rig_path="/tmp")
+
+
+def test_close_issue_continues_on_timeout(
+    monkeypatch: pytest.MonkeyPatch, force_bd_backend: None
+) -> None:
+    monkeypatch.setattr(beads_meta.subprocess, "run", _raise_timeout)
+    # Best-effort write: must not raise.
+    beads_meta.close_issue("any-id", notes="complete", rig_path="/tmp")
+
+
+def test_beads_store_set_continues_on_timeout(
+    monkeypatch: pytest.MonkeyPatch, force_bd_backend: None
+) -> None:
+    monkeypatch.setattr(beads_meta.subprocess, "run", _raise_timeout)
+    store = beads_meta.BeadsStore(parent_id="seed", rig_path="/tmp")
+    # Best-effort metadata write: logs + continues rather than hanging/raising.
+    store.set("po.run_dir", "/some/run")
+
+
+def test_create_child_bead_raises_typed_runtime_error_on_timeout(
+    monkeypatch: pytest.MonkeyPatch, force_bd_backend: None
+) -> None:
+    monkeypatch.setattr(beads_meta.subprocess, "run", _raise_timeout)
+    # Creating the iter bead is load-bearing — a timeout surfaces as an error
+    # rather than a silent no-op so agent_step's caller can react.
+    with pytest.raises(RuntimeError, match="timed out"):
+        beads_meta.create_child_bead(
+            "seed", "seed.iter1", title="t", description="d", rig_path="/tmp"
+        )
