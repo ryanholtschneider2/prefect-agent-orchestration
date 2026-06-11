@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as _dt
 import graphlib
 import json
+import logging
 import re as _re
 import shutil
 import subprocess
@@ -29,6 +30,31 @@ from prefect_orchestration.beads_backend import (
     normalize_dep_rows,
     resolve_backend,
 )
+
+logger = logging.getLogger(__name__)
+
+# Wall-clock cap on every `bd`/`br` subprocess shellout. Without it a `br`
+# call that blocks on the SQLite beads.db lock (N concurrent agentic workers
+# contending for the same DB) hangs the whole flow process indefinitely with
+# no exception — the indefinite Running wedge diagnosed in
+# prefect-orchestration-3e78. Mirrors the pack's own `timeout=5` hardening at
+# software_dev.py. Reads degrade to their "bd unavailable" no-op (None / [] /
+# {}); best-effort writes log a warning and continue; the agent_step-owned
+# shellouts re-raise a typed error so the flow's top-level handler can write
+# flow_outcome.json and `po status` can reap the run.
+BD_SHELL_TIMEOUT_S = 30
+
+
+class BdShellTimeoutError(RuntimeError):
+    """A `bd`/`br` shellout exceeded :data:`BD_SHELL_TIMEOUT_S` without exiting.
+
+    Raised by the agent_step-owned bead writes (`_stamp_description`,
+    `_stamp_run_dir_meta`) so a wedged beads backend surfaces as a typed,
+    catchable flow failure instead of an indefinite Running hang. The flow's
+    top-level handler can then write `flow_outcome.json` and `po status`
+    zombie-detection can reap the run (prefect-orchestration-3e78).
+    """
+
 
 DiscoverMode = Literal["ids", "deps", "both"]
 VALID_DISCOVER_MODES: tuple[str, ...] = ("ids", "deps", "both")
@@ -63,13 +89,24 @@ class BeadsStore:
         binary = _metadata_binary(self.rig_path)
         if binary is None:
             return {}
-        out = subprocess.run(
-            [binary, "show", self.parent_id, "--json"],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=self._cwd(),
-        ).stdout
+        try:
+            out = subprocess.run(
+                [binary, "show", self.parent_id, "--json"],
+                capture_output=True,
+                text=True,
+                check=True,
+                cwd=self._cwd(),
+                timeout=BD_SHELL_TIMEOUT_S,
+            ).stdout
+        except subprocess.TimeoutExpired:
+            # Contended beads.db: degrade to "no metadata" rather than
+            # blocking the caller forever (prefect-orchestration-3e78).
+            logger.warning(
+                "bd show %s timed out after %ss; treating metadata as empty",
+                self.parent_id,
+                BD_SHELL_TIMEOUT_S,
+            )
+            return {}
         parsed = json.loads(out)
         # Some bd versions return a single-row JSON list; others return
         # a bare dict. Normalise to dict before reading metadata.
@@ -91,13 +128,24 @@ class BeadsStore:
                 "BeadsStore.set requires the dolt backend (bd --set-metadata); "
                 "br rigs have no per-issue metadata channel"
             )
-        subprocess.run(
-            [binary, "update", self.parent_id, "--set-metadata", f"{key}={value}"],
-            check=True,
-            capture_output=True,
-            text=True,
-            cwd=self._cwd(),
-        )
+        try:
+            subprocess.run(
+                [binary, "update", self.parent_id, "--set-metadata", f"{key}={value}"],
+                check=True,
+                capture_output=True,
+                text=True,
+                cwd=self._cwd(),
+                timeout=BD_SHELL_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            # Best-effort metadata write: log and continue so a contended
+            # beads.db doesn't wedge the caller (prefect-orchestration-3e78).
+            logger.warning(
+                "bd update %s --set-metadata %s timed out after %ss; skipped",
+                self.parent_id,
+                key,
+                BD_SHELL_TIMEOUT_S,
+            )
 
     def all(self) -> dict[str, str]:
         return self._show_metadata()
@@ -239,11 +287,27 @@ def claim_issue(
     binary = _resolve_binary(rig_path)
     if binary is None:
         return
-    subprocess.run(
-        [binary, "update", issue_id, "--status", "in_progress", "--assignee", assignee],
-        check=False,
-        cwd=str(rig_path) if rig_path is not None else None,
-    )
+    try:
+        subprocess.run(
+            [
+                binary,
+                "update",
+                issue_id,
+                "--status",
+                "in_progress",
+                "--assignee",
+                assignee,
+            ],
+            check=False,
+            cwd=str(rig_path) if rig_path is not None else None,
+            timeout=BD_SHELL_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "bd claim of %s timed out after %ss; continuing",
+            issue_id,
+            BD_SHELL_TIMEOUT_S,
+        )
 
 
 def create_child_bead(
@@ -326,13 +390,23 @@ def create_child_bead(
             "--deps",
             ",".join(deps),
         ]
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=str(rig_path) if rig_path is not None else None,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(rig_path) if rig_path is not None else None,
+            timeout=BD_SHELL_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Creating the iter bead is load-bearing — a timeout here can't be a
+        # silent no-op (downstream stamps/probes target the returned id), so
+        # surface it as a RuntimeError. In agent_step this propagates to the
+        # flow handler which writes flow_outcome.json (prefect-orchestration-3e78).
+        raise RuntimeError(
+            f"{binary} create {child_id} timed out after {BD_SHELL_TIMEOUT_S}s"
+        ) from exc
     if proc.returncode == 0:
         if backend == "br":
             return _parse_created_id(proc.stdout) or child_id
@@ -401,13 +475,19 @@ def mint_seed_bead(
         ]
         if label:
             cmd += ["--labels", label]
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=str(rig_path) if rig_path is not None else None,
-        )
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=str(rig_path) if rig_path is not None else None,
+                timeout=BD_SHELL_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"br create timed out after {BD_SHELL_TIMEOUT_S}s"
+            ) from exc
         if proc.returncode == 0:
             parsed = _parse_created_id(proc.stdout)
             if parsed:
@@ -430,13 +510,19 @@ def mint_seed_bead(
         ]
         if label:
             cmd += ["--label", label]
-        return subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=str(rig_path) if rig_path is not None else None,
-        )
+        try:
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=str(rig_path) if rig_path is not None else None,
+                timeout=BD_SHELL_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"bd create timed out after {BD_SHELL_TIMEOUT_S}s"
+            ) from exc
 
     proc = _create(with_id=True)
     err = (proc.stderr or "").lower()
@@ -473,11 +559,19 @@ def close_issue(
     cmd = [binary, "close", issue_id]
     if notes:
         cmd += ["--reason", notes]
-    subprocess.run(
-        cmd,
-        check=False,
-        cwd=str(rig_path) if rig_path is not None else None,
-    )
+    try:
+        subprocess.run(
+            cmd,
+            check=False,
+            cwd=str(rig_path) if rig_path is not None else None,
+            timeout=BD_SHELL_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "bd close of %s timed out after %ss; continuing",
+            issue_id,
+            BD_SHELL_TIMEOUT_S,
+        )
 
 
 def read_iter_cap(
@@ -584,13 +678,22 @@ def _bd_dep_list(
     cmd = [binary, "dep", "list", issue_id, f"--direction={direction}", "--json"]
     if edge_type is not None:
         cmd += ["--type", edge_type]
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=str(rig_path) if rig_path is not None else None,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(rig_path) if rig_path is not None else None,
+            timeout=BD_SHELL_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "bd dep list %s timed out after %ss; treating as no deps",
+            issue_id,
+            BD_SHELL_TIMEOUT_S,
+        )
+        return []
     if proc.returncode != 0 or not proc.stdout.strip():
         return []
     try:
@@ -612,13 +715,24 @@ def _bd_show(
     binary = BINARY[resolve_backend(rig_path)]
     if shutil.which(binary) is None:
         return None
-    proc = subprocess.run(
-        [binary, "show", issue_id, "--json"],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=str(rig_path) if rig_path is not None else None,
-    )
+    try:
+        proc = subprocess.run(
+            [binary, "show", issue_id, "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(rig_path) if rig_path is not None else None,
+            timeout=BD_SHELL_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        # Contended beads.db: degrade to "not found" so callers that read a
+        # bead's status / metadata don't block forever (prefect-orchestration-3e78).
+        logger.warning(
+            "bd show %s timed out after %ss; treating as not found",
+            issue_id,
+            BD_SHELL_TIMEOUT_S,
+        )
+        return None
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
     try:
@@ -834,13 +948,23 @@ def _dot_suffix_children(
     while consecutive_missing < 3:
         n += 1
         candidate = f"{epic_id}.{n}"
-        proc = subprocess.run(
-            ["bd", "show", candidate, "--json"],
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=cwd,
-        )
+        try:
+            proc = subprocess.run(
+                ["bd", "show", candidate, "--json"],
+                capture_output=True,
+                text=True,
+                check=False,
+                cwd=cwd,
+                timeout=BD_SHELL_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "bd show %s timed out after %ss; treating as missing",
+                candidate,
+                BD_SHELL_TIMEOUT_S,
+            )
+            consecutive_missing += 1
+            continue
         if proc.returncode != 0 or not proc.stdout.strip():
             consecutive_missing += 1
             continue

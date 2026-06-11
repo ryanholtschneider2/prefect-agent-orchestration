@@ -144,6 +144,8 @@ from prefect_orchestration.auth_rotation import (
 from prefect_orchestration.backend_select import select_default_backend
 from prefect_orchestration.backend_select import adapt_backend_to_start_command
 from prefect_orchestration.beads_meta import (
+    BD_SHELL_TIMEOUT_S,
+    BdShellTimeoutError,
     _bd_available,
     _bd_show,
     _metadata_binary,
@@ -544,13 +546,22 @@ def _stamp_description(bead_id: str, description: str, rig_path: str) -> None:
     binary = _resolve_binary(rig_path)
     if binary is None:
         return
-    subprocess.run(
-        [binary, "update", bead_id, "--description", description],
-        check=False,
-        capture_output=True,
-        text=True,
-        cwd=str(rig_path),
-    )
+    try:
+        subprocess.run(
+            [binary, "update", bead_id, "--description", description],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(rig_path),
+            timeout=BD_SHELL_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # A wedged beads backend here is the indefinite-hang signature from
+        # prefect-orchestration-3e78. Surface a typed error so the flow's
+        # top-level handler writes flow_outcome.json and the run is reapable.
+        raise BdShellTimeoutError(
+            f"bd update {bead_id} --description timed out after {BD_SHELL_TIMEOUT_S}s"
+        ) from exc
 
 
 def _stamp_run_dir_meta(seed_id: str, rig_path: Path, run_dir: Path) -> None:
@@ -570,13 +581,24 @@ def _stamp_run_dir_meta(seed_id: str, rig_path: Path, run_dir: Path) -> None:
     if binary is None:
         return
     for key, val in (("po.run_dir", str(run_dir)), ("po.rig_path", str(rig_path))):
-        subprocess.run(
-            [binary, "update", seed_id, "--set-metadata", f"{key}={val}"],
-            check=False,
-            capture_output=True,
-            text=True,
-            cwd=str(rig_path),
-        )
+        try:
+            subprocess.run(
+                [binary, "update", seed_id, "--set-metadata", f"{key}={val}"],
+                check=False,
+                capture_output=True,
+                text=True,
+                cwd=str(rig_path),
+                timeout=BD_SHELL_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Wedged beads backend during run-dir stamping is the indefinite-hang
+            # signature from prefect-orchestration-3e78 — this shellout sits in
+            # the agent_step setup window right before the agent turn. Raise a
+            # typed error so the flow handler writes flow_outcome.json.
+            raise BdShellTimeoutError(
+                f"bd update {seed_id} --set-metadata {key} timed out after "
+                f"{BD_SHELL_TIMEOUT_S}s"
+            ) from exc
 
 
 def _build_session(

@@ -781,3 +781,91 @@ def test_agent_step_failure_logger_swallows_own_errors(
             step="build",
             iter_n=1,
         )
+
+
+# ─── bd shellout timeout → typed flow failure (prefect-orchestration-3e78) ──
+
+
+def test_stamp_description_raises_typed_error_on_bd_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wedged `bd update --description` shellout surfaces a typed
+    `BdShellTimeoutError` rather than hanging the agent_step setup window
+    indefinitely (the indefinite-Running root cause)."""
+    import subprocess
+
+    from prefect_orchestration.beads_meta import BdShellTimeoutError
+
+    monkeypatch.setattr(agent_step_mod, "_resolve_binary", lambda _rp=None: "bd")
+
+    def _timeout(*_a: Any, **_kw: Any) -> Any:
+        raise subprocess.TimeoutExpired(cmd="bd", timeout=30)
+
+    monkeypatch.setattr(agent_step_mod.subprocess, "run", _timeout)
+
+    with pytest.raises(BdShellTimeoutError, match="timed out"):
+        agent_step_mod._stamp_description("bead-1", "task spec", str(tmp_path))
+
+
+def test_agent_step_bd_timeout_surfaces_for_flow_outcome(
+    tmp_path: Path, fake_bd: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: a bd shellout that times out inside the agent_step setup
+    window (before the agent turn) raises `BdShellTimeoutError` out of
+    `agent_step`. A flow-level handler modelled on the pack then writes
+    `flow_outcome.json`, converting an indefinite wedge into a reapable
+    failure that `po status` can see.
+    """
+    import json
+    import subprocess
+
+    from prefect_orchestration.beads_meta import BdShellTimeoutError
+
+    _write_prompt(tmp_path / "agents", "builder")
+    fake_bd["seed"] = {
+        "id": "seed",
+        "status": "open",
+        "title": "s",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+    # Force the `_stamp_description` shellout to be reached and to wedge.
+    monkeypatch.setattr(agent_step_mod, "_resolve_binary", lambda _rp=None: "bd")
+    monkeypatch.setattr(agent_step_mod, "_metadata_binary", lambda _rp=None: None)
+
+    def _timeout(*_a: Any, **_kw: Any) -> Any:
+        raise subprocess.TimeoutExpired(cmd="bd", timeout=30)
+
+    monkeypatch.setattr(agent_step_mod.subprocess, "run", _timeout)
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    # Flow-level handler shape (mirrors the pack's software_dev.py top-level
+    # except → _record_flow_outcome): catch the typed error, write the outcome.
+    try:
+        agent_step(
+            agent_dir=tmp_path / "agents" / "builder",
+            task="build it",
+            seed_id="seed",
+            rig_path=str(tmp_path),
+            run_dir=run_dir,
+            iter_n=1,
+            step="build",
+        )
+        raised: Exception | None = None
+    except BdShellTimeoutError as exc:  # the flow's top-level except
+        raised = exc
+        (run_dir / "flow_outcome.json").write_text(
+            json.dumps(
+                {"ok": False, "exception_class": type(exc).__name__, "msg": str(exc)}
+            )
+        )
+
+    assert isinstance(raised, BdShellTimeoutError)
+    outcome_path = run_dir / "flow_outcome.json"
+    assert outcome_path.exists()
+    outcome = json.loads(outcome_path.read_text())
+    assert outcome["ok"] is False
+    assert outcome["exception_class"] == "BdShellTimeoutError"
