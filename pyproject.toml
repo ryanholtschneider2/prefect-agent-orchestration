@@ -23,6 +23,10 @@ otel = [
 dev = [
     "opentelemetry-api>=1.25",
     "opentelemetry-sdk>=1.25",
+    # Required to run the @pytest.mark.asyncio tests (scheduling, deployments,
+    # doctor, …). Without it those tests error with "Unknown pytest.mark.asyncio"
+    # and silently don't execute.
+    "pytest-asyncio>=0.23",
 ]
 # Skill-evals judge backends:
 #   - claude-code (default): uses claude-agent-sdk over OAuth (Claude.ai sub).
@@ -76,3 +80,6 @@ packages = ["prefect_orchestration"]
 # import errors when the pack isn't installed in the rig's venv.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests mark async cases with @pytest.mark.asyncio (strict mode). Requires the
+# pytest-asyncio dev dependency.
+asyncio_mode = "strict"
