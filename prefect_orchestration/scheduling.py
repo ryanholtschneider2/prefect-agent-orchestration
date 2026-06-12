@@ -13,11 +13,18 @@ The CLI imports + composes these helpers in `cli.py::run`.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+# Default work pool for auto-created `<formula>-manual` deployments. A
+# deployment with no work pool is NOT_READY and no worker ever claims its
+# scheduled runs, so `--at` runs sit in SCHEDULED forever. Overridable via
+# PO_WORK_POOL. Matches the `po`-pool convention (see deployments.py).
+DEFAULT_WORK_POOL = os.environ.get("PO_WORK_POOL", "po")
 
 
 def _load_formula_flow(formula: str) -> Any | None:
@@ -181,18 +188,43 @@ async def ensure_manual_deployment(client: Any, formula: str) -> tuple[Any, str 
                     )
         deployment = await find_manual_deployment(client, formula)
 
-    if deployment is None:
-        # Second fallback: auto-create from the formula's flow object.
+    # Repair an existing-but-poolless deployment: a `<formula>-manual` created
+    # by an older buggy auto-create path has work_pool_name=None, so it is
+    # NOT_READY and its scheduled runs never get claimed. Re-create through the
+    # flow path below (apply upserts by name) to attach the default pool.
+    needs_pool_repair = deployment is not None and not getattr(
+        deployment, "work_pool_name", None
+    )
+
+    if deployment is None or needs_pool_repair:
+        # Second fallback: auto-create (or repair) from the formula's flow object.
         flow_obj = _load_formula_flow(formula)
         if flow_obj is not None:
             target_name = f"{formula}-manual"
+            pool_name = DEFAULT_WORK_POOL
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning)
                 runner_dep = await asyncio.to_thread(
-                    lambda: flow_obj.to_deployment(name=target_name)
+                    lambda: flow_obj.to_deployment(
+                        name=target_name, work_pool_name=pool_name
+                    )
                 )
+                # Without a work pool the deployment is NOT_READY and no worker
+                # ever claims its scheduled runs. And the local auto-create
+                # infers a dispatcher-relative file-path entrypoint that a
+                # worker in its own cwd can't resolve — rewrite to module form
+                # so it imports the installed formula from sys.path. (Mirrors
+                # the --env path in ensure_env_deployment below.)
+                fn = getattr(flow_obj, "fn", None)
+                mod = getattr(fn, "__module__", None)
+                fname = getattr(fn, "__name__", None)
+                if mod and fname:
+                    runner_dep.entrypoint = f"{mod}:{fname}"
                 await asyncio.to_thread(_deployments.apply_deployment, runner_dep)
-            print(f"auto-created deployment: {target_name}", file=sys.stderr)
+            print(
+                f"auto-created deployment: {target_name} (pool {pool_name})",
+                file=sys.stderr,
+            )
             deployment = await find_manual_deployment(client, formula)
         if deployment is None:
             raise ManualDeploymentMissing(formula)

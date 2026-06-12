@@ -457,8 +457,12 @@ async def test_ensure_manual_deployment_auto_creates_from_flow_object(
     applied_dep = _FakeApplyableDeployment("myflow-manual")
 
     class _FakeFlowObj:
-        def to_deployment(self, name: str) -> _FakeApplyableDeployment:
+        # No `.fn` attribute → the module-form entrypoint rewrite is skipped.
+        def to_deployment(
+            self, name: str, work_pool_name: str | None = None
+        ) -> _FakeApplyableDeployment:
             applied_dep.name = name
+            applied_dep.work_pool_name = work_pool_name
             return applied_dep
 
     applied_dep_server = _FakeDeployment(name="myflow-manual", flow_id="xyz")
@@ -488,6 +492,47 @@ async def test_ensure_manual_deployment_auto_creates_from_flow_object(
     result, warn_msg = await scheduling.ensure_manual_deployment(client, "myflow")
     assert result is applied_dep_server
     assert applied_dep.applied
+    # Regression: the auto-created deployment MUST carry a work pool, else it is
+    # NOT_READY and no worker ever claims its scheduled runs (the --at bug).
+    assert applied_dep.work_pool_name == scheduling.DEFAULT_WORK_POOL
+
+
+@pytest.mark.asyncio
+async def test_ensure_manual_deployment_repairs_poolless_existing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A found-but-poolless deployment is repaired through the flow path so it
+    gets a work pool (self-heals deployments made by the old buggy auto-create)."""
+    pytest.importorskip("prefect")
+    from prefect_orchestration import deployments as _deployments
+
+    poolless = _FakeDeployment(name="myflow-manual", flow_id="abc")
+    poolless.work_pool_name = None  # type: ignore[attr-defined]
+    repaired = _FakeApplyableDeployment("myflow-manual")
+
+    class _FakeFlowObj:
+        def to_deployment(
+            self, name: str, work_pool_name: str | None = None
+        ) -> _FakeApplyableDeployment:
+            repaired.work_pool_name = work_pool_name
+            return repaired
+
+    # Server returns the poolless dep first, the repaired (pooled) one after apply.
+    repaired_server = _FakeDeployment(name="myflow-manual", flow_id="abc")
+    repaired_server.work_pool_name = scheduling.DEFAULT_WORK_POOL  # type: ignore[attr-defined]
+    client = _FakeClientWithWorkers(
+        deployments=[poolless],
+        flow=_FakeFlow("myflow"),
+        workers=[object()],
+        after_apply_deployments=[repaired_server],
+    )
+    monkeypatch.setattr(_deployments, "load_deployments", lambda: ([], []))
+    monkeypatch.setattr(scheduling, "_load_formula_flow", lambda f: _FakeFlowObj())
+    monkeypatch.setattr(_deployments, "apply_deployment", lambda dep: None)
+
+    result, _warn = await scheduling.ensure_manual_deployment(client, "myflow")
+    assert repaired.work_pool_name == scheduling.DEFAULT_WORK_POOL
+    assert getattr(result, "work_pool_name", None) == scheduling.DEFAULT_WORK_POOL
 
 
 @pytest.mark.asyncio
@@ -524,22 +569,6 @@ async def test_submit_scheduled_run_passes_job_variables(
 
 
 # ─── ensure_env_deployment / work_pool_override ──────────────────────
-
-
-class _FakeClientWithWorkers(_FakeClient):
-    """Extends _FakeClient with a workers list for pool probing."""
-
-    def __init__(
-        self,
-        deployments: list[_FakeDeployment],
-        flow: _FakeFlow,
-        workers: list = [],
-    ) -> None:
-        super().__init__(deployments, flow)
-        self._workers = workers
-
-    async def read_workers(self, **kwargs: object) -> list:
-        return list(self._workers)
 
 
 @pytest.mark.asyncio
