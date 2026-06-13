@@ -2115,10 +2115,20 @@ class AgentSession:
         full_text = _render_with_inbox(mails, text)
 
         extra_env = (
-            self.secret_provider.get_role_env(self.role)
+            dict(self.secret_provider.get_role_env(self.role))
             if self.secret_provider is not None
             else None
         )
+        from prefect_orchestration.account import resolve_environment_for_backend
+
+        account_resolution = resolve_environment_for_backend(
+            self.backend,
+            cwd=self.repo_path,
+        )
+        if account_resolution is not None:
+            if extra_env is None:
+                extra_env = {}
+            extra_env.update(account_resolution.environment)
 
         from prefect_orchestration import telemetry
 
