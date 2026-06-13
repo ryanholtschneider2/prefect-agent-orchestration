@@ -25,6 +25,7 @@ from typing import Any
 import typer
 
 from prefect_orchestration import artifacts as _artifacts
+from prefect_orchestration import account as _account
 from prefect_orchestration import attach as _attach
 from prefect_orchestration import trace as _trace
 from prefect_orchestration import commands as _commands
@@ -52,6 +53,34 @@ app = typer.Typer(
 @app.callback()
 def _root() -> None:
     """Root — forces Typer to keep subcommand form."""
+
+
+@app.command(
+    "agent",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def agent(
+    ctx: typer.Context,
+    provider: str = typer.Argument(
+        ..., help="Agent provider: claude, codex, or cursor."
+    ),
+    account: str | None = typer.Option(None, "--account"),
+    account_class: str | None = typer.Option(
+        None, "--account-class", "--account-type"
+    ),
+) -> None:
+    """Launch a provider CLI with cwd-aware account isolation."""
+    try:
+        _account.launch_agent(
+            provider,
+            list(ctx.args),
+            cwd=Path.cwd(),
+            account=account,
+            account_class=account_class,
+        )
+    except _account.AccountError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
 
 
 def _load_formulas() -> dict[str, Any]:
@@ -324,6 +353,16 @@ def run(
         help="Override the claude CLI invocation prefix (default: "
         "'claude --dangerously-skip-permissions'). Stamps PO_START_COMMAND_CLI.",
     ),
+    account: str | None = typer.Option(
+        None,
+        "--account",
+        help="Explicit coding-account handle for agent subprocesses.",
+    ),
+    account_class: str | None = typer.Option(
+        None,
+        "--account-class",
+        help="Coding-account class (for example personal or work).",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -382,6 +421,11 @@ def run(
             "error: --dry-run and --stub-backend are mutually exclusive", err=True
         )
         raise typer.Exit(2)
+
+    if account is not None:
+        os.environ["PO_ACCOUNT"] = account
+    if account_class is not None:
+        os.environ["PO_ACCOUNT_CLASS"] = account_class
 
     _autoconfigure_prefect_api()
 
@@ -1989,6 +2033,12 @@ def packs_list() -> None:
 
 
 app.add_typer(packs_app, name="packs")
+
+app.add_typer(
+    _account.account_app,
+    name="account",
+    help="Manage coding-agent accounts and directory policy.",
+)
 
 
 app.add_typer(

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Mapping
 
 import pytest
@@ -104,6 +105,29 @@ def test_role_with_no_secret_gets_empty_dict(
     sess = _mk_session("verifier", backend, tmp_path)
     sess.prompt("hello")
     assert backend.captured == [{}]
+
+
+def test_account_environment_is_merged_with_role_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SLACK_TOKEN_PLANNER", "xoxb-A")
+    monkeypatch.setattr(
+        "prefect_orchestration.account.resolve_environment_for_backend",
+        lambda backend, *, cwd: SimpleNamespace(
+            environment={"CLAUDE_CONFIG_DIR": "/accounts/work"}
+        ),
+    )
+
+    backend = _CapturingBackend()
+    sess = _mk_session("planner", backend, tmp_path)
+    sess.prompt("hello")
+
+    assert backend.captured == [
+        {
+            "SLACK_TOKEN": "xoxb-A",
+            "CLAUDE_CONFIG_DIR": "/accounts/work",
+        }
+    ]
 
 
 def test_role_normalization_hyphen(
