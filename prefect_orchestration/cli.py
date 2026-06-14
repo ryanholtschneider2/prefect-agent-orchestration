@@ -698,10 +698,9 @@ def _run_scheduled(
     if warn_msg:
         typer.echo(warn_msg, err=True)
     else:
-        typer.echo(
-            f"queued for {when}; ensure `prefect worker start --pool po` "
-            f"is running before then."
-        )
+        # A worker is auto-ensured on the pool (see scheduling._ensure_worker_for_pool),
+        # so no manual `prefect worker start` reminder here.
+        typer.echo(f"queued for {when}.")
 
 
 @app.command()

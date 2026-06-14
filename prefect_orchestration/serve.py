@@ -17,6 +17,7 @@ entirely and just configures Prefect to use a user-supplied PG instance.
 
 from __future__ import annotations
 
+import os
 import re
 import secrets
 import shutil
@@ -30,9 +31,14 @@ import typer
 UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
 PG_UNIT = UNIT_DIR / "prefect-postgres.service"
 SERVER_UNIT = UNIT_DIR / "prefect-server.service"
+WORKER_UNIT = UNIT_DIR / "prefect-worker.service"
 PG_DATA_DIR = Path.home() / ".local" / "share" / "prefect-postgres"
 CREDS_DIR = Path.home() / ".config" / "po"
 CREDS_FILE = CREDS_DIR / "serve.env"
+
+# Default work pool the always-on worker unit serves. Matches the `po`-pool
+# convention used by `--at` auto-created deployments (see scheduling.py).
+DEFAULT_WORKER_POOL = os.environ.get("PO_WORK_POOL", "po")
 
 # systemd EnvironmentFile is finicky about quoting; we restrict creds to a
 # safe charset (URL-safe base64 + a few separators) so values can be written
@@ -113,6 +119,34 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=append:%h/.prefect/server.log
 StandardError=append:%h/.prefect/server.log
+
+[Install]
+WantedBy=default.target
+"""
+
+# Always-on worker on the `po` pool. Without a worker, scheduled deployment
+# runs (cron pulses, --at runs, sheriff PR-open dispatches) sit in SCHEDULED
+# forever. This unit is the persistent fix for prefect-orchestration-2r6n:
+# install once → a worker is always running and survives reboot (via linger).
+# Waits for the server's /api/health before starting so it doesn't crash-loop
+# during the server's own startup.
+WORKER_UNIT_TEMPLATE = """\
+[Unit]
+Description=Prefect Worker (pool {pool_name})
+After=prefect-server.service network-online.target
+Requires=prefect-server.service
+
+[Service]
+Type=simple
+EnvironmentFile={creds_file}
+Environment=PREFECT_HOME=%h/.prefect
+Environment=PREFECT_API_URL=http://127.0.0.1:4200/api
+ExecStartPre=/bin/sh -c 'until curl -sf http://127.0.0.1:4200/api/health >/dev/null 2>&1; do sleep 1; done'
+ExecStart={prefect_bin} worker start --pool {pool_name} --type process --name po-serve-worker
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:%h/.prefect/worker.log
+StandardError=append:%h/.prefect/worker.log
 
 [Install]
 WantedBy=default.target
@@ -288,11 +322,23 @@ def install(
         "--external-pg",
         help="Skip local PG container; use this user-supplied PG URL instead.",
     ),
+    worker: bool = typer.Option(
+        True,
+        "--worker/--no-worker",
+        help="Also install an always-on prefect-worker unit on the po pool.",
+    ),
+    worker_pool: str = typer.Option(
+        DEFAULT_WORKER_POOL,
+        "--worker-pool",
+        help="Work pool the always-on worker serves (default: po / $PO_WORK_POOL).",
+    ),
 ) -> None:
-    """Install systemd-user units for Postgres + Prefect server.
+    """Install systemd-user units for Postgres + Prefect server + worker.
 
     Requires: docker (unless --external-pg), prefect on PATH, systemd user
-    session. Idempotent: reuses ~/.config/po/serve.env on re-run.
+    session. Idempotent: reuses ~/.config/po/serve.env on re-run. The worker
+    unit means you never have to remember `prefect worker start` — scheduled
+    runs always have a worker to claim them. Pass --no-worker to skip it.
     """
     prefect_bin = _require("prefect")
 
@@ -333,6 +379,19 @@ def install(
         server_template.format(prefect_bin=prefect_bin, creds_file=CREDS_FILE)
     )
     typer.echo(f"wrote {SERVER_UNIT}")
+
+    if worker:
+        _validate_safe("--worker-pool", worker_pool)
+        WORKER_UNIT.write_text(
+            WORKER_UNIT_TEMPLATE.format(
+                prefect_bin=prefect_bin,
+                creds_file=CREDS_FILE,
+                pool_name=worker_pool,
+            )
+        )
+        typer.echo(f"wrote {WORKER_UNIT} (pool {worker_pool})")
+    else:
+        typer.echo("--no-worker — skipping prefect-worker unit")
 
     if rotate_password and not creds.is_external() and _data_dir_populated():
         typer.echo(
@@ -381,6 +440,8 @@ def install(
             [prefect_bin, "server", "database", "upgrade", "-y"], check=False
         )
         _systemctl("enable", "--now", "prefect-server.service")
+        if worker:
+            _systemctl("enable", "--now", "prefect-worker.service")
         typer.echo("enabled + started units")
         typer.echo(
             "tip: `loginctl enable-linger $USER` so they survive logout (one-time)"
@@ -451,10 +512,11 @@ def uninstall(
     ),
 ) -> None:
     """Stop, disable, and remove the systemd units. Safe to re-run."""
+    _systemctl("disable", "--now", "prefect-worker.service")
     _systemctl("disable", "--now", "prefect-server.service")
     _systemctl("disable", "--now", "prefect-postgres.service")
     subprocess.run(["docker", "rm", "-f", "prefect-postgres"], check=False)
-    for unit in (SERVER_UNIT, PG_UNIT):
+    for unit in (WORKER_UNIT, SERVER_UNIT, PG_UNIT):
         if unit.exists():
             unit.unlink()
             typer.echo(f"removed {unit}")
@@ -478,7 +540,7 @@ def uninstall(
 
 @app.command()
 def status() -> None:
-    """Show is-active state for both units + curl the API + DB ping."""
+    """Show is-active state for all units + curl the API + DB ping."""
     creds = load_creds()
     if creds is None:
         typer.echo("  creds: (no ~/.config/po/serve.env — run `po serve install`)")
@@ -489,7 +551,11 @@ def status() -> None:
             f"  creds: {creds.pg_user}@{creds.pg_host}:{creds.pg_port}/{creds.pg_db}"
         )
 
-    for unit in ("prefect-postgres.service", "prefect-server.service"):
+    for unit in (
+        "prefect-postgres.service",
+        "prefect-server.service",
+        "prefect-worker.service",
+    ):
         rc = subprocess.run(
             ["systemctl", "--user", "is-active", unit],
             capture_output=True,
