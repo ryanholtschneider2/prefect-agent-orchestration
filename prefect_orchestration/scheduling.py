@@ -229,20 +229,9 @@ async def ensure_manual_deployment(client: Any, formula: str) -> tuple[Any, str 
         if deployment is None:
             raise ManualDeploymentMissing(formula)
 
-    # Probe for running workers on the target pool.
-    warn_msg: str | None = None
+    # Probe for running workers on the target pool; auto-spawn one if absent.
     pool_name = getattr(deployment, "work_pool_name", None)
-    if pool_name:
-        try:
-            workers = await client.read_workers(work_pool_name=pool_name)
-            if len(workers) == 0:
-                warn_msg = (
-                    f"warning: no workers running on pool {pool_name!r}. "
-                    f"Run `prefect worker start --pool {pool_name}` before "
-                    f"the scheduled time or the run will stay Scheduled."
-                )
-        except Exception:  # noqa: BLE001 — older Prefect servers may lack this API
-            pass
+    warn_msg = await _ensure_worker_for_pool(client, pool_name)
 
     return deployment, warn_msg
 
@@ -303,19 +292,39 @@ async def ensure_env_deployment(
         if deployment is None:
             raise ManualDeploymentMissing(formula)
 
-    warn_msg: str | None = None
-    try:
-        workers = await client.read_workers(work_pool_name=work_pool_override)
-        if len(workers) == 0:
-            warn_msg = (
-                f"warning: no workers running on pool {work_pool_override!r}. "
-                f"Run `prefect worker start --pool {work_pool_override}` before "
-                f"the scheduled time or the run will stay Scheduled."
-            )
-    except Exception:  # noqa: BLE001
-        pass
+    warn_msg = await _ensure_worker_for_pool(client, work_pool_override)
 
     return deployment, warn_msg
+
+
+async def _ensure_worker_for_pool(client: Any, pool_name: str | None) -> str | None:
+    """Probe `pool_name` for workers and auto-spawn one if none are running.
+
+    Returns a warning string only when no worker could be ensured (spawn failed
+    or auto-worker disabled); returns None when a worker is already present or
+    one was just auto-started (the spawn prints its own line to stderr). The
+    scheduled run would otherwise sit in `Scheduled` forever with no worker to
+    claim it — auto-spawning is the on-demand safety net for
+    prefect-orchestration-2r6n.
+    """
+    if not pool_name:
+        return None
+    try:
+        workers = await client.read_workers(work_pool_name=pool_name)
+    except Exception:  # noqa: BLE001 — older Prefect servers may lack this API
+        return None
+    if len(workers) > 0:
+        return None
+
+    # No worker on the pool — hand off to the generic core guard. We already
+    # know the count is 0, so pass it through to skip a redundant nested-loop
+    # API probe inside ensure_pool_worker.
+    from prefect_orchestration import workers as _workers
+
+    result = _workers.ensure_pool_worker(pool_name, online_count=0)
+    if result.action in ("failed", "disabled"):
+        return f"warning: {result.message}"
+    return None
 
 
 async def submit_scheduled_run(

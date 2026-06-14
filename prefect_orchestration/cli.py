@@ -65,9 +65,7 @@ def agent(
         ..., help="Agent provider: claude, codex, or cursor."
     ),
     account: str | None = typer.Option(None, "--account"),
-    account_class: str | None = typer.Option(
-        None, "--account-class", "--account-type"
-    ),
+    account_class: str | None = typer.Option(None, "--account-class", "--account-type"),
 ) -> None:
     """Launch a provider CLI with cwd-aware account isolation."""
     try:
@@ -698,10 +696,9 @@ def _run_scheduled(
     if warn_msg:
         typer.echo(warn_msg, err=True)
     else:
-        typer.echo(
-            f"queued for {when}; ensure `prefect worker start --pool po` "
-            f"is running before then."
-        )
+        # A worker is auto-ensured on the pool (see scheduling._ensure_worker_for_pool),
+        # so no manual `prefect worker start` reminder here.
+        typer.echo(f"queued for {when}.")
 
 
 @app.command()

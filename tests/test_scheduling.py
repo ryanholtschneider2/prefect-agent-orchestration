@@ -16,6 +16,19 @@ import pytest
 from prefect_orchestration import scheduling
 
 
+@pytest.fixture(autouse=True)
+def _no_auto_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable the on-demand worker auto-spawn for scheduling unit tests.
+
+    The no-worker dispatch path now hands off to `workers.ensure_pool_worker`,
+    which would shell out a real `prefect worker start`. Disabling it keeps
+    these tests hermetic and preserves the legacy "warn when no worker"
+    surface (a disabled ensure returns a warning). The spawn integration is
+    covered explicitly in test_ensure_manual_deployment_auto_spawns_worker.
+    """
+    monkeypatch.setenv("PO_AUTO_WORKER", "0")
+
+
 # ─── parse_when: relative durations ──────────────────────────────────
 #
 # Relative durations resolve eagerly to `now() + delta`, so we assert
@@ -403,6 +416,39 @@ async def test_ensure_manual_deployment_found_warns_no_workers(
     assert warn_msg is not None
     assert "my-pool" in warn_msg
     assert "worker" in warn_msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_ensure_manual_deployment_auto_spawns_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No worker on the pool → ensure_pool_worker is invoked (online_count=0)
+    and a successful spawn suppresses the legacy warning."""
+    pytest.importorskip("prefect")
+    from prefect_orchestration import workers as _workers
+
+    monkeypatch.delenv("PO_AUTO_WORKER", raising=False)  # re-enable for this test
+
+    dep = _FakeDeployment(name="foo-manual", flow_id="abc")
+    dep.work_pool_name = "my-pool"  # type: ignore[attr-defined]
+    client = _FakeClientWithWorkers(
+        deployments=[dep], flow=_FakeFlow("foo"), workers=[]
+    )
+
+    calls: list = []
+
+    def fake_ensure(pool_name: str, *, online_count: int | None = None, **kw: object):
+        calls.append((pool_name, online_count))
+        return _workers.WorkerEnsureResult(
+            pool=pool_name, action="spawned", message="spawned", pid=999
+        )
+
+    monkeypatch.setattr(_workers, "ensure_pool_worker", fake_ensure)
+
+    result, warn_msg = await scheduling.ensure_manual_deployment(client, "foo")
+    assert result is dep
+    assert calls == [("my-pool", 0)]
+    assert warn_msg is None  # spawn succeeded → no warning
 
 
 @pytest.mark.asyncio
