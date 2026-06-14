@@ -230,7 +230,9 @@ def test_missing_manual_deployment_error_message(runner: CliRunner) -> None:
 
 
 def test_worker_reminder_in_output(runner: CliRunner) -> None:
-    """When submit returns no warn_msg, the generic worker reminder is shown."""
+    """When submit returns no warn_msg the queued line is shown WITHOUT the old
+    manual `prefect worker start` nag — a worker is auto-ensured on the pool
+    (prefect-orchestration-2r6n)."""
     fake = _RecordedFormula()
 
     async def _fake_submit(**kwargs: Any) -> tuple[_FakeFlowRun, str, None]:
@@ -246,7 +248,9 @@ def test_worker_reminder_in_output(runner: CliRunner) -> None:
     ):
         result = runner.invoke(cli.app, ["run", "foo", "--at", "2h"])
     assert result.exit_code == 0, result.output
-    assert "prefect worker start --pool po" in result.output
+    assert "queued for 2h" in result.output
+    # The manual-start reminder is gone now that the worker is auto-ensured.
+    assert "prefect worker start --pool po" not in result.output
 
 
 def test_worker_warning_no_workers(runner: CliRunner) -> None:

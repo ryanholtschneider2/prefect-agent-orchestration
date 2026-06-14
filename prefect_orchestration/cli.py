@@ -65,9 +65,7 @@ def agent(
         ..., help="Agent provider: claude, codex, or cursor."
     ),
     account: str | None = typer.Option(None, "--account"),
-    account_class: str | None = typer.Option(
-        None, "--account-class", "--account-type"
-    ),
+    account_class: str | None = typer.Option(None, "--account-class", "--account-type"),
 ) -> None:
     """Launch a provider CLI with cwd-aware account isolation."""
     try:

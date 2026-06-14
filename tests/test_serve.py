@@ -23,6 +23,7 @@ def serve_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(serve_mod, "UNIT_DIR", unit_dir)
     monkeypatch.setattr(serve_mod, "PG_UNIT", unit_dir / "prefect-postgres.service")
     monkeypatch.setattr(serve_mod, "SERVER_UNIT", unit_dir / "prefect-server.service")
+    monkeypatch.setattr(serve_mod, "WORKER_UNIT", unit_dir / "prefect-worker.service")
     monkeypatch.setattr(serve_mod, "PG_DATA_DIR", pg_data)
     monkeypatch.setattr(serve_mod, "CREDS_DIR", creds_dir)
     monkeypatch.setattr(serve_mod, "CREDS_FILE", creds_dir / "serve.env")
@@ -80,6 +81,89 @@ def test_install_no_flags_generates_random_password(serve_env: dict) -> None:
     assert expected_ref in server_unit
     # No more hardcoded prefect:prefect creds in the unit body.
     assert "POSTGRES_PASSWORD=prefect" not in pg_unit
+
+
+# ---- prefect-orchestration-2r6n: always-on worker unit ----------------------
+
+
+def test_install_writes_worker_unit(serve_env: dict) -> None:
+    result = _run("install", "--no-enable")
+    assert result.exit_code == 0, result.output
+
+    assert serve_mod.WORKER_UNIT.exists()
+    body = serve_mod.WORKER_UNIT.read_text()
+    # Serves the default `po` pool via a process worker.
+    assert "worker start --pool po --type process" in body
+    # Depends on the server and waits for /api/health before starting.
+    assert "Requires=prefect-server.service" in body
+    assert "/api/health" in body
+    # Self-heals on crash, survives reboot via the default.target install.
+    assert "Restart=on-failure" in body
+    assert "WantedBy=default.target" in body
+    expected_ref = f"EnvironmentFile={serve_mod.CREDS_FILE}"
+    assert expected_ref in body
+
+
+def test_install_worker_pool_override(serve_env: dict) -> None:
+    result = _run("install", "--no-enable", "--worker-pool", "po-soloco")
+    assert result.exit_code == 0, result.output
+    body = serve_mod.WORKER_UNIT.read_text()
+    assert "worker start --pool po-soloco --type process" in body
+
+
+def test_install_no_worker_skips_unit(serve_env: dict) -> None:
+    result = _run("install", "--no-enable", "--no-worker")
+    assert result.exit_code == 0, result.output
+    assert not serve_mod.WORKER_UNIT.exists()
+
+
+def test_install_enables_worker_unit(serve_env: dict) -> None:
+    # With enable on (default), the worker unit is enabled+started via systemctl.
+    result = _run("install")
+    assert result.exit_code == 0, result.output
+    enable_calls = [
+        c
+        for c in serve_env["call"]
+        if c[-3:] == ["enable", "--now", "prefect-worker.service"]
+    ]
+    assert enable_calls, f"worker unit not enabled in {serve_env['call']!r}"
+
+
+def test_install_external_pg_still_writes_worker(serve_env: dict) -> None:
+    result = _run(
+        "install", "--no-enable", "--external-pg", "postgresql://u:p@h:5432/db"
+    )
+    assert result.exit_code == 0, result.output
+    # Worker only needs the server, so it's installed in external-PG mode too.
+    assert serve_mod.WORKER_UNIT.exists()
+
+
+def test_install_rejects_unsafe_worker_pool(serve_env: dict) -> None:
+    result = CliRunner().invoke(
+        serve_mod.app,
+        ["install", "--no-enable", "--worker-pool", "bad pool"],
+    )
+    assert result.exit_code != 0
+
+
+def test_status_includes_worker_unit(serve_env: dict) -> None:
+    _run("install", "--no-enable")
+    result = _run("status")
+    assert "prefect-worker.service" in result.output
+
+
+def test_uninstall_removes_worker_unit(serve_env: dict) -> None:
+    _run("install", "--no-enable")
+    assert serve_mod.WORKER_UNIT.exists()
+    _run("uninstall")
+    assert not serve_mod.WORKER_UNIT.exists()
+    # And it was disabled.
+    disable_calls = [
+        c
+        for c in serve_env["call"]
+        if c[-3:] == ["disable", "--now", "prefect-worker.service"]
+    ]
+    assert disable_calls, f"worker unit not disabled in {serve_env['call']!r}"
 
 
 # ---- AC1: per-field flags ---------------------------------------------------
