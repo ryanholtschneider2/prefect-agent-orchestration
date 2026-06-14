@@ -186,6 +186,31 @@ def test_local_worker_process_running_no_pgrep(
     assert workers.local_worker_process_running("po") is False
 
 
+# ---- _is_missing_pool_error: 404 → pool absent, else unreachable -----------
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _FakeHTTPError(Exception):
+    def __init__(self, status_code: int) -> None:
+        self.response = _FakeResponse(status_code)
+
+
+def test_is_missing_pool_error_404() -> None:
+    assert workers._is_missing_pool_error(_FakeHTTPError(404)) is True
+
+
+def test_is_missing_pool_error_500_is_not_missing() -> None:
+    assert workers._is_missing_pool_error(_FakeHTTPError(500)) is False
+
+
+def test_is_missing_pool_error_plain_exception() -> None:
+    assert workers._is_missing_pool_error(RuntimeError("boom")) is False
+
+
 # ---- spawn_detached_worker raises without prefect --------------------------
 
 

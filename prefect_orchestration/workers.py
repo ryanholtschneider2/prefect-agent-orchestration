@@ -80,9 +80,12 @@ def _slug(pool_name: str) -> str:
 def count_online_workers(pool_name: str, *, timeout: float = 5.0) -> int | None:
     """Return the number of online workers on `pool_name`.
 
-    Returns ``None`` when the Prefect API can't be reached / queried (so the
-    caller can distinguish "zero workers" from "couldn't tell"). Mirrors the
-    online-status filter used by `po doctor`.
+    Returns ``0`` when the pool simply doesn't exist yet — that is genuinely
+    "no workers" (and a spawned `prefect worker start --type process` will
+    create the pool), not an error. Returns ``None`` only when the Prefect API
+    can't be reached / queried at all, so the caller can distinguish "zero
+    workers" from "couldn't tell" and decline to spawn into the void. Mirrors
+    the online-status filter used by `po doctor`.
     """
     import asyncio
 
@@ -94,10 +97,28 @@ def count_online_workers(pool_name: str, *, timeout: float = 5.0) -> int | None:
                 return await client.read_workers_for_work_pool(pool_name)
 
         workers = asyncio.run(asyncio.wait_for(_probe(), timeout=timeout))
-    except Exception:  # noqa: BLE001 — unreachable server / unknown pool / old API
+    except Exception as exc:  # noqa: BLE001 — unknown pool / unreachable / old API
+        if _is_missing_pool_error(exc):
+            # Pool not created yet → no workers; let the caller spawn one
+            # (`prefect worker start --type process` creates the pool).
+            return 0
         return None
     online = [w for w in workers if getattr(w, "status", None) in ("ONLINE", "online")]
     return len(online)
+
+
+def _is_missing_pool_error(exc: Exception) -> bool:
+    """True when `exc` indicates the work pool doesn't exist (HTTP 404 or
+    Prefect's ObjectNotFound), as opposed to the server being unreachable."""
+    try:
+        from prefect.exceptions import ObjectNotFound
+
+        if isinstance(exc, ObjectNotFound):
+            return True
+    except Exception:  # pragma: no cover — extremely old Prefect
+        pass
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status == 404
 
 
 def local_worker_process_running(pool_name: str) -> bool:

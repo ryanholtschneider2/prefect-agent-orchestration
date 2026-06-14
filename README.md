@@ -148,7 +148,18 @@ po deploy --apply --work-pool po   # also assign a work pool
 `--apply` requires `PREFECT_API_URL` pointing at a running server
 (`prefect server start` → `http://127.0.0.1:4200/api`). Deployments are
 upserted by `(flow_name, name)` so re-running is idempotent.
-For runs to actually execute, start a worker against the same work pool:
+For runs to actually execute, a worker must be running on the same work pool.
+You rarely have to start one by hand:
+
+- `po serve install` ships an always-on `prefect-worker` systemd unit on the
+  `po` pool (alongside Postgres + the server), so a worker is always running
+  and survives reboot. Pass `--no-worker` to opt out, `--worker-pool <name>`
+  to serve a different pool.
+- The scheduled-dispatch paths (`po run --at`, `po run --env`) auto-ensure a
+  worker on the target pool — if none is online they spawn a detached one.
+  Set `PO_AUTO_WORKER=0` to disable that and manage workers yourself.
+
+To start one manually anyway:
 
 ```bash
 prefect work-pool create po --type process

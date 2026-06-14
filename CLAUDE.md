@@ -166,6 +166,7 @@ before declaring a release ready: `uv run python -m pytest tests/e2e/`.
 | `iter_bead_ids.py` | Run-dir map (`<run_dir>/iter-bead-ids.json`) of role-step *convention id* (`<seed>.<step>.iterN`) → *backend-assigned* bead id. `agent_step` records it after `create_child_bead` adopts a divergent id (br mints its own flat id) and consults it before the fast-path probe, so re-entry resolves the real bead instead of re-minting (br idempotency / no phantom re-nudge, `prefect-orchestration-99k`). No-op on dolt (convention id honored → lookup misses → fall back). |
 | `templates.py` | `{{var}}` substitution over a caller-supplied agents dir (`<dir>/<role>/prompt.md`). |
 | `role_config.py` | Per-role runtime config (`agents/<role>/config.toml`): `model` / `effort` / `start_command`. `resolve_role_runtime` precedence: per-role config > CLI flag (`PO_*_CLI` env stamped by `po run`) > shell env (`PO_*`) > None. Disjoint from `identity.toml` (persona). |
+| `workers.py` | Generic Prefect worker management. `ensure_pool_worker(pool)` probes the API for an online worker and spawns a detached one if none (idempotent; `PO_AUTO_WORKER=0` disables). Called from the scheduled-dispatch paths so scheduled runs never queue with no worker (prefect-orchestration-2r6n). |
 | `artifacts.py`, `sessions.py`, `watch.py`, `retry.py`, `status.py`, `run_lookup.py`, `doctor.py`, `deployments.py` | Back the matching `po` subcommand. |
 
 ## What PO is
@@ -210,18 +211,28 @@ primary surface**; defer to `prefect` for anything pure-Prefect.
 The Prefect server's default SQLite backend deadlocks under concurrent
 flows ("database is locked" once you push past ~3 parallel `po run`s).
 PO ships a `serve` subcommand that installs systemd-user units for a
-Postgres container + Prefect server, and points the `prefect` profile
-at PG so it becomes the default backend:
+Postgres container + Prefect server + an always-on worker, and points the
+`prefect` profile at PG so it becomes the default backend:
 
 ```bash
 po serve install        # generates a random PG password on first install,
                         # writes ~/.config/po/serve.env (mode 0600),
-                        # writes ~/.config/systemd/user/{prefect-postgres,prefect-server}.service,
+                        # writes ~/.config/systemd/user/{prefect-postgres,prefect-server,prefect-worker}.service,
                         # sets PREFECT_API_DATABASE_CONNECTION_URL on the active profile,
-                        # runs `prefect server database upgrade`, enables + starts both units
-po serve status         # creds source + is-active + /api/health + pg_isready
+                        # runs `prefect server database upgrade`, enables + starts all units
+po serve status         # creds source + is-active (all 3 units) + /api/health + pg_isready
 po serve uninstall      # stop/disable/remove (add --purge-data to wipe the volume + serve.env)
 ```
+
+**Always-on worker (prefect-orchestration-2r6n).** `po serve install` also
+installs a `prefect-worker` systemd-user unit on the `po` pool
+(`Restart=on-failure`, waits for the server's `/api/health` before starting,
+survives reboot via linger). This is the persistent fix for "PRs/pulses
+silently queue because no worker": once installed, a worker is always running.
+Knobs: `--no-worker` skips it; `--worker-pool <name>` (or `$PO_WORK_POOL`)
+serves a different pool. The runtime safety net for hosts without the unit is
+`prefect_orchestration.workers.ensure_pool_worker(pool)` — see §"Auto-ensure a
+worker" below.
 
 Prereqs: docker, prefect on PATH, systemd user session. Run
 `loginctl enable-linger $USER` once so the units survive logout.
@@ -267,6 +278,41 @@ prefect config set PREFECT_API_DATABASE_CONNECTION_URL="postgresql+asyncpg://pre
 prefect server database upgrade -y
 prefect server start --host 127.0.0.1 --port 4200
 ```
+
+### Auto-ensure a worker (`ensure_pool_worker`)
+
+`prefect_orchestration.workers.ensure_pool_worker(pool_name)` is the on-demand
+safety net behind prefect-orchestration-2r6n: a scheduled deployment run / cron
+pulse / sheriff dispatch otherwise silently sits in `Scheduled` because nobody
+started a worker. The helper probes the Prefect API for an online worker on the
+pool and, if none, spawns a **detached** `prefect worker start --pool <pool>
+--type process` (via `start_new_session=True`, so it outlives the command;
+`--type process` also auto-creates the pool if absent). Logs go to
+`~/.prefect/po-worker-<pool>.log`.
+
+Idempotent by construction — a no-op when a worker is already online OR when a
+local `prefect worker start --pool <pool>` process is already starting up (the
+window before its first heartbeat), so calling it from every dispatch path
+never stacks workers. It never raises — failures come back as a
+`WorkerEnsureResult(action="failed", message=…)`.
+
+```python
+from prefect_orchestration.workers import ensure_pool_worker
+
+result = ensure_pool_worker("po")          # spawn if no online worker
+# result.action in {"already-online","spawned","disabled","unreachable","failed"}
+```
+
+Wired into the scheduled-dispatch paths in core: `po run --at` and
+`po run --env` call it (via `scheduling._ensure_worker_for_pool`) instead of
+only printing a "start a worker" warning. Other consumers (`po soloco start`,
+the sheriff `on_pr_opened` dispatch) live in their own packs and import the same
+generic helper — a one-line `ensure_pool_worker(pool)` call at their dispatch
+point (tracked separately in those repos).
+
+Disable globally with `PO_AUTO_WORKER=0` (CI, or an operator who manages
+workers by hand). When disabled the dispatch paths fall back to the legacy
+manual-start warning.
 
 ### Inspecting what's available
 
