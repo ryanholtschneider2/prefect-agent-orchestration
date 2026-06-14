@@ -597,6 +597,37 @@ disjoint from `config.toml` (runtime knobs). Setting
 `identity.toml: model = "..."` only affects the rendered prompt's
 `<self>` block; use `config.toml` for runtime control.
 
+### Pick the model by task complexity (`--complexity`)
+
+When you don't want to name a model directly, let the *complexity of the
+task* pick one. `po run --complexity <tier>` maps a complexity judgment to
+a model — Opus for hard/architectural work, Sonnet for routine work (never
+Haiku, too weak for the loop). It only sets the model when `--model` is not
+given; an explicit `--model` always wins (and prints a note when both are
+passed).
+
+```bash
+po run software-dev-agentic --issue-id <id> --rig <r> --rig-path <p> --complexity hard      # -> opus
+po run software-dev-agentic --issue-id <id> --rig <r> --rig-path <p> --complexity routine   # -> sonnet
+```
+
+Accepted words resolve to one of two tiers: `routine` (also
+trivial/simple/easy/low/small/moderate/medium/standard) → Sonnet;
+`hard` (also high/complex/difficult/architectural/architecture/design/tricky)
+→ Opus. An unrecognized word fails fast (exit 2) rather than silently
+mis-selecting. The provider follows `PO_BACKEND` (`codex-*` → `gpt-5-codex`),
+so the same convention extends to non-Claude backends.
+
+This is the dispatch-side helper for the rate-limit relief in
+prefect-orchestration-3olt: a dispatching agent sizes the task (judgment)
+and the mapping is deterministic. Flows can call the same mapping directly:
+
+```python
+from prefect_orchestration import select_model
+select_model("hard")                       # 'opus'
+select_model("routine", provider="codex")  # 'gpt-5-codex'
+```
+
 ## Telemetry / Observability
 
 `AgentSession.prompt()` can emit one OpenTelemetry span per Claude

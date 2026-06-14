@@ -351,6 +351,14 @@ def run(
         help="Override the claude CLI invocation prefix (default: "
         "'claude --dangerously-skip-permissions'). Stamps PO_START_COMMAND_CLI.",
     ),
+    complexity: str | None = typer.Option(
+        None,
+        "--complexity",
+        help="Task complexity (routine|moderate|hard|architectural). Resolves "
+        "to a model (routine->sonnet, hard->opus; never haiku) when --model "
+        "is not given. Explicit --model wins. Provider from PO_BACKEND "
+        "(codex-* -> gpt-5-codex).",
+    ),
     account: str | None = typer.Option(
         None,
         "--account",
@@ -419,6 +427,27 @@ def run(
             "error: --dry-run and --stub-backend are mutually exclusive", err=True
         )
         raise typer.Exit(2)
+
+    # Complexity -> model resolution. Judgment (how hard is this task) is the
+    # dispatching agent's; the mapping is deterministic. Explicit --model wins.
+    if complexity is not None:
+        from prefect_orchestration import model_selection as _model_selection
+
+        provider = _model_selection.provider_from_backend(os.environ.get("PO_BACKEND"))
+        try:
+            resolved = _model_selection.select_model(complexity, provider=provider)
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
+        if model is not None:
+            typer.echo(
+                f"note: --model {model!r} overrides --complexity {complexity!r} "
+                f"(would be {resolved!r})",
+                err=True,
+            )
+        else:
+            typer.echo(f"complexity {complexity!r} -> model {resolved!r}")
+            model = resolved
 
     if account is not None:
         os.environ["PO_ACCOUNT"] = account

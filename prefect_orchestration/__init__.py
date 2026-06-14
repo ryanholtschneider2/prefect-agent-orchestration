@@ -14,6 +14,10 @@ from prefect_orchestration.identity import (
     identity_vars,
     load_identity,
 )
+from prefect_orchestration.model_selection import (
+    provider_from_backend,
+    select_model,
+)
 from prefect_orchestration.secrets import (
     DEFAULT_PREFIXES,
     ChainSecretProvider,
@@ -51,6 +55,8 @@ __all__ = [
     "format_self_block",
     "identity_vars",
     "load_identity",
+    "provider_from_backend",
     "resolve_role_env",
     "role_env_key",
+    "select_model",
 ]
