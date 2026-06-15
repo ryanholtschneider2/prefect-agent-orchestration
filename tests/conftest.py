@@ -11,13 +11,23 @@ from prefect_orchestration import beads_backend
 def _pin_beads_binary_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make `resolve_backend` host-independent in unit tests.
 
-    `resolve_backend` consults `_bd_is_really_br()` (which probes the on-PATH
-    `bd` binary) to downgrade a stale dolt sniff to `br` after the machine-wide
-    `bd`->`br` migration (prefect-orchestration-3d7y). Unit tests must not depend
-    on whether the dev/CI machine happens to have dolt-`bd` or beads-rust on
-    PATH, so default the probe to `False` (a genuine dolt `bd`) — preserving the
-    historical sniff-only behaviour. The tests that exercise the downgrade
-    override this explicitly with `lambda: True`.
+    `resolve_backend` resolves the beads backend in three steps: a
+    `PO_BEADS_BACKEND` env override, then a `.beads/metadata.json` sniff, then
+    the `_bd_is_really_br()` probe of the on-PATH `bd` binary. Two of those leak
+    the host's state into tests after the machine-wide `bd`->`br` migration
+    (prefect-orchestration-3d7y, -b6mz):
+
+    - the **probe** reads the real `bd` (now `br`), and
+    - the **sniff** reads whatever `.beads/metadata.json` the cwd/rig happens to
+      have (this repo's is `br`) — which the probe-patch alone does NOT cover,
+      so dolt-format-mock tests still took the `br` path and failed.
+
+    So pin BOTH: default the env override to `dolt` (the historical format the
+    unit mocks assume) so neither the sniff nor the probe can hijack a test, and
+    patch the probe to `False`. Tests that exercise `br` override
+    `PO_BEADS_BACKEND` (`setenv`) or the probe (`lambda: True`) explicitly; a
+    test asserting the sniff clears the env with `delenv`.
     """
     beads_backend._bd_is_really_br.cache_clear()
     monkeypatch.setattr(beads_backend, "_bd_is_really_br", lambda: False)
+    monkeypatch.setenv("PO_BEADS_BACKEND", "dolt")
