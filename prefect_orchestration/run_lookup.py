@@ -179,6 +179,43 @@ def lookup_prefect_run(token: str) -> tuple[Path, str] | None:
         return None
 
 
+def _filesystem_run_dir(
+    issue_id: str, rig_candidates: list[Path | None]
+) -> RunLocation | None:
+    """Recover a run dir from its deterministic on-disk path when no bead
+    metadata is available.
+
+    The ``br`` backend stores no per-issue metadata, so ``po.rig_path`` /
+    ``po.run_dir`` are never written there. But every flow writes its run dir to
+    ``<rig>/.planning/<formula>/<issue_id>/`` — a deterministic path — so a glob
+    recovers it. Returns the most recently modified match across the given rig
+    roots, or ``None`` when nothing matches.
+    """
+    matches: list[tuple[float, Path, Path]] = []
+    seen: set[Path] = set()
+    for cand in rig_candidates:
+        if cand is None:
+            continue
+        rig = Path(cand).expanduser().resolve()
+        if rig in seen or not rig.is_dir():
+            continue
+        seen.add(rig)
+        planning = rig / ".planning"
+        if not planning.is_dir():
+            continue
+        for run_dir in planning.glob(f"*/{issue_id}"):
+            if run_dir.is_dir():
+                try:
+                    mtime = run_dir.stat().st_mtime
+                except OSError:
+                    continue
+                matches.append((mtime, rig, run_dir))
+    if not matches:
+        return None
+    _, rig_path, run_dir = max(matches, key=lambda t: t[0])
+    return RunLocation(rig_path=rig_path, run_dir=run_dir)
+
+
 def resolve_run_dir(issue_id: str) -> RunLocation:
     """Return (rig_path, run_dir) for an issue, or raise RunDirNotFound.
 
@@ -191,6 +228,7 @@ def resolve_run_dir(issue_id: str) -> RunLocation:
     Requires that the flow has run against the bead at least once since
     the metadata-write infra landed.
     """
+    rig_from_prefect: Path | None = None
     try:
         row = _bd_show_json(issue_id)
     except RunDirNotFound:
@@ -200,12 +238,20 @@ def resolve_run_dir(issue_id: str) -> RunLocation:
         # to the right `bd show <issue_id>` lookup.
         info = lookup_prefect_run(issue_id)
         if info is None or not info[0].is_dir():
+            # No bd row and no Prefect record — last resort: scan the cwd for
+            # a deterministic run dir (a br rig invoked from inside the rig).
+            fs = _filesystem_run_dir(issue_id, [Path.cwd()])
+            if fs is not None:
+                return fs
             raise
         rig_from_prefect, canonical_id = info
         # If the input wasn't actually the bead id (UUID prefix case),
         # use the canonical id for the bd lookup.
         bead_id = canonical_id or issue_id
-        row = _bd_show_json(bead_id, cwd=rig_from_prefect)
+        try:
+            row = _bd_show_json(bead_id, cwd=rig_from_prefect)
+        except RunDirNotFound:
+            row = {}
         # Reflect the resolved id back so downstream code (run_dir paths)
         # uses the canonical name.
         if bead_id != issue_id:
@@ -213,23 +259,33 @@ def resolve_run_dir(issue_id: str) -> RunLocation:
     meta = row.get("metadata") or {}
     rig_path_s = meta.get(META_RIG_PATH)
     run_dir_s = meta.get(META_RUN_DIR)
-    if not rig_path_s or not run_dir_s:
-        raise RunDirNotFound(_missing_metadata_msg(issue_id))
-    rig_path = Path(rig_path_s)
-    run_dir = Path(run_dir_s)
-    if not run_dir.exists():
-        raise RunDirNotFound(
-            f"run_dir recorded for {issue_id} ({run_dir}) does not exist on disk. "
-            "The rig may have been cleaned or moved."
-        )
-    return RunLocation(rig_path=rig_path, run_dir=run_dir)
+    if rig_path_s and run_dir_s:
+        rig_path = Path(rig_path_s)
+        run_dir = Path(run_dir_s)
+        if not run_dir.exists():
+            raise RunDirNotFound(
+                f"run_dir recorded for {issue_id} ({run_dir}) does not exist on disk. "
+                "The rig may have been cleaned or moved."
+            )
+        return RunLocation(rig_path=rig_path, run_dir=run_dir)
+    # No usable metadata. The br backend stores none, so recover the run dir
+    # from its deterministic path `<rig>/.planning/<formula>/<issue_id>/`,
+    # rooted at the rig Prefect named (or the cwd).
+    if rig_from_prefect is None:
+        rig_from_prefect = rig_path_from_prefect(issue_id)
+    fs = _filesystem_run_dir(issue_id, [rig_from_prefect, Path.cwd()])
+    if fs is not None:
+        return fs
+    raise RunDirNotFound(_missing_metadata_msg(issue_id))
 
 
 def _missing_metadata_msg(issue_id: str) -> str:
     return (
-        f"no run_dir recorded for {issue_id}. "
+        f"no run_dir found for {issue_id} via bead metadata, Prefect, or the "
+        f"filesystem (<rig>/.planning/*/{issue_id}/). "
         f"Has `po run <formula> --issue-id {issue_id} ...` been executed? "
-        "If the flow ran before this infra change, rerun it, or set manually:\n"
+        "Try again from inside the rig dir. On a dolt rig you can also set it "
+        "manually:\n"
         f"  bd update {issue_id} "
         f"--set-metadata {META_RIG_PATH}=<abs-path> "
         f"--set-metadata {META_RUN_DIR}=<abs-path>"
