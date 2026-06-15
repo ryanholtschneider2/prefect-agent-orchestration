@@ -11,7 +11,7 @@ Pure helpers used by `po artifacts`. The run dir layout is:
       lessons-learned.md
 
 Verdicts live on bd-metadata of the iter beads
-(`<issue>.<step>.iter<N>`, metadata key `po.<step>`); this module reads
+(`<issue>-<step>-iter<N>`, metadata key `po.<step>`); this module reads
 them via `bd list --parent <issue>` and renders them as sections.
 Pre-migration run dirs with `verdicts/*.json` files are still rendered
 via a legacy fallback in `_collect_verdicts`.
@@ -115,15 +115,16 @@ def collect_sections(run_dir: Path, *, verdicts_only: bool = False) -> list[Sect
 def _collect_verdicts(run_dir: Path) -> list[Section]:
     """Render per-step verdicts as Section objects.
 
-    Source of truth: bd-metadata on iter beads (`<seed>.<step>.iter<N>`).
+    Source of truth: bd-metadata on iter beads (`<seed>-<step>-iter<N>`).
     By convention, `run_dir.name` is the seed_id. Falls back to the
     legacy `<run_dir>/verdicts/*.json` scan for pre-migration data.
     """
     sections: list[Section] = []
     seed_id = run_dir.name
     if seed_id:
-        import re as _re
         import subprocess as _sp
+
+        from prefect_orchestration.beads_meta import iter_bead_re
 
         # Find the rig root by walking up: <rig>/.planning/<formula>/<seed>/
         rig_root: Path | None = None
@@ -146,7 +147,7 @@ def _collect_verdicts(run_dir: Path) -> list[Section]:
                 rows = json.loads(proc.stdout)
             except json.JSONDecodeError:
                 rows = []
-            iter_pat = _re.compile(rf"^{_re.escape(seed_id)}\.(.+?)\.iter(\d+)$")
+            iter_pat = iter_bead_re(seed_id)
             for row in rows or []:
                 if not isinstance(row, dict):
                     continue

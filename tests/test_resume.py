@@ -48,15 +48,15 @@ def test_list_completed_steps_with_issue_id_walks_bd(
     fake_rows = json.dumps(
         [
             {
-                "id": "iss-1.triage.iter1",
+                "id": "iss-1-triage-iter1",
                 "metadata": {"po.triage": {"complexity": "moderate"}},
             },
             {
-                "id": "iss-1.plan.iter1",
+                "id": "iss-1-plan-iter1",
                 "metadata": {"po.plan": {"verdict": "approved"}},
             },
             {
-                "id": "iss-1.plan.iter2",
+                "id": "iss-1-plan-iter2",
                 "metadata": {"po.run_dir": "/tmp/x"},  # bookkeeping only — no verdict
             },
         ]

@@ -13,7 +13,7 @@ bead's description for the task spec, does the work, then `bd close`s the
 bead with a reason whose keyword encodes the verdict. `agent_step`:
 
 1. **Resolves the target bead.** When `iter_n` is set, creates / reuses
-   `<seed>.<step>.iter<N>` (idempotent — if the child bead already exists,
+   `<seed>-<step>-iter<N>` (idempotent — if the child bead already exists,
    reuse it without erroring). Otherwise the seed itself IS the target.
 2. **Resumability.** If the target bead is already closed, parses its
    close-reason and returns the verdict without running the agent. Re-runs
@@ -177,7 +177,7 @@ class AgentStepResult:
     `verdict`/`summary` are populated when `verdict_keywords` was set
     AND the bead's close-reason matched a keyword. `reply` is the agent's
     raw last reply text (useful when no verdict parsing is requested).
-    `bead_id` is the bead the agent operated on (seed or `<seed>.<step>.iter<N>`).
+    `bead_id` is the bead the agent operated on (seed or `<seed>-<step>-iter<N>`).
     `from_cache` is True when the bead was already closed at entry and the
     agent did NOT run (resumability path).
     """
@@ -238,7 +238,7 @@ def agent_step(
         ``seed_id``, ``rig_path``, ``role_step_bead_id``, ``iter``,
         ``step``, ``run_dir`` (when caller supplies it).
     iter_n
-        When set, operate on `<seed_id>.<step>.iter<N>`; create if absent.
+        When set, operate on `<seed_id>-<step>-iter<N>`; create if absent.
         When unset, the seed bead itself is the target.
     step
         Bead name segment for the child iter bead. Required when
@@ -325,7 +325,7 @@ def agent_step(
     # re-opens the bead.
     if iter_n is not None and closed_state is None and _bd_available():
         # Thread the backend-assigned id back through `target_bead`. On bd the
-        # explicit `<seed>.<step>.iterN` id is honored and the return matches
+        # explicit `<seed>-<step>-iter<N>` id is honored and the return matches
         # the input; on br (no `--id` flag) the backend mints its own id and
         # returns it, so the computed id refers to a phantom bead. Everything
         # downstream — the description stamp, the convergence-ladder status
@@ -752,12 +752,18 @@ def _default_close_block(ctx: dict[str, Any]) -> str:
         )
 
     return (
-        "\n\n# REQUIRED FINAL STEP — close your bead\n\n"
+        "\n\n# REQUIRED FINAL STEP — write your verdict, then close your bead\n\n"
         f"Your turn is NOT complete until you close `{bead}` via `bd close`. "
         "Writing a verdict in markdown / commit messages / your reply text "
         "does NOT count — the orchestrator only reads the bd close reason.\n"
         f"{keyword_section}"
-        "Last action of the turn:\n\n"
+        "Last two actions of the turn, IN THIS ORDER:\n\n"
+        "1. Stamp your structured verdict with `po write-verdict` (backend-agnostic; "
+        "works on both dolt and beads-rust). Do NOT hand-write "
+        "`bd update ... --metadata` — it is dolt-only and breaks on br rigs:\n\n"
+        f"```bash\npo write-verdict --bead-id {bead} --name <role> "
+        "--payload '<json-verdict>'\n```\n\n"
+        "2. Close the bead with the keyword close-reason:\n\n"
         f'```bash\nbd close {bead} --reason "<keyword>: <one-line summary>"\n```\n\n'
         "**Stuck or need a human decision?** Don't leave the bead open silently — "
         f'flag it: `bd human {bead} --question="<one-line question>"`. '

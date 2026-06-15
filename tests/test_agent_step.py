@@ -134,7 +134,7 @@ def test_agent_step_seed_only_agent_closes(
 def test_agent_step_iter_creates_child_bead(
     tmp_path: Path, fake_bd: dict, fake_session: _FakeSession
 ) -> None:
-    """`iter_n=1` + `step='plan'` → operates on `<seed>.plan.iter1`."""
+    """`iter_n=1` + `step='plan'` → operates on `<seed>-plan-iter1`."""
     _write_prompt(tmp_path / "agents", "planner")
     fake_bd["seed"] = {
         "id": "seed",
@@ -149,7 +149,7 @@ def test_agent_step_iter_creates_child_bead(
     original = fake_session.prompt
 
     def closing_prompt(text: str, **kw: Any) -> str:
-        bid = "seed.plan.iter1"
+        bid = "seed-plan-iter1"
         fake_bd[bid]["status"] = "closed"
         fake_bd[bid]["closure_reason"] = "approved: looks good"
         return original(text, **kw)
@@ -165,7 +165,7 @@ def test_agent_step_iter_creates_child_bead(
         step="plan",
         verdict_keywords=("approved", "rejected"),
     )
-    assert result.bead_id == "seed.plan.iter1"
+    assert result.bead_id == "seed-plan-iter1"
     assert result.verdict == "approved"
     assert "looks good" in result.summary
 
@@ -180,7 +180,7 @@ def test_agent_step_adopts_backend_assigned_iter_id(
 
     `agent_step` must adopt the returned id as canonical and thread it through
     the description stamp, the convergence-ladder status probes, and the verdict
-    read — NOT the computed `<seed>.<step>.iterN`, which is a phantom bead on br.
+    read — NOT the computed `<seed>-<step>-iter<N>`, which is a phantom bead on br.
     """
     _write_prompt(tmp_path / "agents", "planner")
     fake_bd["seed"] = {
@@ -192,11 +192,11 @@ def test_agent_step_adopts_backend_assigned_iter_id(
         "notes": "",
     }
 
-    # Mimic br: ignore the requested `<seed>.plan.iter1` and return a fresh id.
+    # Mimic br: ignore the requested `<seed>-plan-iter1` and return a fresh id.
     br_id = "po-7f3a9c"
 
     def br_create_child_bead(parent: str, child_id: str, **_kw: Any) -> str:
-        assert child_id == "seed.plan.iter1"  # computed id is the requested one
+        assert child_id == "seed-plan-iter1"  # computed id is the requested one
         fake_bd[br_id] = {
             "id": br_id,
             "status": "open",
@@ -241,7 +241,7 @@ def test_agent_step_adopts_backend_assigned_iter_id(
     assert result.closed_by == "agent"
     assert result.verdict == "approved"
     assert stamped == [br_id]  # description stamped on the real bead
-    assert "seed.plan.iter1" not in fake_bd  # phantom id never materialized
+    assert "seed-plan-iter1" not in fake_bd  # phantom id never materialized
 
 
 def test_agent_step_br_records_iter_id_map(
@@ -298,7 +298,7 @@ def test_agent_step_br_records_iter_id_map(
     )
     assert result.bead_id == br_id
     # The mapping persists under the convention key for the next call.
-    assert iter_bead_ids.lookup(run_dir, "seed.build.iter1") == br_id
+    assert iter_bead_ids.lookup(run_dir, "seed-build-iter1") == br_id
 
 
 def test_agent_step_br_reentry_resolves_recorded_id_no_remint(
@@ -314,7 +314,7 @@ def test_agent_step_br_reentry_resolves_recorded_id_no_remint(
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     # Prior call already recorded the mapping and the real bead is closed.
-    iter_bead_ids.record(run_dir, "seed.build.iter1", "br-real-1")
+    iter_bead_ids.record(run_dir, "seed-build-iter1", "br-real-1")
     fake_bd["br-real-1"] = {
         "id": "br-real-1",
         "status": "closed",
