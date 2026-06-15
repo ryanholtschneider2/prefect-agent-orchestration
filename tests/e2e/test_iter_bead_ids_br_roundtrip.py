@@ -61,13 +61,20 @@ def br_rig(tmp_path: Path) -> Path:
 
 
 def _seed(rig: Path) -> str:
-    proc = _br("create", "seed feature", "-t", "feature", "-p", "2", "--silent", cwd=rig)
+    proc = _br(
+        "create", "seed feature", "-t", "feature", "-p", "2", "--silent", cwd=rig
+    )
     assert proc.returncode == 0, f"br create seed failed: {proc.stderr}{proc.stdout}"
     return proc.stdout.strip()
 
 
-def test_br_reentry_resolves_real_id_no_remint(br_rig: Path) -> None:
+def test_br_reentry_resolves_real_id_no_remint(
+    br_rig: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Full create -> record -> re-entry cycle against the real br binary."""
+    # This e2e test asserts the metadata.json sniff itself resolves br, so clear
+    # the unit-suite default PO_BEADS_BACKEND=dolt (conftest) that would mask it.
+    monkeypatch.delenv("PO_BEADS_BACKEND", raising=False)
     seed = _seed(br_rig)
     assert resolve_backend(br_rig) == "br"
 
@@ -83,7 +90,9 @@ def test_br_reentry_resolves_real_id_no_remint(br_rig: Path) -> None:
     real_id = create_child_bead(
         seed, conv, title="build iter1", description="x", rig_path=br_rig
     )
-    assert real_id != conv, "br should mint its own flat id, not honor the convention id"
+    assert real_id != conv, (
+        "br should mint its own flat id, not honor the convention id"
+    )
     iter_bead_ids.record(run_dir, conv, real_id)
 
     # The agent finishes iter1 and closes its real bead.
@@ -91,7 +100,9 @@ def test_br_reentry_resolves_real_id_no_remint(br_rig: Path) -> None:
 
     # Re-entry: agent_step resolves target_bead through the map BEFORE probing.
     resolved = iter_bead_ids.lookup(run_dir, conv) or conv
-    assert resolved == real_id, "re-entry must resolve the recorded real id, not the phantom"
+    assert resolved == real_id, (
+        "re-entry must resolve the recorded real id, not the phantom"
+    )
 
     # The resolved (real) bead reads closed -> fast-path cache short-circuits ->
     # create_child_bead is never reached again. Confirm via the real binary.
@@ -133,7 +144,5 @@ def test_br_map_survives_fresh_process_no_remint(br_rig: Path) -> None:
     # and does NOT call create_child_bead again. Prove the negative: only one
     # iter bead exists under the seed.
     listing = _br("list", "--all", "--json", cwd=br_rig)
-    iter_beads = [
-        b["id"] for b in json.loads(listing.stdout) if b["id"] not in (seed,)
-    ]
+    iter_beads = [b["id"] for b in json.loads(listing.stdout) if b["id"] not in (seed,)]
     assert iter_beads == [real_id], f"exactly one iter bead expected, got {iter_beads}"
