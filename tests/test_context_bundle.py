@@ -72,7 +72,7 @@ def test_all_present(
         run_dir,
         rig_path,
         monkeypatch,
-        bd_outputs={"proj-abc": "issue body", "proj-abc.build.iter1": "step spec"},
+        bd_outputs={"proj-abc": "issue body", "proj-abc-build-iter1": "step spec"},
     )
     text = out.read_text()
 
@@ -247,17 +247,17 @@ def test_resolves_iter_bead_id_from_map(
     run_dir: Path, rig_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When the run-dir records the real (br-minted) id, show it — not the
-    phantom `<issue>.<role>.iterN` convention id."""
+    phantom `<issue>-<role>-iterN` convention id."""
     from prefect_orchestration import iter_bead_ids
 
-    iter_bead_ids.record(run_dir, "proj-abc.build.iter1", "br-real-1")
+    iter_bead_ids.record(run_dir, "proj-abc-build-iter1", "br-real-1")
     calls = _capture_show_ids(monkeypatch)
     build_context_md(
         run_dir=run_dir, rig_path=rig_path, issue_id="proj-abc", role="build", iter_n=1
     )
     shown = [c[2] for c in calls if len(c) > 2 and c[1] == "show"]
     assert "br-real-1" in shown
-    assert "proj-abc.build.iter1" not in shown
+    assert "proj-abc-build-iter1" not in shown
 
 
 def test_explicit_iter_bead_id_override_wins(
@@ -266,7 +266,7 @@ def test_explicit_iter_bead_id_override_wins(
     """An explicit `iter_bead_id` is used verbatim (no map lookup, no compute)."""
     from prefect_orchestration import iter_bead_ids
 
-    iter_bead_ids.record(run_dir, "proj-abc.build.iter1", "br-mapped")
+    iter_bead_ids.record(run_dir, "proj-abc-build-iter1", "br-mapped")
     calls = _capture_show_ids(monkeypatch)
     build_context_md(
         run_dir=run_dir,
@@ -284,11 +284,11 @@ def test_explicit_iter_bead_id_override_wins(
 def test_falls_back_to_convention_id_without_map(
     run_dir: Path, rig_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No map, no override → use the `<issue>.<role>.iterN` convention id
+    """No map, no override → use the `<issue>-<role>-iterN` convention id
     (correct on dolt where that id is honored)."""
     calls = _capture_show_ids(monkeypatch)
     build_context_md(
         run_dir=run_dir, rig_path=rig_path, issue_id="proj-abc", role="build", iter_n=1
     )
     shown = [c[2] for c in calls if len(c) > 2 and c[1] == "show"]
-    assert "proj-abc.build.iter1" in shown
+    assert "proj-abc-build-iter1" in shown
