@@ -96,7 +96,7 @@ class ResumeResult:
 def _list_completed_steps(run_dir: Path, issue_id: str | None = None) -> list[str]:
     """Return the set of completed step names for the issue.
 
-    Walks iter beads under the seed (`<seed>.<step>.iter<N>`) via
+    Walks iter beads under the seed (`<seed>-<step>-iter<N>`) via
     `bd list --parent <seed>` and returns the stems of every iter bead
     that has metadata under a `po.*` key (excluding bookkeeping keys
     `po.run_dir` / `po.rig_path`).
@@ -107,8 +107,9 @@ def _list_completed_steps(run_dir: Path, issue_id: str | None = None) -> list[st
     """
     if issue_id:
         import json as _json
-        import re as _re
         import subprocess as _sp
+
+        from prefect_orchestration.beads_meta import iter_bead_re
 
         proc = _sp.run(
             ["bd", "list", "--parent", issue_id, "--all", "--json"],
@@ -126,7 +127,7 @@ def _list_completed_steps(run_dir: Path, issue_id: str | None = None) -> list[st
                 rows = _json.loads(proc.stdout)
             except _json.JSONDecodeError:
                 rows = []
-            iter_pat = _re.compile(rf"^{_re.escape(issue_id)}\.(.+?)\.iter(\d+)$")
+            iter_pat = iter_bead_re(issue_id)
             steps: list[str] = []
             for row in rows or []:
                 if not isinstance(row, dict):

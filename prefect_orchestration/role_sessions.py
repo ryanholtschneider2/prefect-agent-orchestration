@@ -5,7 +5,7 @@ through a `MetadataStore` keyed by either the issue itself
 (`FileStore(<run_dir>/metadata.json)`) or an explicit `parent_bead`
 (`BeadsStore`). That couples session lifetime to one bead — fine for a
 single solo run, but breaks role affinity across child beads of the
-same parent (build.iter1 → build.iter2, …).
+same parent (build-iter1 → build-iter2, …).
 
 This module layers a **seed-bead-keyed** view on top: callers point a
 `RoleSessionStore` at the topmost parent-child ancestor of the active

@@ -8,7 +8,9 @@ from prefect_orchestration import iter_bead_ids
 
 
 def test_convention_id_shape() -> None:
-    assert iter_bead_ids.convention_id("bd-3ih", "build", 3) == "bd-3ih.build.iter3"
+    # Hyphen-separated so beads-rust accepts the id (delegates to
+    # beads_meta.iter_bead_id, the single source of truth).
+    assert iter_bead_ids.convention_id("bd-3ih", "build", 3) == "bd-3ih-build-iter3"
 
 
 def test_lookup_missing_file_returns_none(tmp_path: Path) -> None:

@@ -1,7 +1,9 @@
 """Run-dir-scoped map: role-step *convention id* → *backend-assigned* bead id.
 
 The orchestrator names each role-step by the convention
-``<seed>.<step>.iter<N>``. On dolt (``bd``) that id is honored verbatim by
+``<seed>-<step>-iter<N>`` (see
+:func:`prefect_orchestration.beads_meta.iter_bead_id`, the single source of
+truth for the string shape). On dolt (``bd``) that id is honored verbatim by
 ``bd create --id=…``, so the convention id IS the real bead id and this map
 is unused (every ``lookup`` misses and the caller falls back to the
 convention id). On br (``beads_rust``) ``create`` has no ``--id`` flag — br
@@ -27,12 +29,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from prefect_orchestration.beads_meta import iter_bead_id
+
 MAP_FILENAME = "iter-bead-ids.json"
 
 
 def convention_id(seed_id: str, step: str, iter_n: int) -> str:
-    """The orchestrator's stable name for a role-step: ``<seed>.<step>.iterN``."""
-    return f"{seed_id}.{step}.iter{iter_n}"
+    """The orchestrator's stable name for a role-step: ``<seed>-<step>-iterN``.
+
+    Thin alias for :func:`prefect_orchestration.beads_meta.iter_bead_id` — the
+    single source of truth for the convention-id string shape (hyphen-separated
+    so beads-rust accepts it).
+    """
+    return iter_bead_id(seed_id, step, iter_n)
 
 
 def lookup(run_dir: Path | str, convention_key: str) -> str | None:

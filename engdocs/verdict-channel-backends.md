@@ -79,7 +79,10 @@ return the br-assigned id parsed from `--json` instead. Two consequences:
    retry mints a fresh bead. Dedupe on the returned id.
 
 This matters for a *literal* full `software_dev_full`-against-br run because
-`agent_step` derives a deterministic iter id (`<seed>.<step>.iter<N>`). As of
+`agent_step` derives a deterministic iter id via
+`beads_meta.iter_bead_id(seed, step, iter_n)` → `<seed>-<step>-iter<N>`
+(prefect-orchestration-5w3 moved this off the legacy dot-separated
+`<seed>.<step>.iter<N>`, which br rejects). As of
 9xa.1 the slow-path adopts `create_child_bead`'s return value as the canonical
 `target_bead`: on bd the explicit id is honored and the return matches the
 input, on br the backend-minted id is threaded through the description stamp,
@@ -146,6 +149,25 @@ the run-dir from bead metadata (there is none); they fall back to their other
 discovery paths. Re-homing these keys onto br comments (like the verdict
 channel) remains future work.
 
+## Landed by prefect-orchestration-5w3
+
+- **Iter-bead ids are br-safe.** `beads_meta.iter_bead_id` / `iter_bead_re` are
+  the single source of truth for the `<seed>-<step>-iter<N>` convention;
+  `agent_step`, `context_bundle`, `resume`, `artifacts`, and the pack's
+  triage-flag read + terminal-iter scan + `summarize-verdicts` all route through
+  them. No dot-separated iter id is constructed anywhere.
+- **Write side is backend-agnostic.** Role prompts emit
+  `po write-verdict --bead-id <bead> --name <role> --payload '<json>'` (the
+  pack's `po.commands` entry, which calls `beads_backend.write_verdict` and
+  resolves the backend from `--rig-path`/cwd) instead of hardcoding
+  `bd update <id> --metadata`. On dolt it stamps `metadata["po.<role>"]`; on br
+  it appends a `po-verdict:<role>:<json>` comment. With this + the read side
+  (`parsing.read_bead_verdict`), a full `software_dev_full` run records and reads
+  verdicts on either backend.
+- **Migration helper.** `setup/migrate-dolt-to-br.sh` (+ the testable
+  `setup/migrate_jsonl_ids.py`) rewrites dotted iter ids to hyphens in a dolt
+  JSONL export before `br sync --import-only`.
+
 ## Still deferred
 
 - **`BeadsStore` metadata bus re-homing** — `get`/`set`/`all` are now
@@ -153,18 +175,17 @@ channel) remains future work.
   on br, but the keys themselves (`po.run_dir`, `po.rig_path`, `po.iter_cap`,
   …) still have no br home. br has no per-issue metadata; re-homing them
   (likely onto comments, like the verdict channel) is its own slice.
-- **Pack agent prompts** (`po-formulas-software-dev`, a separate repo / PR;
-  tracked as bead **prefect-orchestration-ysw**) — roles still emit
-  `bd update <id> --metadata` to write verdicts. They need to emit the br form
-  (`br comments add <id> 'po-verdict:<role>:<json>'`) on a br rig, ideally
-  routed through `beads_backend.write_verdict` so the prompt stays
-  backend-agnostic. Until this lands, a full `software_dev_full` run does **not**
-  work end-to-end on br: roles can't record their verdicts.
 - **Pack graph-mode reconstruction** (`po-formulas-software-dev`, separate
   repo) — `software_dev.py`'s watcher loop still discovers / counts iters by
-  scanning `bd list` for `<seed>.<step>.iter<N>` ids, which never exist on br.
-  The core `prefect-orchestration-99k` map makes `agent_step` itself idempotent
+  scanning `bd list` for iter ids via `iter_bead_id`/`iter_bead_re` (now
+  hyphen-form). On br the convention id is a phantom; the core
+  `prefect-orchestration-99k` map makes `agent_step` itself idempotent
   (re-entry no longer re-mints) and exposes the real ids at
-  `<run_dir>/iter-bead-ids.json`; the pack still needs to read that map (rather
+  `<run_dir>/iter-bead-ids.json`. The pack still needs to read that map (rather
   than the convention-id scan) and pass `iter_bead_id` into `build_context_md`
-  so the graph-mode loop converges on br. Tracked as a pack-side follow-up.
+  so the graph-mode loop fully converges on br. Tracked as a pack-side follow-up.
+- **Graph-mode iter ids** — `graph.py` / `per_role_step` still mint
+  `<child>.iter<N>` (a separate dot convention from the `agent_step` lineage).
+  Moving graph mode to the hyphen helper is out of scope for 5w3 (which scoped
+  to the `agent_step` / `software_dev` path) and wants its own bead before a
+  graph-mode-on-br run.
