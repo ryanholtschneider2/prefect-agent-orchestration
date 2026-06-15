@@ -215,6 +215,31 @@ def _detect_rate_limit_in_jsonl(jsonl_path: Path) -> str | None:
     return None
 
 
+# Phrases that claude emits when a --resume session ID is not found.
+# Match case-insensitively against the combined stderr + stdout.
+_RESUME_NOT_FOUND_PHRASES = (
+    "no conversation found",
+    "no session found",
+    "session not found",
+    "session id not found",
+    "could not find session",
+    "session does not exist",
+)
+
+_RESUME_RETRY_BACKOFF_S = 5.0
+
+
+def _is_resume_session_missing(stderr: str, stdout: str) -> bool:
+    """Return True when claude failed because the session ID no longer exists.
+
+    Distinguishes stale-pointer failures (safe to fall back to fresh) from
+    transient ones (worth a single retry first). The caller is responsible
+    for logging before acting on the result.
+    """
+    combined = (stderr + " " + stdout).lower()
+    return any(phrase in combined for phrase in _RESUME_NOT_FOUND_PHRASES)
+
+
 class SessionBackend(Protocol):
     """A backend that can run a prompt in a session and return output + new session_id.
 
@@ -454,6 +479,109 @@ class ClaudeCliBackend:
             )
 
         if proc.returncode != 0:
+            # When the failed command was a --resume attempt, try to recover
+            # rather than surfacing as a fatal flow failure.
+            if session_id and "--resume" in cmd:
+                stderr_text = proc.stderr or ""
+                stdout_text = proc.stdout or ""
+                if _is_resume_session_missing(stderr_text, stdout_text):
+                    # Stale session pointer — go straight to fresh session.
+                    logger.warning(
+                        "claude --resume %s: session not found; "
+                        "falling back to fresh session immediately",
+                        session_id,
+                    )
+                else:
+                    # Transient failure — retry the resume once before giving up.
+                    logger.warning(
+                        "claude --resume %s exited %d; retrying in %.0fs "
+                        "(then fresh-session fallback if still failing)",
+                        session_id,
+                        proc.returncode,
+                        _RESUME_RETRY_BACKOFF_S,
+                    )
+                    time.sleep(_RESUME_RETRY_BACKOFF_S)
+                    try:
+                        retry_proc = subprocess.run(
+                            cmd,
+                            input=prompt,
+                            cwd=cwd,
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                            env=_clean_env(extra_env),
+                            timeout=timeout,
+                        )
+                    except subprocess.TimeoutExpired as exc:
+                        raise StepTimeoutError(
+                            timeout_s=timeout or 0.0,
+                            message=(
+                                f"claude CLI did not return within {timeout}s on resume retry\n"
+                                f"argv: {cmd}"
+                            ),
+                        ) from exc
+                    retry_combined = (
+                        (retry_proc.stdout or "") + "\n" + (retry_proc.stderr or "")
+                    )
+                    if _has_429_envelope(retry_combined):
+                        raise RateLimitError(
+                            reset_time=_detect_rate_limit_in_pane(retry_combined)
+                            or None,
+                            message=retry_combined[-1000:],
+                        )
+                    if retry_proc.returncode == 0:
+                        return _parse_envelope(retry_proc.stdout, session_id)
+                    logger.warning(
+                        "claude --resume %s retry also failed (exit %d); "
+                        "falling back to fresh session",
+                        session_id,
+                        retry_proc.returncode,
+                    )
+
+                # Fresh-session fallback: rebuild argv without --resume.
+                fresh_cmd = _build_claude_argv(
+                    self.start_command, None, fork, model, effort
+                )
+                logger.warning(
+                    "Starting fresh claude session (dropped --resume %s)", session_id
+                )
+                try:
+                    fresh_proc = subprocess.run(
+                        fresh_cmd,
+                        input=prompt,
+                        cwd=cwd,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        env=_clean_env(extra_env),
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise StepTimeoutError(
+                        timeout_s=timeout or 0.0,
+                        message=(
+                            f"claude CLI did not return within {timeout}s on fresh-session fallback\n"
+                            f"argv: {fresh_cmd}"
+                        ),
+                    ) from exc
+                fresh_combined = (
+                    (fresh_proc.stdout or "") + "\n" + (fresh_proc.stderr or "")
+                )
+                if _has_429_envelope(fresh_combined):
+                    raise RateLimitError(
+                        reset_time=_detect_rate_limit_in_pane(fresh_combined) or None,
+                        message=fresh_combined[-1000:],
+                    )
+                if fresh_proc.returncode != 0:
+                    raise RuntimeError(
+                        f"claude CLI exited {fresh_proc.returncode} on fresh-session fallback "
+                        f"after --resume {session_id} failed\n"
+                        f"argv: {fresh_cmd}\n"
+                        f"stderr: {fresh_proc.stderr[:2000]}\n"
+                        f"stdout: {fresh_proc.stdout[:2000]}"
+                    )
+                return _parse_envelope(fresh_proc.stdout, None)
+
             raise RuntimeError(
                 f"claude CLI exited {proc.returncode}\n"
                 f"argv: {cmd}\n"
@@ -1007,6 +1135,13 @@ class TmuxClaudeBackend:
             f"echo ${{PIPESTATUS[0]}} > {shlex.quote(str(rc_path))}"
         )
 
+        # Initialise so the fresh-fallback branch can reference them safely.
+        result: str = ""
+        new_sid: str = ""
+        stdout: str = ""
+        rc: int = -1
+        _resume_failed: bool = False
+
         try:
             target = _spawn_tmux(
                 session_name=session_name,
@@ -1045,10 +1180,16 @@ class TmuxClaudeBackend:
                     message=stdout[-1000:],
                 )
             if rc != 0:
-                raise RuntimeError(
-                    f"claude CLI exited {rc}\nstdout tail: {stdout[-2000:]}"
-                )
-            result, new_sid = _parse_envelope(stdout, session_id)
+                # If this was a --resume attempt, recover rather than failing the flow.
+                if session_id and "--resume" in argv:
+                    _resume_failed = True
+                    # Let the finally block clean up; fall through to fresh-session below.
+                else:
+                    raise RuntimeError(
+                        f"claude CLI exited {rc}\nstdout tail: {stdout[-2000:]}"
+                    )
+            if not _resume_failed:
+                result, new_sid = _parse_envelope(stdout, session_id)
         finally:
             _cleanup_tmux(target, scoped=window_name is not None)
             if prompt_path.exists():
@@ -1056,6 +1197,30 @@ class TmuxClaudeBackend:
                     prompt_path.unlink()
                 except OSError:
                     pass
+
+        if _resume_failed:
+            if _is_resume_session_missing("", stdout):
+                logger.warning(
+                    "TmuxClaudeBackend --resume %s: session not found; "
+                    "falling back to fresh session",
+                    session_id,
+                )
+            else:
+                logger.warning(
+                    "TmuxClaudeBackend --resume %s exited %d; "
+                    "falling back to fresh session",
+                    session_id,
+                    rc,
+                )
+            return self.run(
+                prompt,
+                session_id=None,
+                cwd=cwd,
+                fork=fork,
+                model=model,
+                effort=effort,
+                extra_env=extra_env,
+            )
 
         return result, new_sid
 
@@ -1829,6 +1994,36 @@ class TmuxInteractiveClaudeBackend:
             # credentials, etc.) instead of guessing.
             tail = "\n".join(pane_text.splitlines()[-30:])
             _cleanup_tmux(target, scoped=scoped)
+            # If this was a --resume attempt, recover with a fresh session
+            # rather than failing the whole flow.  The two cases are:
+            #   * "No conversation found" — stale session pointer; fresh immediately.
+            #   * Any other early exit — could be transient; fresh is still safer
+            #     than losing an otherwise-good run.
+            # `prior` is only set when session_id was a valid UUID and fork=False.
+            if prior and not fork:
+                if _is_resume_session_missing("", pane_text):
+                    logger.warning(
+                        "TmuxInteractiveClaudeBackend --resume %s: session not found; "
+                        "falling back to fresh session. pane tail:\n%s",
+                        prior,
+                        tail,
+                    )
+                else:
+                    logger.warning(
+                        "TmuxInteractiveClaudeBackend --resume %s: claude exited before "
+                        "prompt injection; falling back to fresh session. pane tail:\n%s",
+                        prior,
+                        tail,
+                    )
+                return self.run(
+                    prompt,
+                    session_id=None,
+                    cwd=cwd,
+                    fork=fork,
+                    model=model,
+                    effort=effort,
+                    extra_env=extra_env,
+                )
             raise RuntimeError(
                 f"claude exited before prompt could be injected (target "
                 f"{target!r}). pane tail:\n{tail}"
