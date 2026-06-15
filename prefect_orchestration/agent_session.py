@@ -308,6 +308,27 @@ def _build_codex_exec_argv(
     return argv
 
 
+# Substrings that mean the resumed session pointer is stale/gone — the
+# CLI couldn't find the conversation, so retrying the same `--resume`
+# is pointless; fall straight through to a fresh session. Claude renders
+# "No conversation found with session ID: <uuid>".
+_SESSION_GONE_MARKERS = (
+    "no conversation found",
+    "no conversation found with session id",
+)
+
+# Backoff before the single resume retry on a transient non-zero exit.
+# Short on purpose — a resume that's going to succeed usually does so
+# immediately on the second try; a longer wait just adds latency.
+_RESUME_RETRY_BACKOFF_S = 1.0
+
+
+def _session_is_gone(*texts: str) -> bool:
+    """True if any text clearly says the resumed session no longer exists."""
+    blob = "\n".join(t for t in texts if t).lower()
+    return any(marker in blob for marker in _SESSION_GONE_MARKERS)
+
+
 def _parse_envelope(stdout: str, prior_sid: str | None) -> tuple[str, str]:
     """Parse a stream-json event log: return (final_result, session_id).
 
@@ -410,58 +431,104 @@ class ClaudeCliBackend:
         extra_env: Mapping[str, str] | None = None,
         timeout: float | None = DEFAULT_AGENT_TIMEOUT_S,
     ) -> tuple[str, str]:
-        cmd = _build_claude_argv(self.start_command, session_id, fork, model, effort)
+        def _run_once(sid: str | None) -> subprocess.CompletedProcess[str]:
+            """Spawn claude for one attempt with the given session pointer.
 
-        try:
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                check=False,
-                env=_clean_env(extra_env),
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            # Subprocess never returned within the wall-clock budget. The
-            # SDK is wedged (silent retry-loop / network stuck). Surface
-            # as a typed StepTimeoutError so Prefect marks the flow Failed
-            # and the operator can `po retry`. Without this, the run sits
-            # in `Running` forever and the operator has to ps + kill.
-            raise StepTimeoutError(
-                timeout_s=timeout or 0.0,
-                message=(
-                    f"claude CLI did not return within {timeout}s\n"
-                    f"argv: {cmd}\n"
-                    f"stdout-tail: {(exc.stdout or b'')[-2000:]!r}\n"
-                    f"stderr-tail: {(exc.stderr or b'')[-2000:]!r}"
-                ),
-            ) from exc
+            Raises StepTimeoutError / RateLimitError exactly as before;
+            returns the completed proc otherwise (caller inspects rc).
+            """
+            cmd = _build_claude_argv(self.start_command, sid, fork, model, effort)
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    input=prompt,
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env=_clean_env(extra_env),
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired as exc:
+                # Subprocess never returned within the wall-clock budget. The
+                # SDK is wedged (silent retry-loop / network stuck). Surface
+                # as a typed StepTimeoutError so Prefect marks the flow Failed
+                # and the operator can `po retry`. Without this, the run sits
+                # in `Running` forever and the operator has to ps + kill.
+                raise StepTimeoutError(
+                    timeout_s=timeout or 0.0,
+                    message=(
+                        f"claude CLI did not return within {timeout}s\n"
+                        f"argv: {cmd}\n"
+                        f"stdout-tail: {(exc.stdout or b'')[-2000:]!r}\n"
+                        f"stderr-tail: {(exc.stderr or b'')[-2000:]!r}"
+                    ),
+                ) from exc
 
-        # Detect rate-limit *regardless of returncode*. The Claude CLI can
-        # exit 0 with a success-shaped envelope whose body contains
-        # `is_error:true,api_error_status:429,terminal_reason:completed`
-        # (observed in nanocorps-0k8 + prefect-orchestration-gub today).
-        # Without this hoisted check, _parse_envelope returns the 429
-        # `result` string as if it were normal output and the caller
-        # proceeds with a junk result.
-        combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        if _has_429_envelope(combined):
-            raise RateLimitError(
-                reset_time=_detect_rate_limit_in_pane(combined) or None,
-                message=combined[-1000:],
-            )
+            # Detect rate-limit *regardless of returncode*. The Claude CLI can
+            # exit 0 with a success-shaped envelope whose body contains
+            # `is_error:true,api_error_status:429,terminal_reason:completed`
+            # (observed in nanocorps-0k8 + prefect-orchestration-gub today).
+            # Without this hoisted check, _parse_envelope returns the 429
+            # `result` string as if it were normal output and the caller
+            # proceeds with a junk result.
+            combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            if _has_429_envelope(combined):
+                raise RateLimitError(
+                    reset_time=_detect_rate_limit_in_pane(combined) or None,
+                    message=combined[-1000:],
+                )
+            return proc
 
-        if proc.returncode != 0:
+        proc = _run_once(session_id)
+        if proc.returncode == 0:
+            return _parse_envelope(proc.stdout, session_id)
+
+        # A FIRST-turn failure (no session_id) is a genuine error, not a
+        # resume glitch — surface it exactly as before.
+        if not session_id:
             raise RuntimeError(
                 f"claude CLI exited {proc.returncode}\n"
-                f"argv: {cmd}\n"
+                f"argv: {_build_claude_argv(self.start_command, session_id, fork, model, effort)}\n"
                 f"stderr: {proc.stderr[:2000]}\n"
                 f"stdout: {proc.stdout[:2000]}"
             )
 
-        return _parse_envelope(proc.stdout, session_id)
+        # A failed `--resume` should not kill a run that may already have
+        # produced mergeable work. Recover instead of raising.
+        if _session_is_gone(proc.stdout, proc.stderr):
+            # Stale session pointer — retrying the same resume is futile.
+            logger.warning(
+                "claude --resume %s: session not found; starting a fresh session",
+                session_id,
+            )
+        else:
+            # Other transient non-zero on resume: retry the resume once.
+            logger.warning(
+                "claude --resume %s failed (exit %s); retrying once",
+                session_id,
+                proc.returncode,
+            )
+            time.sleep(_RESUME_RETRY_BACKOFF_S)
+            proc = _run_once(session_id)
+            if proc.returncode == 0:
+                return _parse_envelope(proc.stdout, session_id)
+            logger.warning(
+                "claude --resume %s retry failed (exit %s); starting a fresh session",
+                session_id,
+                proc.returncode,
+            )
+
+        # Fresh-session fallback: re-run the SAME prompt with no `--resume`.
+        proc = _run_once(None)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"claude CLI exited {proc.returncode} (fresh-session fallback)\n"
+                f"argv: {_build_claude_argv(self.start_command, None, fork, model, effort)}\n"
+                f"stderr: {proc.stderr[:2000]}\n"
+                f"stdout: {proc.stdout[:2000]}"
+            )
+        return _parse_envelope(proc.stdout, None)
 
 
 @dataclass
@@ -483,39 +550,76 @@ class CodexCliBackend:
         timeout: float | None = DEFAULT_AGENT_TIMEOUT_S,
     ) -> tuple[str, str]:
         del effort  # Codex exec does not currently expose a compatible effort flag.
-        cmd = _build_codex_exec_argv(self.start_command, session_id, fork, model)
 
-        try:
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                check=False,
-                env=_clean_env(extra_env),
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise StepTimeoutError(
-                timeout_s=timeout or 0.0,
-                message=(
-                    f"codex exec did not return within {timeout}s\n"
-                    f"argv: {cmd}\n"
-                    f"stdout-tail: {(exc.stdout or b'')[-2000:]!r}\n"
-                    f"stderr-tail: {(exc.stderr or b'')[-2000:]!r}"
-                ),
-            ) from exc
+        def _run_once(sid: str | None) -> subprocess.CompletedProcess[str]:
+            """Spawn codex exec for one attempt with the given session pointer."""
+            cmd = _build_codex_exec_argv(self.start_command, sid, fork, model)
+            try:
+                return subprocess.run(
+                    cmd,
+                    input=prompt,
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    env=_clean_env(extra_env),
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise StepTimeoutError(
+                    timeout_s=timeout or 0.0,
+                    message=(
+                        f"codex exec did not return within {timeout}s\n"
+                        f"argv: {cmd}\n"
+                        f"stdout-tail: {(exc.stdout or b'')[-2000:]!r}\n"
+                        f"stderr-tail: {(exc.stderr or b'')[-2000:]!r}"
+                    ),
+                ) from exc
 
-        if proc.returncode != 0:
+        proc = _run_once(session_id)
+        if proc.returncode == 0:
+            return _parse_codex_exec_jsonl(proc.stdout, session_id)
+
+        # First-turn failure (no session_id): genuine error, raise as before.
+        if not session_id:
             raise RuntimeError(
                 f"codex exec exited {proc.returncode}\n"
-                f"argv: {cmd}\n"
+                f"argv: {_build_codex_exec_argv(self.start_command, session_id, fork, model)}\n"
                 f"stderr: {proc.stderr[:2000]}\n"
                 f"stdout: {proc.stdout[:2000]}"
             )
 
-        return _parse_codex_exec_jsonl(proc.stdout, session_id)
+        # Failed resume — recover instead of killing a run with good work.
+        if _session_is_gone(proc.stdout, proc.stderr):
+            logger.warning(
+                "codex resume %s: session not found; starting a fresh session",
+                session_id,
+            )
+        else:
+            logger.warning(
+                "codex resume %s failed (exit %s); retrying once",
+                session_id,
+                proc.returncode,
+            )
+            time.sleep(_RESUME_RETRY_BACKOFF_S)
+            proc = _run_once(session_id)
+            if proc.returncode == 0:
+                return _parse_codex_exec_jsonl(proc.stdout, session_id)
+            logger.warning(
+                "codex resume %s retry failed (exit %s); starting a fresh session",
+                session_id,
+                proc.returncode,
+            )
+
+        proc = _run_once(None)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"codex exec exited {proc.returncode} (fresh-session fallback)\n"
+                f"argv: {_build_codex_exec_argv(self.start_command, None, fork, model)}\n"
+                f"stderr: {proc.stderr[:2000]}\n"
+                f"stdout: {proc.stdout[:2000]}"
+            )
+        return _parse_codex_exec_jsonl(proc.stdout, None)
 
 
 _STUB_VERDICTS: dict[str, dict] = {
