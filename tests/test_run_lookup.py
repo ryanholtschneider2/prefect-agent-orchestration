@@ -203,3 +203,46 @@ def test_resolve_run_dir_raises_when_prefect_also_misses(tmp_path, monkeypatch):
 
     with pytest.raises(run_lookup.RunDirNotFound, match="bd show"):
         run_lookup.resolve_run_dir("ghost-id")
+
+
+# ─── br backend: filesystem fallback (no per-issue metadata) ─────────
+
+
+def test_resolve_run_dir_filesystem_fallback_on_br(tmp_path, monkeypatch):
+    """br stores no per-issue metadata, so `bd show` returns an empty metadata
+    blob. resolve_run_dir must recover the run dir from its deterministic
+    on-disk path <rig>/.planning/<formula>/<issue_id>/, rooted at the rig
+    Prefect names for the flow run."""
+    rig = tmp_path / "rig"
+    run_dir = rig / ".planning" / "software-dev-agentic" / "rig-br1"
+    run_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(run_lookup.shutil, "which", lambda _: "/usr/bin/bd")
+    # br: `bd show` succeeds but carries no metadata.
+    monkeypatch.setattr(run_lookup.subprocess, "run", _fake_bd_show({}))
+    # Prefect knows the rig the flow ran in.
+    monkeypatch.setattr(run_lookup, "rig_path_from_prefect", lambda _id: rig)
+
+    loc = run_lookup.resolve_run_dir("rig-br1")
+    assert loc.rig_path == rig.resolve()
+    assert loc.run_dir == run_dir.resolve()
+
+
+def test_resolve_run_dir_filesystem_fallback_from_cwd(tmp_path, monkeypatch):
+    """When neither bd nor Prefect resolves, the run dir is still recovered by
+    scanning the cwd's .planning tree (a br rig invoked from inside the rig)."""
+    run_dir = tmp_path / ".planning" / "software-dev-full" / "rig-br2"
+    run_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(run_lookup.shutil, "which", lambda _: "/usr/bin/bd")
+    # bd misses entirely (bead not in this rig's db); Prefect misses too.
+    monkeypatch.setattr(
+        run_lookup.subprocess,
+        "run",
+        _fake_bd_show_cwd_required({}, expected_cwd="/definitely-not-cwd"),
+    )
+    monkeypatch.setattr(run_lookup, "lookup_prefect_run", lambda _: None)
+    monkeypatch.chdir(tmp_path)
+
+    loc = run_lookup.resolve_run_dir("rig-br2")
+    assert loc.run_dir == run_dir.resolve()
