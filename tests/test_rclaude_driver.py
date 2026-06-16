@@ -14,7 +14,14 @@ import pytest
 from prefect_orchestration.env_drivers import EnvHandle
 
 # Guard: skip entire module when rclaude is absent
-rclaude = pytest.importorskip("rclaude", reason="rclaude not installed")
+# The cloud-rclaude pack targets an rclaude API (devenv / secrets / DigitalOcean
+# + SSH backends / _resolve_host) the current rclaude no longer ships. `import
+# rclaude` alone succeeds, so guard on the specific removed module — skip the
+# whole module until the pack is rewritten against current rclaude (or deprecated).
+pytest.importorskip(
+    "rclaude.devenv",
+    reason="cloud-rclaude pack targets a removed rclaude API (DigitalOcean/SSH/secrets/devenv) — pending rewrite",
+)
 
 from po_formulas_cloud_rclaude.driver import RClaudeEnvDriver  # noqa: E402
 
