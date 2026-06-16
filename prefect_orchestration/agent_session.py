@@ -617,6 +617,49 @@ _STUB_VERDICTS: dict[str, dict] = {
     "synthesize": {"recurring": [], "single_occurrence": []},
 }
 
+# Affirmative keywords to prefer when a step offers several. Most flows list the
+# affirmative first, so the fallback is `keywords[0]`; this list only matters when
+# the happy-path keyword isn't first.
+_STUB_AFFIRMATIVE = (
+    "approved",
+    "complete",
+    "passed",
+    "synthesized",
+    "no-recurring",
+    "no",
+    "true",
+)
+
+
+def stub_verdict_keyword(prompt: str) -> str:
+    """The affirmative verdict keyword a StubBackend turn should close with.
+
+    Parses the ``**Required verdict keyword (case-insensitive):** `a` | `b`.``
+    line that ``agent_step`` renders, and returns the affirmative keyword so a
+    verdict-gated critic converges under the stub. Defaults to ``complete`` when
+    no keyword line is present.
+
+    The character class ``[\\s*]*`` after the colon is load-bearing: the line is
+    rendered in **bold markdown**, so the closing ``**`` sits between the colon
+    and the first keyword backtick. A plain ``\\s*`` stops at the ``*`` and matches
+    nothing — which silently sent every verdict-gated stub run to the generic
+    fallback and broke convergence (e.g. the agentic reviewer's ``pass``/``fail``).
+    """
+    import re as _re
+
+    match = _re.search(
+        r"Required verdict keyword[^:]*:[\s*]*((?:`[\w\-]+`\s*\|?\s*)+)", prompt
+    )
+    if not match:
+        return "complete"
+    keywords = _re.findall(r"`([\w\-]+)`", match.group(1))
+    if not keywords:
+        return "complete"
+    for preferred in _STUB_AFFIRMATIVE:
+        if preferred in keywords:
+            return preferred
+    return keywords[0]
+
 
 @dataclass
 class StubBackend:
@@ -703,30 +746,10 @@ class StubBackend:
                     # crash the dry-run DAG exercise.
                     pass
 
-        # 4. Pick a verdict-keyword for the close-reason from the prompt's
-        #    declared keywords (if any). Otherwise use a generic 'complete'.
-        kw_match = _re.search(
-            r"Required verdict keyword[^:]*:\s*((?:`[\w\-]+`\s*\|?\s*)+)",
-            prompt,
-        )
-        keyword = "complete"
-        if kw_match:
-            kws = _re.findall(r"`([\w\-]+)`", kw_match.group(1))
-            # Prefer affirmative keywords when multiple offered.
-            for preferred in (
-                "approved",
-                "complete",
-                "passed",
-                "synthesized",
-                "no-recurring",
-                "no",
-                "true",
-            ):
-                if preferred in kws:
-                    keyword = preferred
-                    break
-            else:
-                keyword = kws[0] if kws else keyword
+        # 4. Pick the affirmative verdict keyword for the close-reason from the
+        #    prompt's declared keywords (the loop reads `.verdict` off the close
+        #    reason, so this is what makes a verdict-gated critic converge).
+        keyword = stub_verdict_keyword(prompt)
 
         # 5. Close the bead so the orchestrator's caching path catches it.
         _sp.run(
