@@ -336,28 +336,27 @@ def run(
     model: str | None = typer.Option(
         None,
         "--model",
-        help="Claude model alias or full id (sonnet|opus|haiku|<full id>). "
+        help="Provider model alias or full id (for example sonnet, gpt-5.4, "
+        "gpt-5.5, or composer-2.5). "
         "Stamps PO_MODEL_CLI; per-role agents/<role>/config.toml beats this.",
     ),
     effort: str | None = typer.Option(
         None,
         "--effort",
-        help="Claude effort level (low|medium|high|xhigh|max). "
+        help="Reasoning effort (low|medium|high|xhigh|max). "
         "Stamps PO_EFFORT_CLI; per-role config.toml beats this.",
+    ),
+    backend: str | None = typer.Option(
+        None,
+        "--backend",
+        help="Explicit runtime backend: cli|tmux|codex-cli|codex-tmux|"
+        "cursor-cli|cursor-tmux|stub. Stamps PO_BACKEND.",
     ),
     start_command: str | None = typer.Option(
         None,
         "--start-command",
         help="Override the claude CLI invocation prefix (default: "
         "'claude --dangerously-skip-permissions'). Stamps PO_START_COMMAND_CLI.",
-    ),
-    complexity: str | None = typer.Option(
-        None,
-        "--complexity",
-        help="Task complexity (routine|moderate|hard|architectural). Resolves "
-        "to a model (routine->sonnet, hard->opus; never haiku) when --model "
-        "is not given. Explicit --model wins. Provider from PO_BACKEND "
-        "(codex-* -> gpt-5-codex).",
     ),
     account: str | None = typer.Option(
         None,
@@ -428,26 +427,26 @@ def run(
         )
         raise typer.Exit(2)
 
-    # Complexity -> model resolution. Judgment (how hard is this task) is the
-    # dispatching agent's; the mapping is deterministic. Explicit --model wins.
-    if complexity is not None:
-        from prefect_orchestration import model_selection as _model_selection
-
-        provider = _model_selection.provider_from_backend(os.environ.get("PO_BACKEND"))
-        try:
-            resolved = _model_selection.select_model(complexity, provider=provider)
-        except ValueError as exc:
-            typer.echo(f"error: {exc}", err=True)
-            raise typer.Exit(2) from exc
-        if model is not None:
+    if backend is not None:
+        allowed_backends = {
+            "cli",
+            "tmux",
+            "tmux-stream",
+            "codex-cli",
+            "codex-tmux",
+            "codex-tmux-stream",
+            "cursor-cli",
+            "cursor-tmux",
+            "stub",
+        }
+        if backend not in allowed_backends:
             typer.echo(
-                f"note: --model {model!r} overrides --complexity {complexity!r} "
-                f"(would be {resolved!r})",
+                f"error: unknown backend {backend!r}; accepted: "
+                f"{', '.join(sorted(allowed_backends))}",
                 err=True,
             )
-        else:
-            typer.echo(f"complexity {complexity!r} -> model {resolved!r}")
-            model = resolved
+            raise typer.Exit(2)
+        os.environ["PO_BACKEND"] = backend
 
     if account is not None:
         os.environ["PO_ACCOUNT"] = account

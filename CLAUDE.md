@@ -159,14 +159,14 @@ before declaring a release ready: `uv run python -m pytest tests/e2e/`.
 | `commands.py` | `po.commands` registry — `load_commands()`, `core_verbs()` (read off `app.registered_commands`), `find_command_collisions()`. |
 | `scaffold.py` | `po new pack\|formula\|skill\|agent` — turnkey artifact scaffolding, registered as core's own `po.commands` `new` entry. Pure transport: emits files from in-code `string.Template` constants; `add_entry_point()` text-surgically inserts `po.*` EPs into a pack's pyproject (no TOML round-trip). See [`engdocs/creating-artifacts.md`](engdocs/creating-artifacts.md). |
 | `packs.py` | Pack lifecycle — `install`/`update`/`uninstall`/`packs` shell out to `uv tool` and introspect `importlib.metadata` for `po.*` EP groups. |
-| `agent_session.py` | `AgentSession` + `SessionBackend` Protocol (`ClaudeCliBackend`, `TmuxClaudeBackend`, `StubBackend`). Per-role `--resume <uuid>` + `--fork-session`. |
+| `agent_session.py` | `AgentSession` + Claude, Codex, Cursor, tmux, and stub backends. Per-role session resume/fork support plus explicit model and effort transport. |
+| `AGENTS.md` | Companion workspace instructions that should link back to this file so Codex and Cursor inherit the same rules. |
 | `beads_meta.py` | `MetadataStore` Protocol; `BeadsStore` (dolt-only metadata bus) + `FileStore` (JSON fallback); `claim_issue`/`close_issue`/`list_epic_children`. `_bd_dep_list`/`_bd_show` resolve the backend binary (`bd`/`br`) and normalize br dep rows via `beads_backend`. `_resolve_binary(rig_path)` → the bd/br binary for read/`--description` ops; `_metadata_binary(rig_path)` → `bd` only on dolt rigs (gates `--set-metadata` stamps so they no-op on br instead of shelling raw `bd` — prefect-orchestration-q7e). |
 | `beads_backend.py` | Backend-agnostic verdict + dep-graph seam. `resolve_backend(rig_path)` (`PO_BEADS_BACKEND` env > `.beads/metadata.json` sniff > `dolt`); `read_verdict`/`write_verdict` (dolt: `metadata["po.<name>"]`; br: append-only `po-verdict:<name>:<json>` comment, latest comment-`id` wins); `normalize_dep_rows` (re-keys br dep rows to `{"id",…}`). Prereq for adopting `beads_rust` (no per-issue metadata). |
 | `parsing.py` | `read_bead_verdict(bead_id, name)` — reads the `<name>` verdict off the iter bead; `_bd_show_once` delegates to `beads_backend.read_verdict(backend=resolve_backend(rig_path))` (retry/timeout/cached-fallback wrapper unchanged). `prompt_for_bead_verdict()` is the prompt + read wrapper with PO_RESUME short-circuit. |
 | `iter_bead_ids.py` | Run-dir map (`<run_dir>/iter-bead-ids.json`) of role-step *convention id* (`<seed>.<step>.iterN`) → *backend-assigned* bead id. `agent_step` records it after `create_child_bead` adopts a divergent id (br mints its own flat id) and consults it before the fast-path probe, so re-entry resolves the real bead instead of re-minting (br idempotency / no phantom re-nudge, `prefect-orchestration-99k`). No-op on dolt (convention id honored → lookup misses → fall back). |
 | `templates.py` | `{{var}}` substitution over a caller-supplied agents dir (`<dir>/<role>/prompt.md`). |
 | `role_config.py` | Per-role runtime config (`agents/<role>/config.toml`): `model` / `effort` / `start_command`. `resolve_role_runtime` precedence: per-role config > CLI flag (`PO_*_CLI` env stamped by `po run`) > shell env (`PO_*`) > None. Disjoint from `identity.toml` (persona). |
-| `model_selection.py` | Complexity → model mapping (prefect-orchestration-3olt). `select_model(complexity, provider="claude")` returns a model alias (routine→sonnet, hard→opus; never haiku); `provider_from_backend` maps `PO_BACKEND` codex-* → "codex". Backs the `po run --complexity <tier>` dispatch flag (resolves to `--model` when unset; explicit `--model` wins) and is the public helper a flow calls to auto-select. Exported on the package root. |
 | `workers.py` | Generic Prefect worker management. `ensure_pool_worker(pool)` probes the API for an online worker and spawns a detached one if none (idempotent; `PO_AUTO_WORKER=0` disables). Called from the scheduled-dispatch paths so scheduled runs never queue with no worker (prefect-orchestration-2r6n). |
 | `artifacts.py`, `sessions.py`, `watch.py`, `retry.py`, `status.py`, `run_lookup.py`, `doctor.py`, `deployments.py` | Back the matching `po` subcommand. |
 
@@ -549,7 +549,8 @@ fetched-at-entry snapshot are closed.
 | `--dry-run` flag | No flow run — prints a DAG summary and exits 0. No bd writes, no Prefect flow run, no `run_dir` writes. |
 | `--stub-backend` flag | `StubBackend` — full flow runs with fake agent turns and full bd side effects (formerly `--dry-run`). |
 
-Override with `PO_BACKEND=cli|tmux|stub` on any `po run` invocation.
+Override with `--backend` or
+`PO_BACKEND=cli|tmux|codex-cli|codex-tmux|cursor-cli|cursor-tmux|stub`.
 `PO_BACKEND=tmux` errors loudly if tmux is missing (refuses silent
 fallback when you've explicitly asked for it).
 
@@ -733,7 +734,7 @@ Background and rationale: `engdocs/formula-modes.md`. Migration plan
 | Show a formula's signature / docstring | `po show <formula>` |
 | Scaffold a new pack / formula / skill / agent in the standard shape | `po new pack\|formula\|skill\|agent <name> [--pack <root>] [--path <dir>]` (see [`engdocs/creating-artifacts.md`](engdocs/creating-artifacts.md)) |
 | Run a formula synchronously, now | `po run <formula> --args` |
-| Dispatch but let task complexity pick the model (Opus hard / Sonnet routine, never Haiku) | `po run <formula> --complexity hard\|routine --args` (resolves to `--model` when unset; explicit `--model` wins) |
+| Dispatch with an explicit runtime | `po run <formula> --backend cursor-tmux\|codex-tmux\|tmux --account-class personal\|work --model <id> --effort medium\|high\|xhigh\|max --args` |
 | Run a formula on a remote cloud env (push rig, dispatch on env's work pool, mirror run artifacts back) | `po run <formula> --env <name> [--rebuild] --args` |
 | Provision an ephemeral env, run a formula on it, then tear it down automatically (keep alive on failure by default; `--auto-down-on-failure` tears down even on failure; `--auto-down 0` disables the grace window) | `po run <formula> --env up --driver <name> [--auto-down 30m] [--auto-down-on-failure] --args` |
 | Fan out an arbitrary bd sub-graph rooted at any bead | `po run graph --root-id <id> --rig <name> --rig-path <path> [--traverse=parent-child,blocks] [--formula=software-dev-full]` |

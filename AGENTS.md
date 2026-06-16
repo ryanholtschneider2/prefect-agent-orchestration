@@ -1,5 +1,7 @@
 # Agent Instructions
 
+See [CLAUDE.md](CLAUDE.md) for the full workspace rules.
+
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 
 ## Quick Reference

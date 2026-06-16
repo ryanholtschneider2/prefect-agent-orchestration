@@ -43,6 +43,15 @@ def test_select_backend_factory_env_codex_cli(
     assert _select_backend_factory(dry_run=False) is CodexCliBackend
 
 
+def test_select_backend_factory_env_cursor_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from prefect_orchestration.agent_session import CursorCliBackend
+
+    monkeypatch.setenv("PO_BACKEND", "cursor-cli")
+    assert _select_backend_factory(dry_run=False) is CursorCliBackend
+
+
 def test_build_registry_dry_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

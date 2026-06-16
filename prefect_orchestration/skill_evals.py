@@ -38,9 +38,11 @@ from prefect_orchestration.agent_session import (
     AgentSession,
     ClaudeCliBackend,
     CodexCliBackend,
+    CursorCliBackend,
     StubBackend,
     TmuxClaudeBackend,
     TmuxCodexBackend,
+    TmuxCursorBackend,
 )
 from prefect_orchestration.skill_evals_schema import (
     CaseResult,
@@ -587,6 +589,8 @@ def _select_backend(dry_run: bool, *, issue_id: str | None = None) -> Any:
         return ClaudeCliBackend()
     if choice == "codex-cli":
         return CodexCliBackend()
+    if choice == "cursor-cli":
+        return CursorCliBackend()
     if choice == "stub":
         return StubBackend()
     tmux_kwargs = {"issue": issue_id or "skill-evals", "role": "skill-evals"}
@@ -598,6 +602,10 @@ def _select_backend(dry_run: bool, *, issue_id: str | None = None) -> Any:
         if shutil.which("tmux") is None:
             raise RuntimeError(f"PO_BACKEND={choice} but tmux not on PATH")
         return TmuxCodexBackend(**tmux_kwargs)
+    if choice == "cursor-tmux":
+        if shutil.which("tmux") is None:
+            raise RuntimeError("PO_BACKEND=cursor-tmux but tmux not on PATH")
+        return TmuxCursorBackend(**tmux_kwargs)
     if shutil.which("tmux"):
         return TmuxClaudeBackend(**tmux_kwargs)
     return ClaudeCliBackend()

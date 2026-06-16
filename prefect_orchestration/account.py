@@ -51,6 +51,15 @@ SHARED_CONFIG_PATHS = {
         "hooks",
         "references",
     ),
+    "cursor": (
+        "cli-config.json",
+        "mcp.json",
+        "hooks.json",
+        "hooks",
+        "rules",
+        "commands",
+        "argv.json",
+    ),
 }
 
 
@@ -307,6 +316,8 @@ def resolve_environment_for_backend(
     name = type(backend).__name__.lower()
     if "codex" in name:
         provider = "codex"
+    elif "cursor" in name:
+        provider = "cursor"
     elif "claude" in name:
         provider = "claude"
     else:

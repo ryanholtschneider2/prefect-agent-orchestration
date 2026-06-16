@@ -22,9 +22,11 @@ from prefect_orchestration.agent_session import (
     AgentSession,
     ClaudeCliBackend,
     CodexCliBackend,
+    CursorCliBackend,
     StubBackend,
     TmuxClaudeBackend,
     TmuxCodexBackend,
+    TmuxCursorBackend,
     TmuxInteractiveClaudeBackend,
 )
 from prefect_orchestration.beads_meta import (
@@ -261,6 +263,8 @@ def _select_backend_factory(dry_run: bool) -> Any:
         return ClaudeCliBackend
     if choice == "codex-cli":
         return CodexCliBackend
+    if choice == "cursor-cli":
+        return CursorCliBackend
     if choice == "stub":
         return StubBackend
     if choice == "tmux-stream":
@@ -279,6 +283,10 @@ def _select_backend_factory(dry_run: bool) -> Any:
         if shutil.which("tmux") is None:
             raise RuntimeError("PO_BACKEND=codex-tmux but tmux not on PATH")
         return TmuxCodexBackend
+    if choice == "cursor-tmux":
+        if shutil.which("tmux") is None:
+            raise RuntimeError("PO_BACKEND=cursor-tmux but tmux not on PATH")
+        return TmuxCursorBackend
     return TmuxInteractiveClaudeBackend if shutil.which("tmux") else ClaudeCliBackend
 
 

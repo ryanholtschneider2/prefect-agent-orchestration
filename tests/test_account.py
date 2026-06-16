@@ -10,9 +10,11 @@ from prefect_orchestration.account import (
     load_registry,
     launch_agent,
     resolve_account,
+    resolve_environment_for_backend,
     save_registry,
     sync_shared_config,
 )
+from prefect_orchestration.agent_session import CursorCliBackend
 
 
 def registry(tmp_path: Path) -> Registry:
@@ -168,6 +170,32 @@ def test_launch_agent_execs_cursor_agent(tmp_path: Path, monkeypatch: pytest.Mon
     assert environment["PO_ACCOUNT_CLASS"] == "personal"
 
 
+def test_cursor_backend_resolves_cursor_account(tmp_path: Path) -> None:
+    config = Registry(
+        accounts={
+            "cursor-personal": Account(
+                handle="cursor-personal",
+                provider="cursor",
+                account_class="personal",
+            ),
+        },
+        rules=(),
+        path=tmp_path / "accounts.toml",
+    )
+    save_registry(config)
+
+    resolution = resolve_environment_for_backend(
+        CursorCliBackend(),
+        cwd=tmp_path,
+        account="cursor-personal",
+        config_path=config.path,
+    )
+
+    assert resolution is not None
+    assert resolution.handle == "cursor-personal"
+    assert resolution.provider == "cursor"
+
+
 def test_launch_agent_execs_provider_with_resolved_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -255,3 +283,39 @@ def test_sync_shared_config_links_static_config_and_preserves_credentials(
     backups = list((work_home / "backups").glob("shared-config-*/settings.json"))
     assert len(backups) == 1
     assert backups[0].read_text() == '{"theme": "light"}'
+
+
+def test_sync_shared_config_links_cursor_cli_files(tmp_path: Path) -> None:
+    personal_home = tmp_path / "cursor-personal"
+    work_home = tmp_path / "cursor-work"
+    personal_home.mkdir()
+    work_home.mkdir()
+    (personal_home / "cli-config.json").write_text('{"model":"composer-2.5"}')
+    (personal_home / "mcp.json").write_text('{"mcpServers":{}}')
+    (work_home / "cli-config.json").write_text('{"model":"gpt-5.4"}')
+    (work_home / "mcp.json").write_text('{"mcpServers":{"local":{}}}')
+    config = Registry(
+        accounts={
+            "cursor-personal": Account(
+                handle="cursor-personal",
+                provider="cursor",
+                account_class="personal",
+                home=str(personal_home),
+            ),
+            "cursor-work": Account(
+                handle="cursor-work",
+                provider="cursor",
+                account_class="work",
+                home=str(work_home),
+                config_source="cursor-personal",
+            ),
+        },
+        rules=(),
+        path=tmp_path / "accounts.toml",
+    )
+
+    links = sync_shared_config(config)
+
+    assert (work_home / "cli-config.json").resolve() == personal_home / "cli-config.json"
+    assert (work_home / "mcp.json").resolve() == personal_home / "mcp.json"
+    assert any(target.name == "cli-config.json" for target, _ in links)

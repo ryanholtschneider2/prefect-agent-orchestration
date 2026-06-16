@@ -248,7 +248,7 @@ def test_build_session_no_overrides_uses_defaults(
         backend=_RecordingBackend,
         dry_run=False,
     )
-    assert sess.model == "opus"  # AgentSession default
-    assert sess.effort is None
+    assert sess.model == "sonnet"
+    assert sess.effort == "medium"
     # Backend got no start_command kwarg → falls back to its own default.
     assert "start_command" not in sess.backend.init_kwargs

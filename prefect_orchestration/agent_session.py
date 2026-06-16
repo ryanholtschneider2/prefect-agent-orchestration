@@ -232,8 +232,8 @@ class SessionBackend(Protocol):
         session_id: str | None,
         cwd: Path,
         fork: bool = False,
-        model: str = "opus",
-        effort: str | None = None,
+        model: str = "sonnet",
+        effort: str | None = "medium",
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]: ...
 
@@ -305,6 +305,32 @@ def _build_codex_exec_argv(
     else:
         argv = base
     argv += ["--json"]
+    return argv
+
+
+def _build_cursor_argv(
+    start_command: str,
+    session_id: str | None,
+    fork: bool,
+    model: str,
+) -> list[str]:
+    """Construct the `cursor-agent --print ...` argv shared by Cursor backends.
+
+    `cursor-agent` runs headlessly with `--print --output-format json` and reads
+    the prompt from stdin; it emits a single `type=result` JSON envelope with
+    `result` + `session_id`, which `_parse_envelope` already understands. Resume
+    is `--resume <chatId>` where the chatId is a prior turn's `session_id`. Like
+    Codex, cursor-agent exposes no non-interactive fork, so a forked turn starts
+    a fresh session rather than inheriting (and polluting) the parent.
+
+    Unlike Codex, an explicit `--model` is honored, so the caller's model is
+    passed through. Callers selecting a Cursor backend must pass a Cursor model
+    (see `cursor-agent --list-models`); a Claude/Codex model name is rejected by
+    cursor-agent, the same provider-specificity the Codex backend has.
+    """
+    argv = shlex.split(start_command) + ["--model", model]
+    if session_id and _UUID_RE.match(session_id) and not fork:
+        argv += ["--resume", session_id]
     return argv
 
 
@@ -405,8 +431,8 @@ class ClaudeCliBackend:
         session_id: str | None,
         cwd: Path,
         fork: bool = False,
-        model: str = "opus",
-        effort: str | None = None,
+        model: str = "sonnet",
+        effort: str | None = "medium",
         extra_env: Mapping[str, str] | None = None,
         timeout: float | None = DEFAULT_AGENT_TIMEOUT_S,
     ) -> tuple[str, str]:
@@ -518,6 +544,59 @@ class CodexCliBackend:
         return _parse_codex_exec_jsonl(proc.stdout, session_id)
 
 
+class CursorCliBackend:
+    """Shells out to `cursor-agent --print` with resume support and JSON parsing."""
+
+    start_command: str = "cursor-agent --print --output-format json --force"
+
+    def run(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None,
+        cwd: Path,
+        fork: bool = False,
+        model: str = "auto",
+        effort: str | None = None,
+        extra_env: Mapping[str, str] | None = None,
+        timeout: float | None = DEFAULT_AGENT_TIMEOUT_S,
+    ) -> tuple[str, str]:
+        del effort  # cursor-agent has no separate effort flag; the model encodes it.
+        cmd = _build_cursor_argv(self.start_command, session_id, fork, model)
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=_clean_env(extra_env),
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise StepTimeoutError(
+                timeout_s=timeout or 0.0,
+                message=(
+                    f"cursor-agent did not return within {timeout}s\n"
+                    f"argv: {cmd}\n"
+                    f"stdout-tail: {(exc.stdout or b'')[-2000:]!r}\n"
+                    f"stderr-tail: {(exc.stderr or b'')[-2000:]!r}"
+                ),
+            ) from exc
+
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"cursor-agent exited {proc.returncode}\n"
+                f"argv: {cmd}\n"
+                f"stderr: {proc.stderr[:2000]}\n"
+                f"stdout: {proc.stdout[:2000]}"
+            )
+
+        return _parse_envelope(proc.stdout, session_id)
+
+
 _STUB_VERDICTS: dict[str, dict] = {
     "triage": {
         "has_ui": False,
@@ -569,8 +648,8 @@ class StubBackend:
         session_id: str | None,
         cwd: Path,
         fork: bool = False,
-        model: str = "opus",
-        effort: str | None = None,
+        model: str = "sonnet",
+        effort: str | None = "medium",
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         import re as _re
@@ -960,8 +1039,8 @@ class TmuxClaudeBackend:
         session_id: str | None,
         cwd: Path,
         fork: bool = False,
-        model: str = "opus",
-        effort: str | None = None,
+        model: str = "sonnet",
+        effort: str | None = "medium",
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         if shutil.which("tmux") is None:
@@ -1162,6 +1241,120 @@ class TmuxCodexBackend:
                     f"codex exec exited {rc}\nstdout tail: {stdout[-2000:]}"
                 )
             result, new_sid = _parse_codex_exec_jsonl(stdout, session_id)
+        finally:
+            if target:
+                _cleanup_tmux(target, scoped=window_name is not None)
+            if prompt_path.exists():
+                try:
+                    prompt_path.unlink()
+                except OSError:
+                    pass
+
+        return result, new_sid
+
+
+@dataclass
+class TmuxCursorBackend:
+    """Spawn `cursor-agent --print --output-format json` inside a detached tmux session."""
+
+    issue: str
+    role: str
+    start_command: str = "cursor-agent --print --output-format json --force"
+    attach_hint: bool = True
+    timeout_s: float | None = DEFAULT_AGENT_TIMEOUT_S
+    scope: str | None = None
+
+    def _session_name(self, suffix: str = "") -> str:
+        from prefect_orchestration.attach import session_name as _session_name_for
+
+        base = _session_name_for(self.issue, self.role)
+        return f"{base}-{suffix}" if suffix else base
+
+    def _scoped_names(self, suffix: str = "") -> tuple[str, str]:
+        assert self.scope is not None
+        safe_scope = self.scope.replace(".", "_")
+        safe_issue = self.issue.replace(".", "_")
+        safe_role = self.role.replace(".", "_")
+        session = f"po-{safe_scope}"
+        window = f"{safe_issue}-{safe_role}"
+        if suffix:
+            window = f"{window}-{suffix}"
+        return session, window
+
+    def run(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None,
+        cwd: Path,
+        fork: bool = False,
+        model: str = "auto",
+        effort: str | None = None,
+        extra_env: Mapping[str, str] | None = None,
+    ) -> tuple[str, str]:
+        del effort
+        if shutil.which("tmux") is None:
+            raise RuntimeError("TmuxCursorBackend requires the `tmux` binary on PATH")
+
+        suffix = uuid.uuid4().hex[:6] if fork else ""
+        if self.scope:
+            session_name, window_name = self._scoped_names(suffix)
+            file_stem = f"{session_name}-{window_name}"
+        else:
+            session_name = self._session_name(suffix)
+            window_name = None
+            file_stem = session_name
+        workdir = cwd / ".tmux"
+        workdir.mkdir(parents=True, exist_ok=True)
+        out_path = workdir / f"{file_stem}.out"
+        rc_path = workdir / f"{file_stem}.rc"
+        prompt_path = workdir / f"{file_stem}.in"
+
+        for p in (out_path, rc_path):
+            p.unlink(missing_ok=True)
+        prompt_path.write_text(prompt)
+
+        argv = _build_cursor_argv(self.start_command, session_id, fork, model)
+        wrapper = (
+            f"cd {shlex.quote(str(cwd))} && "
+            f"{shlex.join(argv)} < {shlex.quote(str(prompt_path))} "
+            f"2>&1 | tee {shlex.quote(str(out_path))}; "
+            f"echo ${{PIPESTATUS[0]}} > {shlex.quote(str(rc_path))}"
+        )
+
+        target = ""
+        try:
+            target = _spawn_tmux(
+                session_name=session_name,
+                window_name=window_name,
+                wrapper=wrapper,
+                env=_clean_env(extra_env),
+                cwd=cwd,
+                geometry=(200, 50),
+            )
+            if self.attach_hint:
+                if window_name:
+                    print(
+                        f"[tmux] attach with: tmux attach -t {session_name} "
+                        f"\\; select-window -t {window_name}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[tmux] attach with: tmux attach -t {session_name}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
+            _wait_for_rc(rc_path, target, timeout=self.timeout_s)
+            rc = int(rc_path.read_text().strip() or "-1")
+            stdout = out_path.read_text() if out_path.exists() else ""
+            if rc != 0:
+                raise RuntimeError(
+                    f"cursor-agent exited {rc}\nstdout tail: {stdout[-2000:]}"
+                )
+            result, new_sid = _parse_envelope(stdout, session_id)
         finally:
             if target:
                 _cleanup_tmux(target, scoped=window_name is not None)
@@ -1660,8 +1853,8 @@ class TmuxInteractiveClaudeBackend:
         session_id: str | None,
         cwd: Path,
         fork: bool = False,
-        model: str = "opus",
-        effort: str | None = None,
+        model: str = "sonnet",
+        effort: str | None = "medium",
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
         if shutil.which("tmux") is None:
@@ -2042,8 +2235,8 @@ class AgentSession:
     repo_path: Path
     backend: SessionBackend = field(default_factory=ClaudeCliBackend)
     session_id: str | None = None
-    model: str = "opus"
-    effort: str | None = None
+    model: str = "sonnet"
+    effort: str | None = "medium"
     # Optional pack-supplied hooks for auto-injecting unread mail.
     # `mail_fetcher(role) -> list[Mail-like]`; objects need .id/.subject/.body
     # and may have .from_agent and .created_at. `mail_marker(mail_id)` closes.

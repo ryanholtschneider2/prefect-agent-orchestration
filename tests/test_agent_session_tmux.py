@@ -150,9 +150,11 @@ def test_claude_cli_backend_argv_unchanged(monkeypatch):
         "--output-format",
         "stream-json",
         "--model",
-        "opus",
+        "sonnet",
         "--setting-sources",
         "project,local",
+        "--effort",
+        "medium",
     ]
 
 
