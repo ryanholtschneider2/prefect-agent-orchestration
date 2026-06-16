@@ -1,4 +1,4 @@
-"""po formula: `prompt` — dispatch a single Claude agent with one prompt.
+"""po formula: `prompt` — dispatch a single agent with one prompt.
 
 Single-turn agent dispatch — no actor-critic loop. Auto-creates a
 `po-prompt`-labeled bead so all `po` commands (status / watch / artifacts
@@ -29,9 +29,11 @@ from prefect_orchestration.agent_session import (
     AgentSession,
     ClaudeCliBackend,
     CodexCliBackend,
+    CursorCliBackend,
     StubBackend,
     TmuxClaudeBackend,
     TmuxCodexBackend,
+    TmuxCursorBackend,
     TmuxInteractiveClaudeBackend,
 )
 
@@ -127,6 +129,8 @@ def _pick_backend_factory(dry_run: bool) -> Any:
         return ClaudeCliBackend
     if choice == "codex-cli":
         return CodexCliBackend
+    if choice == "cursor-cli":
+        return CursorCliBackend
     if choice == "stub":
         return StubBackend
     if choice == "tmux-stream":
@@ -145,6 +149,10 @@ def _pick_backend_factory(dry_run: bool) -> Any:
         if shutil.which("tmux") is None:
             raise RuntimeError("PO_BACKEND=codex-tmux but tmux not on PATH")
         return TmuxCodexBackend
+    if choice == "cursor-tmux":
+        if shutil.which("tmux") is None:
+            raise RuntimeError("PO_BACKEND=cursor-tmux but tmux not on PATH")
+        return TmuxCursorBackend
     return TmuxInteractiveClaudeBackend if shutil.which("tmux") else ClaudeCliBackend
 
 
@@ -194,14 +202,14 @@ def prompt_run(
     rig_path: str,
     role: str = "general",
     agent: str | None = None,
-    model: str = "opus",
+    model: str = "sonnet",
     label: str | None = None,
     fresh: bool = False,
     dry_run: bool = False,
     create_bead: bool = True,
     close_on_success: bool = True,
 ) -> dict[str, Any]:
-    """Send one prompt to one Claude agent session.
+    """Send one prompt to one agent session.
 
     `--agent` is the universal "who runs it" knob (overrides the default
     `role`); the same flag selects the agent on every formula. `--fresh` mints a

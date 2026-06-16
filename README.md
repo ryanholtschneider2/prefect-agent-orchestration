@@ -564,7 +564,7 @@ Conventions:
 
 ## Controlling the agent (model · effort · start command)
 
-Three knobs control the underlying `claude` invocation, each with three
+Runtime knobs control the selected agent invocation, each with three
 override layers. Most-specific wins:
 
 ```
@@ -573,8 +573,8 @@ per-role config.toml  >  CLI flag  >  env var  >  hardcoded default
 
 | Knob | Per-role file | CLI flag | Env var | Default |
 |---|---|---|---|---|
-| model | `agents/<role>/config.toml: model = "..."` | `--model sonnet` | `PO_MODEL=sonnet` | `opus` |
-| effort | `agents/<role>/config.toml: effort = "..."` | `--effort low` | `PO_EFFORT=low` | unset (claude picks) |
+| model | `agents/<role>/config.toml: model = "..."` | `--model sonnet` | `PO_MODEL=sonnet` | Claude `sonnet`; Codex `gpt-5.4`; Cursor `composer-2.5` |
+| effort | `agents/<role>/config.toml: effort = "..."` | `--effort medium` | `PO_EFFORT=medium` | `medium` |
 | start_command | `agents/<role>/config.toml: start_command = "..."` | `--start-command "claude --foo"` | `PO_START_COMMAND="claude --foo"` | `claude --dangerously-skip-permissions` |
 
 ```bash
@@ -597,36 +597,30 @@ disjoint from `config.toml` (runtime knobs). Setting
 `identity.toml: model = "..."` only affects the rendered prompt's
 `<self>` block; use `config.toml` for runtime control.
 
-### Pick the model by task complexity (`--complexity`)
+### Explicit backend dispatch
 
-When you don't want to name a model directly, let the *complexity of the
-task* pick one. `po run --complexity <tier>` maps a complexity judgment to
-a model — Opus for hard/architectural work, Sonnet for routine work (never
-Haiku, too weak for the loop). It only sets the model when `--model` is not
-given; an explicit `--model` always wins (and prints a note when both are
-passed).
+The dispatching agent chooses the backend, account class, model, and effort
+directly. PO does not infer a model from a complexity label or silently fail
+over between providers.
 
 ```bash
-po run software-dev-agentic --issue-id <id> --rig <r> --rig-path <p> --complexity hard      # -> opus
-po run software-dev-agentic --issue-id <id> --rig <r> --rig-path <p> --complexity routine   # -> sonnet
+# Preferred routine/default path
+po run software-dev-agentic --backend cursor-tmux --account-class personal \
+  --model composer-2.5 --effort medium --issue-id <id> --rig <r> --rig-path <p>
+
+# Sonnet-class substitute
+po run software-dev-agentic --backend codex-tmux --account-class personal \
+  --model gpt-5.4 --effort medium --issue-id <id> --rig <r> --rig-path <p>
+
+# Opus-class substitute for difficult work
+po run software-dev-agentic --backend codex-tmux --account-class personal \
+  --model gpt-5.5 --effort high --issue-id <id> --rig <r> --rig-path <p>
 ```
 
-Accepted words resolve to one of two tiers: `routine` (also
-trivial/simple/easy/low/small/moderate/medium/standard) → Sonnet;
-`hard` (also high/complex/difficult/architectural/architecture/design/tricky)
-→ Opus. An unrecognized word fails fast (exit 2) rather than silently
-mis-selecting. The provider follows `PO_BACKEND` (`codex-*` → `gpt-5-codex`),
-so the same convention extends to non-Claude backends.
-
-This is the dispatch-side helper for the rate-limit relief in
-prefect-orchestration-3olt: a dispatching agent sizes the task (judgment)
-and the mapping is deterministic. Flows can call the same mapping directly:
-
-```python
-from prefect_orchestration import select_model
-select_model("hard")                       # 'opus'
-select_model("routine", provider="codex")  # 'gpt-5-codex'
-```
+Defaults when omitted are Claude Sonnet at medium effort. Backend-specific
+model defaults are `gpt-5.4` for Codex and `composer-2.5` for Cursor. Cursor's
+Composer model does not currently expose a separate effort control; PO
+accepts the common effort field but Cursor ignores it for that model.
 
 ## Telemetry / Observability
 

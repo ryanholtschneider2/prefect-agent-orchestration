@@ -14,6 +14,7 @@ import pytest
 import prefect_orchestration.formulas as formulas_mod
 from prefect_orchestration import beads_meta
 from prefect_orchestration.formulas import agent_step_flow, discover_agent_dir
+from prefect_orchestration.prompt_formula import _pick_backend_factory
 
 
 def _fake_result() -> SimpleNamespace:
@@ -86,3 +87,10 @@ def test_mint_seed_bead_uses_requested_id_on_success(
     )
     got = beads_meta.mint_seed_bead("feature-x", "the goal", rig_path="/tmp/rig")
     assert got.startswith("feature-x-")  # <prefix>-<utc-timestamp>
+
+
+def test_prompt_formula_supports_cursor_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PO_BACKEND", "cursor-cli")
+    from prefect_orchestration.agent_session import CursorCliBackend
+
+    assert _pick_backend_factory(dry_run=False) is CursorCliBackend

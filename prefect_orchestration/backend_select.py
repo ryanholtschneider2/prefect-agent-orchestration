@@ -1,14 +1,13 @@
 """Default agent-runtime backend picker.
 
 Single seam used by packs and ad-hoc scripts to choose between
-`TmuxClaudeBackend`, `ClaudeCliBackend`, Codex variants, and `StubBackend`. The pack-side
-default in `software_dev.py` already does `shutil.which("tmux")`; this
+Claude, Codex, Cursor, and stub variants. The pack-side default in
+`software_dev.py` already does `shutil.which("tmux")`; this
 helper hardens it by also requiring stdout to be a TTY, which matters
 inside containers where tmux is installed but no terminal is attached.
 
-Honors `PO_BACKEND=cli|tmux|stub|codex-cli|codex-tmux` as an explicit
-override. `tmux` without a tmux binary on PATH raises (no silent fallback
-when the user asked for tmux on purpose).
+Honors explicit Claude, Codex, Cursor, and stub `PO_BACKEND` values.
+Tmux backends without a tmux binary on PATH raise rather than falling back.
 """
 
 from __future__ import annotations
@@ -22,14 +21,24 @@ from typing import Literal, Type
 from prefect_orchestration.agent_session import (
     ClaudeCliBackend,
     CodexCliBackend,
+    CursorCliBackend,
     SessionBackend,
     StubBackend,
     TmuxClaudeBackend,
     TmuxCodexBackend,
+    TmuxCursorBackend,
 )
 
 BackendChoice = Literal[
-    "cli", "tmux", "stub", "auto", "codex-cli", "codex-tmux", "codex-tmux-stream"
+    "cli",
+    "tmux",
+    "stub",
+    "auto",
+    "codex-cli",
+    "codex-tmux",
+    "codex-tmux-stream",
+    "cursor-cli",
+    "cursor-tmux",
 ]
 
 
@@ -42,7 +51,7 @@ def adapt_backend_to_start_command(
     backend: Type[SessionBackend],
     start_command: str | None,
 ) -> Type[SessionBackend]:
-    """Swap Claude/Codex backend families to match `start_command`.
+    """Swap backend families to match `start_command`.
 
     `agent_step._build_session()` historically picked the backend class
     first, then passed any per-role `start_command` into that backend's
@@ -69,6 +78,11 @@ def adapt_backend_to_start_command(
             return TmuxCodexBackend
         if backend is ClaudeCliBackend:
             return CodexCliBackend
+    if executable in {"cursor-agent", "agent"}:
+        if backend in {TmuxClaudeBackend, TmuxCodexBackend}:
+            return TmuxCursorBackend
+        if backend in {ClaudeCliBackend, CodexCliBackend}:
+            return CursorCliBackend
     if executable == "claude":
         if backend is TmuxCodexBackend:
             return TmuxClaudeBackend
@@ -113,6 +127,8 @@ def select_default_backend(
         return ClaudeCliBackend
     if choice == "codex-cli":
         return CodexCliBackend
+    if choice == "cursor-cli":
+        return CursorCliBackend
     if choice == "tmux":
         if not have_tmux:
             raise RuntimeError("PO_BACKEND=tmux but `tmux` is not on PATH")
@@ -121,6 +137,10 @@ def select_default_backend(
         if not have_tmux:
             raise RuntimeError(f"PO_BACKEND={choice} but `tmux` is not on PATH")
         return TmuxCodexBackend
+    if choice == "cursor-tmux":
+        if not have_tmux:
+            raise RuntimeError("PO_BACKEND=cursor-tmux but `tmux` is not on PATH")
+        return TmuxCursorBackend
 
     # auto / unset: tmux only when both available AND interactive.
     if have_tmux and is_tty:

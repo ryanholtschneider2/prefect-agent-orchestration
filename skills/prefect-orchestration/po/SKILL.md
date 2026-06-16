@@ -12,7 +12,7 @@ description: Dispatch beads issues and epics for autonomous implementation via t
 `po` is a CLI (installed globally via `po packs install` / `uv tool install`) that dispatches
 beads issues to an actor-critic pipeline and dispatches beads epics as
 DAG-ordered fan-outs. Each role in the pipeline (triager, planner,
-critic, builder, verifier, …) runs as an agent subprocess inside a
+critic, builder, verifier, ...) runs as an agent subprocess inside a
 named tmux session so you can `tmux attach` and watch live.
 
 Use this skill whenever you have a beads issue ready for
@@ -111,7 +111,11 @@ po <command>                         # pack-shipped utility command (see po.comm
 ## Dispatching a single beads issue for autonomous implementation
 
 ```bash
-po run software-dev-full \
+po run software-dev-agentic \
+  --backend cursor-tmux \
+  --account-class personal \
+  --model composer-2.5 \
+  --effort medium \
   --issue-id <bead-id> \
   --rig <name> \
   --rig-path <absolute path to the rig>
@@ -123,7 +127,7 @@ The flow:
    critique-plan ⟲ → build → lint+test (parallel) → regression-gate →
    review ⟲ → deploy-smoke → review-artifacts → verification ⟲ →
    ralph ⟲ → docs → demo → learn
-3. Each role gets its own Claude session UUID (persisted in
+3. Each role gets its own provider session UUID (persisted in
    `metadata.json` so the role resumes on re-run)
 4. Each turn spawns a tmux session `po-<issue>-<role>` that you can
    `tmux attach -t …` to watch live
@@ -187,7 +191,7 @@ These are two different steps:
 | Step | Tool | When |
 |---|---|---|
 | File an issue | `bd create --title=... --type=... --priority=...` | Captures *what* should be done |
-| Dispatch implementation | `po run software-dev-full --issue-id ...` | Starts autonomous implementation of a single issue |
+| Dispatch implementation | `po run software-dev-agentic --backend ... --account-class ... --model ... --effort ... --issue-id ...` | Starts autonomous implementation of a single issue |
 | Dispatch an epic | `po run epic --epic-id ...` | Starts autonomous fan-out of epic children |
 
 Filing is still `bd`. Dispatching has moved from `beadsd dispatch` to
@@ -220,14 +224,23 @@ po status                           # all active / recent PO runs, grouped by is
 Prefect UI at `http://127.0.0.1:4200` shows the DAG + task state.
 Run-dir artifacts are canonical; the UI is a visualization.
 
-## Backend selection
+## Runtime selection
 
-- Default: `TmuxClaudeBackend` when `tmux` is on PATH (lurkable via
-  `tmux attach -t po-<issue>-<role>`).
-- Fallback: `ClaudeCliBackend` (subprocess pipes, no lurking) when
-  tmux missing.
-- Force: `PO_BACKEND=cli`, `PO_BACKEND=tmux`, `PO_BACKEND=stub`
-  (stub = no real Claude calls, for DAG tests).
+Declare the full runtime tuple on dispatch: `--backend`, `--account-class`
+(or `--account`), `--model`, and `--effort`. Do not dispatch the same work
+to multiple providers or rely on an inferred complexity tier.
+
+- Default: `cursor-tmux`, `composer-2.5`, medium effort field.
+- Sonnet-class substitute: `codex-tmux`, `gpt-5.4`, medium.
+- Difficult work: `codex-tmux`, `gpt-5.5`, high.
+- Exceptional reasoning: `gpt-5.5` with xhigh or max when justified.
+- Fallback after preferred accounts are exhausted: Claude `tmux`, Sonnet,
+  medium. Use Opus/high only when needed.
+- Testing: `stub`.
+
+Composer 2.5 does not currently expose a separate effort knob, so Cursor
+accepts but ignores the common effort field. Use `*-cli` variants when tmux
+is unavailable.
 
 Issue IDs with dots (`polymer-dev-abc.1`) are sanitized to underscores
 in session names because tmux uses `.` as a pane separator.

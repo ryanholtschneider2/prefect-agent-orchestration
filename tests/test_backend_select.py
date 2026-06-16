@@ -7,9 +7,11 @@ import pytest
 from prefect_orchestration.agent_session import (
     ClaudeCliBackend,
     CodexCliBackend,
+    CursorCliBackend,
     StubBackend,
     TmuxClaudeBackend,
     TmuxCodexBackend,
+    TmuxCursorBackend,
 )
 from prefect_orchestration.backend_select import select_default_backend
 from prefect_orchestration.backend_select import adapt_backend_to_start_command
@@ -39,6 +41,16 @@ def test_explicit_codex_cli(monkeypatch):
 def test_explicit_codex_tmux(monkeypatch):
     monkeypatch.setenv("PO_BACKEND", "codex-tmux")
     assert select_default_backend(have_tmux=True, is_tty=True) is TmuxCodexBackend
+
+
+def test_explicit_cursor_cli(monkeypatch):
+    monkeypatch.setenv("PO_BACKEND", "cursor-cli")
+    assert select_default_backend() is CursorCliBackend
+
+
+def test_explicit_cursor_tmux(monkeypatch):
+    monkeypatch.setenv("PO_BACKEND", "cursor-tmux")
+    assert select_default_backend(have_tmux=True, is_tty=True) is TmuxCursorBackend
 
 
 def test_explicit_codex_tmux_without_tmux_raises(monkeypatch):

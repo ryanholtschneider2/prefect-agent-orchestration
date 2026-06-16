@@ -41,6 +41,7 @@ def _patch_flow(
                 "PO_MODEL",
                 "PO_EFFORT",
                 "PO_START_COMMAND",
+                "PO_BACKEND",
             )
         }
         return fn(**kwargs)
@@ -257,72 +258,52 @@ def test_help_documents_new_flags() -> None:
     assert "--model" in text
     assert "--effort" in text
     assert "--start-command" in text
-    assert "--complexity" in text
+    assert "--backend" in text
+    assert "--complexity" not in text
 
 
-def test_complexity_hard_resolves_to_opus(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`--complexity hard` stamps PO_MODEL_CLI=opus when --model is absent."""
-
+def test_backend_flag_stamps_po_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     def _flow() -> str:
         return "ok"
 
     captured = _patch_flow(monkeypatch, _flow)
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow", "--complexity", "hard"])
+    result = runner.invoke(app, ["run", "my-flow", "--backend", "cursor-cli"])
     assert result.exit_code == 0, result.output
-    assert captured["env_at_run"]["PO_MODEL_CLI"] == "opus"
+    assert captured["env_at_run"]["PO_BACKEND"] == "cursor-cli"
 
 
-def test_complexity_routine_resolves_to_sonnet(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _flow() -> str:
-        return "ok"
-
-    captured = _patch_flow(monkeypatch, _flow)
-    runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow", "--complexity", "routine"])
-    assert result.exit_code == 0, result.output
-    assert captured["env_at_run"]["PO_MODEL_CLI"] == "sonnet"
-
-
-def test_explicit_model_beats_complexity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Explicit --model wins; --complexity is ignored for the stamp."""
-
+def test_explicit_dispatch_tuple(monkeypatch: pytest.MonkeyPatch) -> None:
     def _flow() -> str:
         return "ok"
 
     captured = _patch_flow(monkeypatch, _flow)
     runner = CliRunner()
     result = runner.invoke(
-        app, ["run", "my-flow", "--complexity", "hard", "--model", "sonnet"]
+        app,
+        [
+            "run",
+            "my-flow",
+            "--backend",
+            "codex-tmux",
+            "--model",
+            "gpt-5.5",
+            "--effort",
+            "high",
+        ],
     )
     assert result.exit_code == 0, result.output
-    assert captured["env_at_run"]["PO_MODEL_CLI"] == "sonnet"
+    assert captured["env_at_run"]["PO_BACKEND"] == "codex-tmux"
+    assert captured["env_at_run"]["PO_MODEL_CLI"] == "gpt-5.5"
+    assert captured["env_at_run"]["PO_EFFORT_CLI"] == "high"
 
 
-def test_complexity_uses_codex_provider_from_backend(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """PO_BACKEND=codex-* maps the same complexity to the codex model."""
-
-    def _flow() -> str:
-        return "ok"
-
-    captured = _patch_flow(monkeypatch, _flow)
-    monkeypatch.setenv("PO_BACKEND", "codex-tmux")
-    runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow", "--complexity", "hard"])
-    assert result.exit_code == 0, result.output
-    assert captured["env_at_run"]["PO_MODEL_CLI"] == "gpt-5-codex"
-
-
-def test_bad_complexity_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_bad_backend_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
     def _flow() -> str:
         return "ok"
 
     _patch_flow(monkeypatch, _flow)
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow", "--complexity", "galaxy-brained"])
+    result = runner.invoke(app, ["run", "my-flow", "--backend", "unknown"])
     assert result.exit_code == 2, result.output
-    assert "unknown complexity" in result.output
+    assert "unknown backend" in result.output
