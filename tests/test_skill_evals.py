@@ -163,6 +163,7 @@ def test_filter_cases_by_tier_and_prefix() -> None:
 
 
 def test_build_judges_one_per_criterion() -> None:
+    pytest.importorskip("pydantic_evals", reason="skill-evals [evals] extra not installed")
     rubrics = se.load_rubrics(SAMPLE_SKILL_DIR)
     judges = se.build_judges(rubrics, default_model="anthropic:claude-sonnet-4-6")
     assert set(judges.keys()) == {"correctness", "safety"}
@@ -394,6 +395,7 @@ def test_skill_evals_flow_real_judges_mocked(
     asyncio.gather is used (single asyncio.run from the sync flow),
     and that scores propagate into the verdict.
     """
+    pytest.importorskip("pydantic_evals", reason="skill-evals [evals] extra not installed")
     dst = _stage_pack(tmp_path)
     _patch_distribution_to(dst, monkeypatch)
 
@@ -430,6 +432,7 @@ def test_skill_evals_flow_claude_judge_mocked(
     Asserts the SDK query is invoked, the JSON-on-last-line output is
     parsed, and scores + reasons propagate into the verdict.
     """
+    pytest.importorskip("claude_agent_sdk", reason="skill-evals [evals] extra not installed")
     dst = _stage_pack(tmp_path)
     _patch_distribution_to(dst, monkeypatch)
 

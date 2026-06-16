@@ -27,6 +27,8 @@ def test_software_dev_pack_register_uses_module_entrypoints() -> None:
         "software-dev-full-manual": "po_formulas.software_dev.software_dev_full",
         "software-dev-fast-manual": "po_formulas.software_dev.software_dev_fast",
         "software-dev-edit-manual": "po_formulas.software_dev.software_dev_edit",
+        "code-health-review-weekly": "po_formulas.code_health.code_health_review",
+        "code-health-review-manual": "po_formulas.code_health.code_health_review",
     }
 
     assert {dep.name: dep.entrypoint for dep in deployments} == expected

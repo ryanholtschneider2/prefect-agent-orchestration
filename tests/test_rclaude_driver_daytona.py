@@ -14,7 +14,12 @@ import pytest
 
 from prefect_orchestration.env_drivers import EnvHandle
 
-pytest.importorskip("rclaude", reason="rclaude not installed")
+# The daytona branch patches `rclaude.daytona_devenv`, a module the current
+# rclaude no longer ships. Skip until the cloud-rclaude pack is rewritten.
+pytest.importorskip(
+    "rclaude.daytona_devenv",
+    reason="cloud-rclaude daytona branch targets a removed rclaude API — pending rewrite",
+)
 
 from po_formulas_cloud_rclaude.driver import RClaudeEnvDriver  # noqa: E402
 
