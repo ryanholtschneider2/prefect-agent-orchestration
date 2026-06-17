@@ -414,3 +414,81 @@ def test_materialize_packs_opt_out_index(tmp_path: Path) -> None:
     materialize_packs(rig, role=None, index=False, packs=[pack])
 
     assert not (rig / ".claude" / "packs").exists()
+
+
+# ── external skills (Vercel `skills` CLI) ─────────────────────────────────────
+
+
+def _write_manifest(pack: Pack, refs: list[str]) -> None:
+    """Write a `[tool.po] external_skills` manifest to the pack's source root."""
+    body = "external_skills = [" + ", ".join(f'"{r}"' for r in refs) + "]\n"
+    (pack.root / "pyproject.toml").write_text(
+        '[project]\nname = "x"\n\n[tool.po]\n' + body, encoding="utf-8"
+    )
+
+
+def test_apply_external_skills_runs_npx(tmp_path: Path, monkeypatch) -> None:
+    import subprocess as _sp
+
+    from prefect_orchestration import pack_overlay as po
+
+    pack = _make_pack(tmp_path / "src", name="po-design")
+    _write_manifest(pack, ["leonxlnx/taste-skill", "anthropics/frontend-design"])
+    rig = tmp_path / "rig"
+    rig.mkdir()
+
+    calls: list[tuple[list[str], str]] = []
+
+    def fake_run(argv, *a, **k):
+        calls.append((list(argv), str(k.get("cwd"))))
+        return _sp.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(po.shutil, "which", lambda _x: "/usr/bin/npx")
+    monkeypatch.setattr(po.subprocess, "run", fake_run)
+
+    added = po.apply_external_skills(pack, rig)
+
+    assert added == ["leonxlnx/taste-skill", "anthropics/frontend-design"]
+    assert calls[0][0] == [
+        "npx",
+        "--yes",
+        "skills",
+        "add",
+        "leonxlnx/taste-skill",
+        "--project",
+        "--yes",
+    ]
+    assert calls[0][1] == str(rig)  # run in the rig, so .claude/skills is project-level
+
+
+def test_apply_external_skills_no_manifest_is_noop(tmp_path: Path, monkeypatch) -> None:
+    from prefect_orchestration import pack_overlay as po
+
+    pack = _make_pack(tmp_path / "src", name="po-plain")  # no pyproject manifest
+    rig = tmp_path / "rig"
+    rig.mkdir()
+
+    def boom(*a, **k):  # must never shell out when nothing is declared
+        raise AssertionError("npx must not run without a manifest")
+
+    monkeypatch.setattr(po.subprocess, "run", boom)
+    assert po.apply_external_skills(pack, rig) == []
+
+
+def test_apply_external_skills_graceful_without_npx(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from prefect_orchestration import pack_overlay as po
+
+    pack = _make_pack(tmp_path / "src", name="po-design")
+    _write_manifest(pack, ["leonxlnx/taste-skill"])
+    rig = tmp_path / "rig"
+    rig.mkdir()
+
+    monkeypatch.setattr(po.shutil, "which", lambda _x: None)  # npx absent
+
+    def boom(*a, **k):
+        raise AssertionError("must not shell out when npx is missing")
+
+    monkeypatch.setattr(po.subprocess, "run", boom)
+    assert po.apply_external_skills(pack, rig) == []  # graceful, no raise
