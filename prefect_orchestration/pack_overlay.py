@@ -29,6 +29,8 @@ from __future__ import annotations
 import importlib
 import logging
 import shutil
+import subprocess
+import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib.metadata import distributions
@@ -203,6 +205,82 @@ def apply_skills(pack: Pack, rig_path: Path) -> list[Path]:
                 _copy_tree(skill_dir, dest_root / skill_dir.name, skip_existing=False)
             )
     return written
+
+
+def _external_skill_refs(pack: Pack) -> list[str]:
+    """Read a pack's declared external skill refs from its source pyproject.
+
+    Looks for ``[tool.po] external_skills = ["<ref>", ...]`` in
+    ``<pack.root>/pyproject.toml`` (then ``<module_root>/pyproject.toml``).
+    Each ref is a ``skills add`` argument: a skills.sh ``author/pkg``, a
+    GitHub URL, or ``pkg@skill``. Returns ``[]`` when there is no pyproject
+    (e.g. a non-editable wheel install, where the source isn't on disk) or
+    no manifest — external skills are opt-in and never required.
+    """
+    for base in (pack.root, pack.module_root):
+        if base is None:
+            continue
+        pyproject = base / "pyproject.toml"
+        if not pyproject.is_file():
+            continue
+        try:
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        refs = ((data.get("tool") or {}).get("po") or {}).get("external_skills")
+        if isinstance(refs, list):
+            return [r for r in refs if isinstance(r, str) and r.strip()]
+        return []
+    return []
+
+
+def apply_external_skills(pack: Pack, rig_path: Path) -> list[str]:
+    """Install a pack's declared external skills into the rig (project-level).
+
+    Reads ``[tool.po] external_skills`` (see :func:`_external_skill_refs`) and
+    runs ``npx --yes skills add <ref> --project --yes`` (the Vercel ``skills``
+    CLI) with ``cwd=rig_path`` for each ref, materializing
+    ``<rig>/.claude/skills/`` + a ``skills-lock.json`` (restorable later via
+    ``skills experimental_install``). Idempotent — ``skills add`` no-ops when
+    the skill is already present.
+
+    Graceful by design: returns ``[]`` when nothing is declared; logs a
+    warning and stops (never raises) when ``npx`` is absent, so a pack
+    install never fails on a missing optional Node toolchain. A per-ref
+    failure is logged and skipped, not fatal.
+
+    Returns the list of refs successfully added.
+    """
+    refs = _external_skill_refs(pack)
+    if not refs:
+        return []
+    if shutil.which("npx") is None:
+        logger.warning(
+            "pack %s declares external skills %s but `npx` is not on PATH; "
+            "skipping (install Node, or run `npx skills add` in the rig manually)",
+            pack.name,
+            refs,
+        )
+        return []
+    added: list[str] = []
+    for ref in refs:
+        proc = subprocess.run(
+            ["npx", "--yes", "skills", "add", ref, "--project", "--yes"],
+            cwd=str(rig_path),
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0:
+            added.append(ref)
+        else:
+            logger.warning(
+                "pack %s: `skills add %s` failed (rc=%s): %s",
+                pack.name,
+                ref,
+                proc.returncode,
+                (proc.stderr or proc.stdout or "").strip()[:200],
+            )
+    return added
 
 
 def apply_pack_index(pack: Pack, rig_path: Path) -> list[Path]:

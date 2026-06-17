@@ -1985,7 +1985,8 @@ def packs_install(
     rig_path: Path | None = typer.Option(
         None,
         "--rig-path",
-        help="Rig root to copy overlay/CLAUDE-*.md files into (defaults to cwd).",
+        help="Rig root to materialize the pack into (overlay CLAUDE-*.md + any "
+        "external skills the pack declares). Defaults to cwd.",
         exists=False,
     ),
 ) -> None:
@@ -1994,6 +1995,13 @@ def packs_install(
     PO owns pack lifecycle end-to-end (engdocs/principles.md §3). Users
     don't need to learn `uv tool install --force --with-editable …`
     incantations.
+
+    Beyond installing the distribution, this materializes the pack into
+    the rig (`--rig-path`): it copies each pack's `overlay/CLAUDE-*.md`
+    into `<rig>/.claude/packs/`, and installs any external skills the pack
+    declares via `[tool.po] external_skills = [...]` using the Vercel
+    `skills` CLI (`npx skills add <ref> --project`) — a no-op when none
+    are declared or `npx` is absent.
     """
     try:
         _packs.install(spec, editable=editable)
@@ -2001,6 +2009,7 @@ def packs_install(
         typer.echo(str(exc), err=True)
         raise typer.Exit(2) from exc
     typer.echo(f"installed {spec}")
+    from prefect_orchestration.pack_overlay import apply_external_skills
     from prefect_orchestration.pack_overlay import apply_pack_index
     from prefect_orchestration.pack_overlay import (
         discover_packs as _discover_overlay_packs,
@@ -2011,6 +2020,11 @@ def packs_install(
         written = apply_pack_index(pack, effective_rig)
         for f in written:
             typer.echo(f"  overlay -> {f.relative_to(effective_rig)}")
+        # Materialize any external skills the pack declares (Vercel `skills`
+        # CLI). Opt-in per pack via `[tool.po] external_skills`; a no-op when
+        # none are declared or `npx` is absent.
+        for ref in apply_external_skills(pack, effective_rig):
+            typer.echo(f"  external-skill -> {ref}")
 
 
 @packs_app.command("update")
