@@ -42,7 +42,12 @@ logger = logging.getLogger(__name__)
 # {}); best-effort writes log a warning and continue; the agent_step-owned
 # shellouts re-raise a typed error so the flow's top-level handler can write
 # flow_outcome.json and `po status` can reap the run.
-BD_SHELL_TIMEOUT_S = 30
+# 120s (was 30): under heavy concurrency (multiple parallel epics each spawning
+# child beads) the `br` SQLite write-lock can be contended; br waits on it
+# (busy-timeout), so a too-tight shell window surfaces as a spurious
+# BdShellTimeoutError mid-run. With WAL enabled on the rig DBs those waits are
+# brief, but the wider margin removes the failure mode without serializing epics.
+BD_SHELL_TIMEOUT_S = 120
 
 
 class BdShellTimeoutError(RuntimeError):
@@ -442,6 +447,51 @@ def create_child_bead(
     stderr = (proc.stderr or "") + (proc.stdout or "")
     if "already exists" in stderr.lower():
         return child_id
+    # A `--id` create can fail when the resolved binary is actually beads-rust
+    # (`br`) but backend detection guessed "bd" (seen on the agentic-epic
+    # plan-critic path, where the rig/worktree path resolves to "bd" while the
+    # `bd` binary on PATH is really br). br has no `--id` flag and rejects the
+    # multi-hyphen convention id (`<seed>-<step>-iter<N>`) with
+    # "invalid format (expected prefix-hash)". Fall back to the br create path
+    # (no `--id`; br mints + returns its own id) so the iter bead is created
+    # rather than crashing the flow. Additive: only the bd-branch FAILURE path
+    # is touched — a correctly-detected br rig never reaches here.
+    looks_like_br = backend != "br" and (
+        "expected prefix-hash" in stderr.lower()
+        or "invalid format" in stderr.lower()
+        or ("unknown flag" in stderr.lower() and "--id" in stderr.lower())
+    )
+    if looks_like_br:
+        logger.warning(
+            "create_child_bead: `--id` rejected by the resolved binary (looks like "
+            "br); retrying without --id and adopting the minted id (child_id=%s)",
+            child_id,
+        )
+        br_cmd = [
+            binary,
+            "create",
+            title,
+            "--description",
+            description,
+            "--type",
+            issue_type,
+            "-p",
+            str(priority),
+            "--deps",
+            ",".join(deps),
+            "--json",
+        ]
+        retry = subprocess.run(
+            br_cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=str(rig_path) if rig_path is not None else None,
+            timeout=BD_SHELL_TIMEOUT_S,
+        )
+        if retry.returncode == 0:
+            return _parse_created_id(retry.stdout) or child_id
+        stderr += "\n[br-fallback] " + ((retry.stderr or "") + (retry.stdout or ""))
     raise RuntimeError(
         f"{binary} create {child_id} failed (rc={proc.returncode}): {stderr.strip()}"
     )
