@@ -25,7 +25,6 @@ consumers in ``beads_meta`` (``resolve_seed_bead`` / ``list_subgraph``).
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import shutil
@@ -39,7 +38,9 @@ BINARY: dict[str, str] = {"dolt": "bd", "br": "br"}
 _VERDICT_PREFIX = "po-verdict:"
 
 
-@functools.lru_cache(maxsize=1)
+_BD_IS_BR_MEMO: bool | None = None
+
+
 def _bd_is_really_br() -> bool:
     """True when the ``bd`` on PATH is actually beads-rust (``bd`` -> ``br``).
 
@@ -50,10 +51,20 @@ def _bd_is_really_br() -> bool:
     ``unexpected argument '--id'`` — silently breaking agentic dispatch
     (prefect-orchestration-3d7y). We probe the binary (``bd --version`` prints
     ``br <x.y.z>`` for beads-rust) so the *binary* is the ground truth, not a
-    stale metadata file. Cached for the process — the binary doesn't change
-    under us. Returns ``False`` when ``bd`` is absent or the probe fails (the
-    safe, behaviour-preserving answer for a genuine dolt rig).
+    stale metadata file.
+
+    Memoised **only on success** (prefect-orchestration-8cwg): a ``True`` result
+    is stable — the binary doesn't change under us — but a ``False`` result can
+    be transient (``bd`` momentarily off PATH, a ``--version`` timeout under
+    concurrent-epic load). A plain ``lru_cache`` would poison the whole process
+    on a single transient miss, flipping *every* rig to the dolt ``--id`` path
+    and crashing br dispatch. So we cache ``True`` and re-probe on ``False``.
+    Returns ``False`` when ``bd`` is absent or the probe fails (the safe,
+    behaviour-preserving answer for a genuine dolt rig).
     """
+    global _BD_IS_BR_MEMO
+    if _BD_IS_BR_MEMO:
+        return True
     bd = shutil.which("bd")
     if bd is None:
         return False
@@ -63,7 +74,10 @@ def _bd_is_really_br() -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return proc.stdout.strip().lower().startswith("br")
+    is_br = proc.stdout.strip().lower().startswith("br")
+    if is_br:
+        _BD_IS_BR_MEMO = True
+    return is_br
 
 
 def resolve_backend(rig_path: Path | str | None) -> str:
