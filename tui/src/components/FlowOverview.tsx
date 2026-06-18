@@ -27,13 +27,13 @@ export function FlowOverview({ flowName }: Props): React.ReactElement | null {
   if (!flowName) return null;
   const overview = getFlowOverview(flowName);
   return (
-    <Box paddingX={1}>
-      <Text bold color="white">
+    <Box>
+      <Text bold>
         {flowName}
       </Text>
       {overview ? (
         <Text color="gray" wrap="truncate-end">
-          {" · "}
+          {"  "}
           {overview}
         </Text>
       ) : null}

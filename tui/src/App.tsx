@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useApp, useInput, useStdout } from "ink";
-import Gradient from "ink-gradient";
 import TextInput from "ink-text-input";
 
 import { buildLines } from "./components/BdShow.js";
@@ -70,6 +69,7 @@ export function App(props: AppProps): React.ReactElement {
   const [bdScrollOffset, setBdScrollOffset] = useState(0);
   const [dispatchForm, setDispatchForm] = useState<DispatchForm | null>(null);
   const [dispatchDraft, setDispatchDraft] = useState("");
+  const [helpVisible, setHelpVisible] = useState(false);
 
   useEffect(() => {
     setBdScrollOffset(0);
@@ -113,13 +113,14 @@ export function App(props: AppProps): React.ReactElement {
 
   const totalRows = stdout?.rows ?? 40;
   const totalCols = stdout?.columns ?? 120;
-  const mobile = !!props.mobile;
+  const tooSmall = totalRows < 20 || totalCols < 60;
+  const mobile = !!props.mobile || totalCols < 92;
   const tailHeight = mobile
-    ? Math.max(6, Math.floor(totalRows / 3))
-    : Math.max(8, Math.floor(totalRows / 2) - 4);
+    ? Math.max(5, Math.floor(totalRows / 4))
+    : Math.max(8, Math.floor(totalRows / 2) - 6);
   const leftWidth = mobile
     ? undefined
-    : Math.min(Math.max(54, Math.floor(totalCols * 0.42)), 96);
+    : Math.min(Math.max(58, Math.floor(totalCols * 0.45)), 96);
 
   const bdShowIssue = selectedId ? bdShowCache[selectedId] ?? null : null;
   const bdShowLineCount = useMemo(
@@ -155,8 +156,18 @@ export function App(props: AppProps): React.ReactElement {
       return;
     }
 
+    if (helpVisible) {
+      if (input === "?" || input === "q" || key.escape) setHelpVisible(false);
+      return;
+    }
+
     if (input === "q" || (key.ctrl && input === "c")) {
       exit();
+      return;
+    }
+
+    if (input === "?") {
+      setHelpVisible(true);
       return;
     }
 
@@ -253,10 +264,10 @@ export function App(props: AppProps): React.ReactElement {
       }
       return;
     }
-    if (key.upArrow) { moveWithinSiblings(-1); return; }
-    if (key.downArrow) { moveWithinSiblings(1); return; }
-    if (key.rightArrow) { moveIntoChild(); return; }
-    if (key.leftArrow) { moveToParent(); return; }
+    if (key.upArrow || input === "k") { moveWithinSiblings(-1); return; }
+    if (key.downArrow || input === "j") { moveWithinSiblings(1); return; }
+    if (key.rightArrow || input === "l") { moveIntoChild(); return; }
+    if (key.leftArrow || input === "h") { moveToParent(); return; }
   });
 
   function runConfirmedAction(confirm: { action: "cancel" | "retry"; issueId: string }): void {
@@ -359,18 +370,31 @@ export function App(props: AppProps): React.ReactElement {
     }
   }
 
+  if (tooSmall) {
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        <Text bold>po tui</Text>
+        <Text color="yellow">
+          Terminal too small: {totalCols}x{totalRows}. Minimum is 60x20.
+        </Text>
+        <Text color="gray">Use a wider split or run with a larger terminal.</Text>
+      </Box>
+    );
+  }
+
   return (
     <Box flexDirection="column">
-      {/* Header */}
       <Box
         flexDirection={mobile ? "column" : "row"}
         justifyContent="space-between"
         paddingX={1}
       >
         <Box>
-          <Gradient name="cristal">
-            <Text bold>po · {props.epicFilter ?? "all"}</Text>
-          </Gradient>
+          <Text bold>po</Text>
+          <Text color="gray"> / {props.epicFilter ?? "all issues"}</Text>
+          {drillIntoIssueId ? (
+            <Text color="cyan"> / drilled {drillIntoIssueId}</Text>
+          ) : null}
         </Box>
         <Box>
           <Text color="cyan">run:{summary.running}</Text>
@@ -387,7 +411,9 @@ export function App(props: AppProps): React.ReactElement {
           {!mobile ? (
             <>
               <Text>  </Text>
-              <Text color="gray">refresh {props.refreshMs}ms</Text>
+              <Text color="gray">
+                {navIssues.length}/{summary.total} shown · refresh {props.refreshMs}ms
+              </Text>
             </>
           ) : null}
         </Box>
@@ -405,7 +431,6 @@ export function App(props: AppProps): React.ReactElement {
         </Box>
       ) : null}
 
-      {/* Main layout */}
       <Box flexDirection={mobile ? "column" : "row"}>
         <IssueList
           issues={issues}
@@ -417,7 +442,7 @@ export function App(props: AppProps): React.ReactElement {
           mobile={mobile}
           width={leftWidth}
         />
-        {mobile && !drillIntoIssueId ? null : (
+        {mobile && selectedTab !== "LIVE" ? (
           <DetailTabs
             selectedTab={selectedTab}
             selected={selected}
@@ -432,10 +457,24 @@ export function App(props: AppProps): React.ReactElement {
             prefectUrl={props.prefectUrl}
             mobile={mobile}
           />
-        )}
+        ) : !mobile ? (
+          <DetailTabs
+            selectedTab={selectedTab}
+            selected={selected}
+            allIssues={issues}
+            paneText={paneText}
+            paneSession={paneSession}
+            tailHeight={tailHeight}
+            bdShowIssue={bdShowIssue}
+            issueId={selectedId}
+            bdShowError={bdShowError}
+            bdScrollOffset={Math.min(bdScrollOffset, maxBdOffset)}
+            prefectUrl={props.prefectUrl}
+            mobile={mobile}
+          />
+        ) : null}
       </Box>
 
-      {/* Confirmation overlay */}
       {pendingConfirm ? (
         <Box paddingX={1} borderStyle="single" borderColor="yellow">
           <Text color="yellow">
@@ -445,7 +484,6 @@ export function App(props: AppProps): React.ReactElement {
         </Box>
       ) : null}
 
-      {/* Dispatch form */}
       {dispatchForm && dispatchForm.step !== "confirm" ? (
         <Box paddingX={1} borderStyle="single" borderColor="cyan" flexDirection="column">
           <Text color="cyan" bold>
@@ -488,7 +526,8 @@ export function App(props: AppProps): React.ReactElement {
         </Box>
       ) : null}
 
-      {/* Footer */}
+      {helpVisible ? <HelpOverlay /> : null}
+
       <Box paddingX={1} flexDirection="row" justifyContent="space-between">
         {filterMode ? (
           <Box>
@@ -505,11 +544,23 @@ export function App(props: AppProps): React.ReactElement {
         ) : (
           <Text color="gray">
             {mobile
-              ? "[↑↓←→] nav [a] attach [/] filt [e/E] drill [t] tab [c] cancel [r] retry [q]"
-              : "[↑↓] sibs  [←→] tree  [t] tab  [1-4] jump  [c] cancel  [r] retry  [d] dispatch  [D] show-done  [a] attach  [A] in-place  [/] filter  [e/E] drill  [q] quit"}
+              ? "↑↓/jk nav  ←→/hl tree  / filter  t tab  ? help  q quit"
+              : "↑↓/jk siblings  ←→/hl tree  t tabs  1-4 jump  / filter  c cancel  r retry  d dispatch  a attach  ? help  q quit"}
           </Text>
         )}
       </Box>
+    </Box>
+  );
+}
+
+function HelpOverlay(): React.ReactElement {
+  return (
+    <Box paddingX={1} borderStyle="round" borderColor="cyan" flexDirection="column">
+      <Text bold>Help</Text>
+      <Text color="gray">Navigation: ↑↓/jk siblings, ←→/hl parent or child, e drill, E clear drill, D show done</Text>
+      <Text color="gray">Views: t cycle detail tab, 1 live, 2 trace, 3 bead, 4 actions, / filter, Esc cancel</Text>
+      <Text color="gray">Actions: a attach in new terminal, A attach in place, o Prefect UI, c cancel, r retry, d dispatch</Text>
+      <Text color="gray">Close this help with ?, Esc, or q.</Text>
     </Box>
   );
 }

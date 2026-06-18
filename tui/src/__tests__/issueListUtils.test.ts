@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { humanWall } from "../components/IssueList.js";
+import { humanWall, stageDigest } from "../components/IssueList.js";
 import { computeStuck, selectLatestRunPerIssue } from "../state/store.js";
 import type { IssueRow } from "../state/store.js";
 import type { PrefectFlowRun } from "../data/prefect.js";
@@ -24,6 +24,32 @@ describe("humanWall()", () => {
   it("returns XhYm for hours + minutes", () => {
     expect(humanWall((1 * 60 + 7) * 60_000)).toBe("1h7m");
     expect(humanWall((5 * 60 + 30) * 60_000)).toBe("5h30m");
+  });
+});
+
+describe("stageDigest()", () => {
+  it("renders compact task-state cells", () => {
+    expect(
+      stageDigest([
+        { role: "triage", state: "succeeded", iterations: 1 },
+        { role: "plan", state: "looping", iterations: 2 },
+        { role: "build", state: "running", iterations: 1 },
+        { role: "verification", state: "not_started", iterations: 0 },
+      ]),
+    ).toBe("triage✓ plan⟲2 build… verify·");
+  });
+
+  it("caps long timelines", () => {
+    expect(
+      stageDigest([
+        { role: "triage", state: "succeeded", iterations: 1 },
+        { role: "plan", state: "succeeded", iterations: 1 },
+        { role: "build", state: "succeeded", iterations: 1 },
+        { role: "lint", state: "succeeded", iterations: 1 },
+        { role: "test", state: "succeeded", iterations: 1 },
+        { role: "review", state: "running", iterations: 1 },
+      ]),
+    ).toBe("triage✓ plan✓ build✓ lint✓ test✓ +1");
   });
 });
 

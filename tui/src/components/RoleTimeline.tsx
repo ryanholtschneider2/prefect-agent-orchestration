@@ -12,7 +12,7 @@ interface Props {
 export function RoleTimeline({ issue, allIssues }: Props): React.ReactElement {
   if (!issue) {
     return (
-      <Box paddingX={1}>
+      <Box>
         <Text color="gray">no issue selected</Text>
       </Box>
     );
@@ -27,9 +27,9 @@ export function RoleTimeline({ issue, allIssues }: Props): React.ReactElement {
   const isPivoted = !!running;
 
   return (
-    <Box flexDirection="column" paddingX={1}>
-      <Text bold color="white">
-        ROLE TIMELINE — <Text color="cyan">{issue.issueId}</Text>{" "}
+    <Box flexDirection="column">
+      <Text bold>
+        Role timeline  <Text color="cyan">{issue.issueId}</Text>{" "}
         <Text color="gray">
           {issue.flowStateName ?? issue.flowState ?? ""}
           {issue.epicId ? `  ·  epic ${issue.epicId}` : ""}

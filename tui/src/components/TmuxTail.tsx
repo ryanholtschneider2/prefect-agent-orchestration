@@ -18,9 +18,9 @@ export function TmuxTail({ text, session, height }: Props): React.ReactElement {
   const visible = lines.slice(-height);
 
   return (
-    <Box flexDirection="column" paddingX={1}>
-      <Text bold color="white">
-        TMUX TAIL{" "}
+    <Box flexDirection="column">
+      <Text bold>
+        Live tail{" "}
         <Text color="gray">{session ? `— ${session}` : "— (no session)"}</Text>
       </Text>
       <Box flexDirection="column" marginTop={1}>
@@ -28,7 +28,7 @@ export function TmuxTail({ text, session, height }: Props): React.ReactElement {
           <Text color="gray">(empty)</Text>
         ) : (
           visible.map((line, i) => (
-            <Text key={i} color="white" wrap="truncate-end">
+            <Text key={i} wrap="truncate-end">
               {line || " "}
             </Text>
           ))

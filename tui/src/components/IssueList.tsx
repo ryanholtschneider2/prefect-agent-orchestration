@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import Spinner from "ink-spinner";
 
 import { activitySort, type IssueRow } from "../state/store.js";
+import type { RoleSlot } from "../state/store.js";
 
 const STATE_COLORS: Record<string, string> = {
   RUNNING: "cyan",
@@ -46,6 +47,48 @@ export function humanWall(ms: number): string {
   const h = Math.floor(m / 60);
   const rem = m % 60;
   return rem > 0 ? `${h}h${rem}m` : `${h}h`;
+}
+
+export function stageDigest(roles: readonly RoleSlot[], maxCells = 5): string {
+  if (roles.length === 0) return "no tasks";
+  const cells = roles.slice(0, maxCells).map((slot) => {
+    const name = compactRoleName(slot.role);
+    return `${name}${roleGlyph(slot)}`;
+  });
+  if (roles.length > maxCells) cells.push(`+${roles.length - maxCells}`);
+  return cells.join(" ");
+}
+
+function compactRoleName(role: string): string {
+  const mapped: Record<string, string> = {
+    "critique-plan": "crit",
+    "deploy-smoke": "smoke",
+    "review-artifacts": "art",
+    verification: "verify",
+    regression: "reg",
+    "regression-gate": "reg",
+  };
+  return mapped[role] ?? role.replace(/-/g, "_").slice(0, 7);
+}
+
+function roleGlyph(slot: RoleSlot): string {
+  switch (slot.state) {
+    case "succeeded":
+      return "✓";
+    case "running":
+      return "…";
+    case "looping":
+      return `⟲${slot.iterations}`;
+    case "failed":
+      return "!";
+    case "paused":
+      return "p";
+    case "cancelled":
+      return "x";
+    case "not_started":
+    default:
+      return "·";
+  }
 }
 
 function commonIdPrefix(ids: string[]): string {
@@ -163,8 +206,8 @@ export function IssueList({
     g.rows.map((r) => r.stem),
   );
   const stemMaxLen = allStems.reduce((m, s) => Math.max(m, s.length), 0);
-  // Reserve: cursor(2) + paddingX(2) + border(2) + flowMode(5) + wall(6) + step(16) + stuck(2) = 35
-  const reserved = 6 + 5 + 6 + 16 + 2;
+  // Reserve cursor + mode + wall + stage digest. Title takes the remaining row.
+  const reserved = 6 + 5 + 6 + 24 + 2;
   const idCapByPanel = Math.max(8, panelWidth - reserved);
   const idColWidth = mobile
     ? Math.min(Math.max(stemMaxLen + 1, 6), 28)
@@ -181,16 +224,22 @@ export function IssueList({
       paddingX={1}
     >
       <Box flexDirection="row" justifyContent="space-between">
-        <Text bold color="white">
-          ISSUES
+        <Text bold>
+          Issues
         </Text>
         <Text color="gray">
-          {" "}
-          {running.length} running
+          {running.length} active
           {stuckCount > 0 ? <Text color="red">, {stuckCount} stuck</Text> : null},{" "}
           {done.length} done
         </Text>
       </Box>
+      {!mobile ? (
+        <Box>
+          <Text color="gray" wrap="truncate-end">
+            id{" ".repeat(Math.max(1, idColWidth - 1))}mode  age    stage digest
+          </Text>
+        </Box>
+      ) : null}
       <Box flexDirection="column" marginTop={1}>
         {running.length === 0 && done.length === 0 ? (
           <Text color="gray">no flow runs found</Text>
@@ -237,56 +286,76 @@ function renderGroupRows(
   }
   for (const dr of group.rows) {
     const isSel = dr.issue.issueId === selectedId;
-    const color = STATE_COLORS[dr.issue.flowState ?? ""] ?? "white";
+    const color = STATE_COLORS[dr.issue.flowState ?? ""] ?? undefined;
     const indent = dr.depth > 0 ? "  └ " : "";
     const wall = dr.issue.wallMs > 0 ? humanWall(dr.issue.wallMs) : "";
     const wallColor = dr.issue.wallMs > 3_600_000 ? "red" : "gray";
+    const digest = stageDigest(dr.issue.roles);
+    const title = dr.issue.title ?? "";
 
     blocks.push(
-      <Box key={dr.issue.issueId} flexDirection="row">
-        <Text color={isSel ? "cyan" : "gray"}>{isSel ? "▶ " : "  "}</Text>
-        <Box width={idColWidth}>
-          <Text color={isSel ? "white" : "gray"} bold={isSel} wrap="truncate-end">
-            {indent}
-            {dr.stem}
-          </Text>
-        </Box>
-        {!mobile && (
-          <>
-            <Box width={5}>
-              <Text color="gray" wrap="truncate-end">
-                {dr.issue.flowMode}
-              </Text>
-            </Box>
-            <Box width={6}>
-              <Text color={wallColor} wrap="truncate-end">
-                {wall}
-              </Text>
-            </Box>
-            <Box width={16}>
-              <Text color={color} wrap="truncate-end">
-                {dr.issue.stepLabel}
-              </Text>
-            </Box>
-            <Box width={2}>
-              {dr.issue.stuck ? <Text color="red">⚠</Text> : <Text>  </Text>}
-            </Box>
-          </>
-        )}
-        <Box flexGrow={1}>
-          <Text color={isSel ? "white" : "gray"} wrap="truncate-end">
-            {dr.issue.title ?? ""}
-          </Text>
-        </Box>
-        <Box width={3}>
-          {dr.issue.flowState === "RUNNING" ? (
-            <Text color="cyan">
-              <Spinner type="dots" />
+      <Box key={dr.issue.issueId} flexDirection="column">
+        <Box flexDirection="row">
+          <Text color={isSel ? "cyan" : "gray"}>{isSel ? "▶ " : "  "}</Text>
+          <Box width={idColWidth} marginRight={1}>
+            <Text color={isSel ? undefined : "gray"} bold={isSel} wrap="truncate-end">
+              {indent}
+              {dr.stem}
             </Text>
-          ) : (
-            <Text color={color}>{glyphFor(dr.issue.flowState)}</Text>
+          </Box>
+          {!mobile && (
+            <>
+              <Box width={5} marginRight={1}>
+                <Text color="gray" wrap="truncate-end">
+                  {dr.issue.flowMode}
+                </Text>
+              </Box>
+              <Box width={6} marginRight={1}>
+                <Text color={wallColor} wrap="truncate-end">
+                  {wall}
+                </Text>
+              </Box>
+              <Box width={24} marginRight={1}>
+                <Text color={color ?? "gray"} wrap="truncate-end">
+                  {digest}
+                </Text>
+              </Box>
+              <Box width={2}>
+                {dr.issue.stuck ? <Text color="red">!</Text> : <Text>  </Text>}
+              </Box>
+            </>
           )}
+          <Box flexGrow={1}>
+            <Text color={isSel ? undefined : "gray"} wrap="truncate-end">
+              {title || dr.issue.stepLabel}
+            </Text>
+          </Box>
+          <Box width={3}>
+            {dr.issue.flowState === "RUNNING" ? (
+              <Text color="cyan">
+                <Spinner type="dots" />
+              </Text>
+            ) : (
+              <Text color={color ?? "gray"}>{glyphFor(dr.issue.flowState)}</Text>
+            )}
+          </Box>
         </Box>
+        {mobile ? (
+          <Box paddingLeft={2}>
+            <Text color="gray" wrap="truncate-end">
+              {dr.issue.flowMode} {wall} · {digest}
+              {dr.issue.stuck ? " ! stuck" : ""}
+            </Text>
+          </Box>
+        ) : null}
+        {isSel && !mobile ? (
+          <Box paddingLeft={2}>
+            <Text color="gray" wrap="truncate-end">
+              {dr.issue.flowStateName ?? dr.issue.flowState ?? "unknown"} · {dr.issue.stepLabel}
+              {dr.issue.epicId ? ` · epic ${dr.issue.epicId}` : ""}
+            </Text>
+          </Box>
+        ) : null}
       </Box>,
     );
   }

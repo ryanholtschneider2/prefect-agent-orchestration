@@ -29,9 +29,8 @@ const TABS: TabName[] = ["LIVE", "TRACE", "BD", "ACTIONS"];
 
 export function DetailTabs(props: Props): React.ReactElement {
   return (
-    <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor="gray">
-      {/* Tab bar */}
-      <Box flexDirection="row" paddingX={1}>
+    <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor="gray" paddingX={1}>
+      <Box flexDirection="row">
         {TABS.map((t) => (
           <Box key={t} marginRight={1}>
             <Text bold={t === props.selectedTab} color={t === props.selectedTab ? "cyan" : "gray"}>
@@ -39,27 +38,26 @@ export function DetailTabs(props: Props): React.ReactElement {
             </Text>
           </Box>
         ))}
-        <Text color="gray"> [t] cycle  [1-4] jump</Text>
+        <Text color="gray"> t cycle  1-4 jump</Text>
       </Box>
 
-      {/* Content */}
-      <Box flexDirection="column" flexGrow={1}>
+      <Box flexDirection="column" flexGrow={1} marginTop={1}>
         {props.selectedTab === "LIVE" && (
           <>
             <FlowOverview flowName={props.selected?.flowName} />
             <RoleTimeline issue={props.selected} allIssues={props.allIssues} />
-            <Box borderStyle="single" borderColor="gray" flexDirection="column">
+            <Box flexDirection="column" marginTop={1}>
               <TmuxTail text={props.paneText} session={props.paneSession} height={props.tailHeight} />
             </Box>
           </>
         )}
         {props.selectedTab === "TRACE" && (
-          <Box paddingX={1} paddingY={1}>
+          <Box>
             <Text color="gray">(coming soon — see prefect-orchestration-qhg)</Text>
           </Box>
         )}
         {props.selectedTab === "BD" && (
-          <Box borderStyle="single" borderColor="gray" flexDirection="column">
+          <Box flexDirection="column">
             <BdShow
               issue={props.bdShowIssue}
               issueId={props.issueId}

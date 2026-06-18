@@ -14,9 +14,9 @@ export function Actions({ issueId, flowRunId, prefectUrl }: Props): React.ReactE
     : null;
 
   return (
-    <Box flexDirection="column" paddingX={1} paddingY={1}>
-      <Text bold color="white">
-        ACTIONS{" "}
+    <Box flexDirection="column">
+      <Text bold>
+        Actions{" "}
         {issueId ? (
           <Text color="cyan">{issueId}</Text>
         ) : (
@@ -24,13 +24,13 @@ export function Actions({ issueId, flowRunId, prefectUrl }: Props): React.ReactE
         )}
       </Text>
       <Box flexDirection="column" marginTop={1}>
-        <Text color="gray">[c]  Cancel this run (confirm prompt)</Text>
-        <Text color="gray">[r]  Retry this run (confirm prompt)</Text>
-        <Text color="gray">[d]  Dispatch new run (form)</Text>
+        <Text color="gray">c   cancel this run (confirm prompt)</Text>
+        <Text color="gray">r   retry this run (confirm prompt)</Text>
+        <Text color="gray">d   dispatch new run (form)</Text>
         {prefectUiUrl ? (
-          <Text color="gray">[o]  Open in Prefect UI — {prefectUiUrl}</Text>
+          <Text color="gray">o   open in Prefect UI — {prefectUiUrl}</Text>
         ) : (
-          <Text color="gray">[o]  Open in Prefect UI (no run selected)</Text>
+          <Text color="gray">o   open in Prefect UI (no run selected)</Text>
         )}
       </Box>
     </Box>
