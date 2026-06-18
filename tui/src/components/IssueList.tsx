@@ -1,6 +1,5 @@
 import React from "react";
 import { Box, Text } from "ink";
-import Spinner from "ink-spinner";
 
 import { activitySort, type IssueRow } from "../state/store.js";
 import type { RoleSlot } from "../state/store.js";
@@ -332,9 +331,7 @@ function renderGroupRows(
           </Box>
           <Box width={3}>
             {dr.issue.flowState === "RUNNING" ? (
-              <Text color="cyan">
-                <Spinner type="dots" />
-              </Text>
+              <Text color="cyan">›</Text>
             ) : (
               <Text color={color ?? "gray"}>{glyphFor(dr.issue.flowState)}</Text>
             )}

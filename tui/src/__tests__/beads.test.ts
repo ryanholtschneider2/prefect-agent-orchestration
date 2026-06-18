@@ -50,6 +50,29 @@ describe("bdShow()", () => {
     await expect(bdShow("missing")).rejects.toThrow(/exited 1/);
   });
 
+  it("falls back to br show when bd reports issue-not-found with a br hint", async () => {
+    const calls: string[][] = [];
+    (Bun as { spawn: typeof Bun.spawn }).spawn = mock((cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd[0] === "bd") {
+        return makeProc(
+          "",
+          '{"error":{"code":"ISSUE_NOT_FOUND","hint":"Run `br list` to see available issues."}}',
+          3,
+        );
+      }
+      return makeProc('[{"id":"bd-3uu","title":"from br","status":"open"}]', "", 0);
+    }) as unknown as typeof Bun.spawn;
+    const { bdShow } = await import("../data/beads.js");
+    const issue = await bdShow("bd-3uu");
+    expect(issue?.id).toBe("bd-3uu");
+    expect(issue?.title).toBe("from br");
+    expect(calls).toEqual([
+      ["bd", "show", "bd-3uu", "--json"],
+      ["br", "--json", "show", "bd-3uu"],
+    ]);
+  });
+
   it("throws on bad JSON", async () => {
     (Bun as { spawn: typeof Bun.spawn }).spawn = mock(() =>
       makeProc("not-json", "", 0),

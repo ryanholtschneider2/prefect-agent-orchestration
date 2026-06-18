@@ -1,6 +1,5 @@
 import React from "react";
 import { Box, Text } from "ink";
-import Spinner from "ink-spinner";
 
 import { findRunningDescendant, type IssueRow, type RoleSlot } from "../state/store.js";
 
@@ -85,14 +84,7 @@ function visualFor(slot: RoleSlot): {
     case "succeeded":
       return { color: "green", glyph: "✓" };
     case "running":
-      return {
-        color: "cyan",
-        glyph: (
-          <Text color="cyan">
-            <Spinner type="dots" />
-          </Text>
-        ),
-      };
+      return { color: "cyan", glyph: "run" };
     case "looping":
       return { color: "yellow", glyph: `⟲${slot.iterations}` };
     case "failed":

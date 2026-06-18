@@ -529,7 +529,7 @@ export const useStore = create<PoTuiState>((set, get) => ({
   refreshPane: async () => {
     const { issues, selectedId } = get();
     if (!selectedId) {
-      set({ paneText: "", paneSession: null });
+      setPaneIfChanged(get, set, "", null);
       return;
     }
     const row = issues.find((i) => i.issueId === selectedId);
@@ -551,23 +551,26 @@ export const useStore = create<PoTuiState>((set, get) => ({
       if (last) target = { issueId: row.issueId, role: last };
     }
     if (!target) {
-      set({
-        paneText: row.childIssueIds.length
+      setPaneIfChanged(
+        get,
+        set,
+        row.childIssueIds.length
           ? "(parent flow — waiting for first child task)"
           : "(no tasks running yet)",
-        paneSession: null,
-      });
+        null,
+      );
       return;
     }
     const resolved = await resolveSession(target.issueId, target.role);
     const session = resolved ?? sessionFor(target.issueId, target.role);
     const text = resolved ? await capturePane(resolved, 200) : "";
-    set({
-      paneText:
-        text ||
+    setPaneIfChanged(
+      get,
+      set,
+      text ||
         `(no live tmux session for ${target.issueId}/${target.role} — looked for ${session}${resolved ? "" : " or fork)"}`,
-      paneSession: resolved,
-    });
+      resolved,
+    );
   },
 
   refreshBdShow: async () => {
@@ -615,6 +618,17 @@ export const useStore = create<PoTuiState>((set, get) => ({
 
   setPendingConfirm: (c) => set({ pendingConfirm: c }),
 }));
+
+function setPaneIfChanged(
+  get: () => PoTuiState,
+  set: (partial: Partial<PoTuiState>) => void,
+  paneText: string,
+  paneSession: string | null,
+): void {
+  const current = get();
+  if (current.paneText === paneText && current.paneSession === paneSession) return;
+  set({ paneText, paneSession });
+}
 
 const STATE_PRIORITY: Record<string, number> = {
   RUNNING: 0,

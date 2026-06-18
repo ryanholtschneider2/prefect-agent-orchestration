@@ -1,6 +1,5 @@
 import React from "react";
 import { Box, Text } from "ink";
-import Spinner from "ink-spinner";
 
 import type { BdIssue } from "../data/beads.js";
 
@@ -40,7 +39,6 @@ export function BdShow({
           <Text color="red">! bd show: {error}</Text>
         ) : (
           <Text color="gray">
-            <Spinner type="dots" />{" "}
             {issueId ? `bd show ${issueId}…` : "no issue selected"}
           </Text>
         )}
