@@ -148,6 +148,17 @@ export function registryRoleFor(taskName: string): string {
   return TASK_TO_REGISTRY_ROLE[taskName] ?? taskName;
 }
 
+export function registryRoleForFlow(
+  flowName: string | undefined,
+  taskName: string,
+): string {
+  if (flowName === "software_dev_agentic") {
+    if (taskName === "agentic") return "agentic-worker";
+    if (taskName === "review") return "agentic-reviewer";
+  }
+  return registryRoleFor(taskName);
+}
+
 export function sanitizeIssueId(issueId: string): string {
   // tmux treats '.' as a session.window.pane separator; po replaces with '_'.
   return issueId.replace(/\./g, "_");
@@ -157,6 +168,14 @@ export function sanitizeIssueId(issueId: string): string {
  *  add a `-<6hex>` suffix; use `resolveSession` to find them. */
 export function sessionFor(issueId: string, role: string): string {
   return `po-${sanitizeIssueId(issueId)}-${registryRoleFor(role)}`;
+}
+
+export function sessionForFlow(
+  issueId: string,
+  role: string,
+  flowName: string | undefined,
+): string {
+  return `po-${sanitizeIssueId(issueId)}-${registryRoleForFlow(flowName, role)}`;
 }
 
 let cachedSessionList: { at: number; names: string[] } | null = null;
@@ -231,9 +250,10 @@ async function listTmuxWindows(): Promise<
 export async function resolveSession(
   issueId: string,
   role: string,
+  flowName?: string,
 ): Promise<string | null> {
   // Layout 1: dedicated session per (issue, role).
-  const base = sessionFor(issueId, role);
+  const base = sessionForFlow(issueId, role, flowName);
   const sessions = await listTmuxSessions();
   if (sessions.includes(base)) return base;
   const sessionFork = new RegExp(`^${escapeRe(base)}-[0-9a-f]{6}$`);

@@ -22,7 +22,7 @@ import {
   baseTaskName,
   capturePane,
   resolveSession,
-  sessionFor,
+  sessionForFlow,
 } from "../data/tmux.js";
 
 export type RoleState =
@@ -561,8 +561,10 @@ export const useStore = create<PoTuiState>((set, get) => ({
       );
       return;
     }
-    const resolved = await resolveSession(target.issueId, target.role);
-    const session = resolved ?? sessionFor(target.issueId, target.role);
+    const targetRow = issues.find((i) => i.issueId === target.issueId);
+    const targetFlowName = targetRow?.flowName;
+    const resolved = await resolveSession(target.issueId, target.role, targetFlowName);
+    const session = resolved ?? sessionForFlow(target.issueId, target.role, targetFlowName);
     const text = resolved ? await capturePane(resolved, 200) : "";
     setPaneIfChanged(
       get,
