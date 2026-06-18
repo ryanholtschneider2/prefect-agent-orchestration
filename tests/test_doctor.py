@@ -6,6 +6,7 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -290,6 +291,41 @@ def test_uv_tool_fresh_divergence(monkeypatch):
     )
     r = doctor_mod.check_uv_tool_fresh()
     assert r.status is Status.WARN
+    assert "uv tool install" in r.remediation
+
+
+# -- editable installs (footgun detector, prefect-orchestration-1crg) --
+
+
+def test_editable_installs_all_resolve(monkeypatch):
+    # A real, existing, non-transient dir (the repo root). tmp_path can't be
+    # used here: pytest puts it under /tmp, which is itself a transient marker.
+    canon = Path(__file__).resolve().parent.parent
+    monkeypatch.setattr(
+        doctor_mod, "_editable_source_dirs", lambda: [("prefect-orchestration", canon)]
+    )
+    assert doctor_mod.check_editable_installs_resolve().status is Status.OK
+
+
+def test_editable_install_into_worktree_warns(monkeypatch, tmp_path):
+    wt = tmp_path / "prefect-orchestration.wt-abc123"
+    wt.mkdir()
+    monkeypatch.setattr(
+        doctor_mod, "_editable_source_dirs", lambda: [("prefect-orchestration", wt)]
+    )
+    r = doctor_mod.check_editable_installs_resolve()
+    assert r.status is Status.WARN
+    assert "transient-path" in r.message
+
+
+def test_editable_install_dangling_fails(monkeypatch, tmp_path):
+    gone = tmp_path / "removed-worktree" / "core"  # never created -> missing
+    monkeypatch.setattr(
+        doctor_mod, "_editable_source_dirs", lambda: [("prefect-orchestration", gone)]
+    )
+    r = doctor_mod.check_editable_installs_resolve()
+    assert r.status is Status.FAIL
+    assert "dangling" in r.message
     assert "uv tool install" in r.remediation
 
 

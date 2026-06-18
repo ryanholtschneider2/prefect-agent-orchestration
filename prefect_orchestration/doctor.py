@@ -975,6 +975,82 @@ def clean_stale_locks(rig_path: Path | None = None) -> list[Path]:
     return removed
 
 
+_WORKTREE_PATH_MARKERS = (".worktrees/", "/wt-", ".wt-", ".agentic", "/tmp/")
+
+
+def _editable_source_dirs() -> list[tuple[str, Path]]:
+    """(dist-name, editable source dir) for every editable dist in this env.
+
+    Reads PEP 610 ``direct_url.json`` via ``importlib.metadata`` for every
+    installed distribution. Standard metadata, not a uv-internal format. Goes
+    through ``distributions()`` rather than globbing a guessed site-packages
+    dir because uv-tool editable installs are ``.pth``-finder based — a
+    package's ``__file__`` points at the *source* checkout, not the tool env's
+    site-packages, so a path-glob would miss every editable dist.
+    """
+    import json
+    from importlib.metadata import distributions
+
+    out: list[tuple[str, Path]] = []
+    for dist in distributions():
+        raw = dist.read_text("direct_url.json")
+        if not raw:
+            continue
+        try:
+            meta = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if not (isinstance(meta, dict) and meta.get("dir_info", {}).get("editable")):
+            continue
+        url = meta.get("url", "")
+        if not url.startswith("file://"):
+            continue
+        src = url[len("file://") :]
+        name = dist.metadata["Name"] or "?"
+        out.append((name, Path(src)))
+    return out
+
+
+def check_editable_installs_resolve() -> CheckResult:
+    """Catch the shared-tool-env footgun: editable install repointed/dangling.
+
+    An agentic worker that runs ``uv tool install`` / ``uv pip install -e .``
+    from its *worktree* repoints the operator's live tool env at a transient
+    path and can evict every other pack (prefect-orchestration-1crg). The tell
+    afterward is an editable dist whose source dir no longer exists, or points
+    into a worktree / ``/tmp`` that will vanish. Surface it directly instead of
+    leaving the operator to puzzle over an empty ``po list``.
+    """
+    name = "editable installs resolve"
+    dangling: list[str] = []
+    transient: list[str] = []
+    for dist_name, src in _editable_source_dirs():
+        if not src.exists():
+            dangling.append(f"{dist_name} -> {src} (missing)")
+            continue
+        if any(m in f"{src}/" for m in _WORKTREE_PATH_MARKERS):
+            transient.append(f"{dist_name} -> {src}")
+    if not dangling and not transient:
+        return CheckResult(
+            name=name, status=Status.OK, message="all editable sources resolve"
+        )
+    parts = []
+    if dangling:
+        parts.append(f"dangling: {dangling}")
+    if transient:
+        parts.append(f"transient-path: {transient}")
+    return CheckResult(
+        name=name,
+        status=Status.FAIL if dangling else Status.WARN,
+        message="; ".join(parts),
+        remediation=(
+            "reinstall from canonical paths: uv tool install --force "
+            "--editable <core> --with-editable <pack> …  "
+            "(workers must never `uv tool install` from a worktree)"
+        ),
+    )
+
+
 # -- aggregator ---------------------------------------------------------
 
 
@@ -987,6 +1063,7 @@ ALL_CHECKS: list[Callable[[], CheckResult]] = [
     check_deployments_load,
     check_po_list_nonempty,
     check_uv_tool_fresh,
+    check_editable_installs_resolve,
     check_beads_dolt_mode,
     check_logfire_token,
     check_pack_overlays,
