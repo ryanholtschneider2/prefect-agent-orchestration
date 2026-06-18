@@ -28,6 +28,6 @@ def _pin_beads_binary_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     `PO_BEADS_BACKEND` (`setenv`) or the probe (`lambda: True`) explicitly; a
     test asserting the sniff clears the env with `delenv`.
     """
-    beads_backend._bd_is_really_br.cache_clear()
+    monkeypatch.setattr(beads_backend, "_BD_IS_BR_MEMO", None)
     monkeypatch.setattr(beads_backend, "_bd_is_really_br", lambda: False)
     monkeypatch.setenv("PO_BEADS_BACKEND", "dolt")

@@ -56,7 +56,9 @@ def test_resolve_backend_sniffs_dolt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("PO_BEADS_BACKEND", raising=False)
-    monkeypatch.setattr(beads_backend, "_bd_is_really_br", lambda: False)  # genuine dolt bd
+    monkeypatch.setattr(
+        beads_backend, "_bd_is_really_br", lambda: False
+    )  # genuine dolt bd
     _write_meta(tmp_path, {"dolt_mode": "server", "database": "dolt"})
     assert resolve_backend(tmp_path) == "dolt"
 
@@ -73,7 +75,9 @@ def test_resolve_backend_default_dolt_when_no_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("PO_BEADS_BACKEND", raising=False)
-    monkeypatch.setattr(beads_backend, "_bd_is_really_br", lambda: False)  # genuine dolt bd
+    monkeypatch.setattr(
+        beads_backend, "_bd_is_really_br", lambda: False
+    )  # genuine dolt bd
     assert resolve_backend(tmp_path) == "dolt"  # no .beads/ -> safe default
 
 
@@ -103,6 +107,36 @@ def test_resolve_backend_env_dolt_forces_dolt_over_br_binary(
     monkeypatch.setenv("PO_BEADS_BACKEND", "dolt")
     monkeypatch.setattr(beads_backend, "_bd_is_really_br", lambda: True)
     assert resolve_backend(tmp_path) == "dolt"
+
+
+def test_bd_is_really_br_does_not_poison_on_transient_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # prefect-orchestration-8cwg: a transient probe miss (bd momentarily off
+    # PATH, or a --version timeout under concurrent-epic load) must NOT cache
+    # False for the whole process — that would flip every rig to the dolt
+    # `--id` path and crash br dispatch. Only a True result is memoised.
+    monkeypatch.undo()  # drop the autouse probe patch; exercise the real fn
+
+    calls = {"n": 0}
+
+    class _Proc:
+        def __init__(self, out: str) -> None:
+            self.stdout = out
+
+    def fake_run(*_a: object, **_k: object) -> _Proc:
+        calls["n"] += 1
+        # First probe fails (transient: empty version), second succeeds.
+        return _Proc("" if calls["n"] == 1 else "br 0.9.0")
+
+    monkeypatch.setattr(beads_backend, "_BD_IS_BR_MEMO", None)
+    monkeypatch.setattr(beads_backend.shutil, "which", lambda _x: "/usr/bin/bd")
+    monkeypatch.setattr(beads_backend.subprocess, "run", fake_run)
+
+    assert beads_backend._bd_is_really_br() is False  # transient miss
+    assert beads_backend._bd_is_really_br() is True  # re-probes, now br
+    assert beads_backend._bd_is_really_br() is True  # now memoised, no re-probe
+    assert calls["n"] == 2  # third call served from the memo
 
 
 # ───────────────────────── read_verdict (br) ─────────────────────────
