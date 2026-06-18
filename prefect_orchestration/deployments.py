@@ -263,3 +263,147 @@ def prefect_api_configured() -> bool:
     which is almost never what the user wants for `po deploy --apply`.
     """
     return bool(os.environ.get("PREFECT_API_URL"))
+
+
+# ---------------------------------------------------------------------------
+# Rig-scoped deployment application (po packs install --rig-path)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RigDeploymentResult:
+    """Outcome of applying one deployment when scoped to a rig."""
+
+    pack: str
+    deployment_name: str
+    deployment_id: str | None = None
+    error: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+def _is_pool_not_found(exc: Exception) -> bool:
+    """True when `exc` indicates the work pool doesn't exist (HTTP 404 or similar)."""
+    msg = str(exc).lower()
+    return "404" in msg or "not found" in msg or "does not exist" in msg
+
+
+async def _ensure_pool_async(pool_name: str, pool_type: str) -> bool:
+    """Async core of :func:`ensure_work_pool`. Exposed at module level for testing."""
+    from prefect import get_client
+    from prefect.client.schemas.actions import WorkPoolCreate
+
+    async with get_client() as client:
+        try:
+            await client.read_work_pool(pool_name)
+            return False
+        except Exception as exc:
+            if not _is_pool_not_found(exc):
+                raise
+        await client.create_work_pool(WorkPoolCreate(name=pool_name, type=pool_type))
+        return True
+
+
+def ensure_work_pool(
+    pool_name: str,
+    *,
+    pool_type: str = "process",
+    timeout: float = 10.0,
+) -> tuple[str, bool]:
+    """Create `pool_name` on the Prefect server if it doesn't already exist.
+
+    Returns ``(pool_name, created)`` where ``created`` is ``True`` when a new
+    pool was provisioned. Raises when the API is unreachable or the create
+    call fails for a reason other than "already exists".
+    """
+    import asyncio
+
+    return pool_name, asyncio.run(
+        asyncio.wait_for(_ensure_pool_async(pool_name, pool_type), timeout=timeout)
+    )
+
+
+def apply_rig_deployments(
+    rig_path: Path,
+    *,
+    work_pool: str | None = None,
+    create_pools: bool = True,
+    timeout: float = 30.0,
+) -> tuple[list[RigDeploymentResult], list[RigDeploymentResult]]:
+    """Apply all pack deployments scoped to ``rig_path``.
+
+    For each deployment discovered via ``load_deployments()``:
+
+    - Renames it to ``<original-name>-<rig-slug>`` so each rig gets its own
+      named deployment on the server (no cross-rig clobbering).
+    - Injects ``rig_path`` and ``rig`` into the deployment's ``parameters``
+      (``setdefault`` — explicit pack values take precedence).
+    - Applies it via ``apply_deployment()`` (upsert-on-conflict, idempotent).
+
+    When ``create_pools=True`` (the default), ensures every work pool referenced
+    by the loaded deployments exists before applying.
+
+    ``work_pool`` overrides all deployment-declared pool names when set.
+
+    Returns ``(applied, errors)`` where each element is a
+    :class:`RigDeploymentResult`.
+    """
+    rig_slug = rig_path.name
+    loaded, load_errors = load_deployments()
+
+    errors: list[RigDeploymentResult] = [
+        RigDeploymentResult(pack=e.pack, deployment_name="?", error=e.error)
+        for e in load_errors
+    ]
+
+    if not loaded:
+        return [], errors
+
+    # Collect unique pools that need to exist before applying.
+    if create_pools:
+        pool_names: set[str] = set()
+        if work_pool:
+            pool_names.add(work_pool)
+        else:
+            for item in loaded:
+                pn = getattr(item.deployment, "work_pool_name", None)
+                if pn:
+                    pool_names.add(pn)
+        for pn in sorted(pool_names):
+            try:
+                ensure_work_pool(pn)
+            except Exception as exc:
+                logger.warning("could not ensure work pool %r: %s", pn, exc)
+
+    applied: list[RigDeploymentResult] = []
+    for item in loaded:
+        dep = item.deployment
+        original_name: str = getattr(dep, "name", "") or item.pack
+        dep.name = f"{original_name}-{rig_slug}"
+
+        params: dict[str, Any] = dict(getattr(dep, "parameters", {}) or {})
+        params.setdefault("rig_path", str(rig_path))
+        params.setdefault("rig", rig_slug)
+        dep.parameters = params
+
+        try:
+            dep_id = apply_deployment(dep, work_pool=work_pool)
+            applied.append(
+                RigDeploymentResult(
+                    pack=item.pack,
+                    deployment_name=dep.name,
+                    deployment_id=dep_id,
+                )
+            )
+        except Exception as exc:
+            errors.append(
+                RigDeploymentResult(
+                    pack=item.pack,
+                    deployment_name=dep.name,
+                    error=str(exc),
+                )
+            )
+
+    return applied, errors

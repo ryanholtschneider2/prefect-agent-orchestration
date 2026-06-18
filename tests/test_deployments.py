@@ -358,3 +358,192 @@ def test_po_run_still_works(monkeypatch):
     res = CliRunner().invoke(app, ["run", "hello", "--who", "world", "--n", "3"])
     assert res.exit_code == 0, res.stdout
     assert captured == {"who": "world", "n": 3}
+
+
+# -- apply_rig_deployments -----------------------------------------------
+
+
+class _SpyDep:
+    """Fake RunnerDeployment that records what apply_rig_deployments writes into it."""
+
+    def __init__(self, name: str, work_pool_name: str | None = None) -> None:
+        self.name = name
+        self.work_pool_name = work_pool_name
+        self.parameters: dict = {}
+        self.apply_calls: list[dict] = []
+
+    def apply(self, *args, **kwargs) -> str:
+        self.apply_calls.append(
+            {
+                "name": self.name,
+                "wp": self.work_pool_name,
+                "params": dict(self.parameters),
+            }
+        )
+        return f"id-{self.name}"
+
+
+def _patch_load_deployments(monkeypatch, deps: list[tuple[str, _SpyDep]]) -> None:
+    loaded = [
+        deployments_mod.LoadedDeployment(pack=pack, deployment=dep)
+        for pack, dep in deps
+    ]
+    monkeypatch.setattr(deployments_mod, "load_deployments", lambda: (loaded, []))
+
+
+def test_apply_rig_deployments_scopes_name_and_injects_params(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dep = _SpyDep("nightly", work_pool_name="po")
+    _patch_load_deployments(monkeypatch, [("mypack", dep)])
+    monkeypatch.setattr(
+        deployments_mod, "ensure_work_pool", lambda *a, **k: ("po", False)
+    )
+
+    rig = tmp_path / "my-rig"
+    rig.mkdir()
+    applied, errors = deployments_mod.apply_rig_deployments(rig)
+
+    assert errors == []
+    assert len(applied) == 1
+    r = applied[0]
+    assert r.pack == "mypack"
+    assert r.deployment_name == "nightly-my-rig"
+    assert r.ok
+    # Deployment was mutated with rig-scoped name + params
+    assert dep.name == "nightly-my-rig"
+    assert dep.parameters["rig_path"] == str(rig)
+    assert dep.parameters["rig"] == "my-rig"
+
+
+def test_apply_rig_deployments_work_pool_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dep = _SpyDep("nightly", work_pool_name="original-pool")
+    _patch_load_deployments(monkeypatch, [("mypack", dep)])
+    monkeypatch.setattr(
+        deployments_mod, "ensure_work_pool", lambda *a, **k: (a[0], False)
+    )
+
+    rig = tmp_path / "biz"
+    rig.mkdir()
+    applied, errors = deployments_mod.apply_rig_deployments(
+        rig, work_pool="override-pool"
+    )
+
+    assert not errors
+    assert dep.work_pool_name == "override-pool"
+
+
+def test_apply_rig_deployments_does_not_overwrite_explicit_rig_params(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dep = _SpyDep("nightly")
+    dep.parameters = {"rig_path": "/pack-side-value", "rig": "pack-rig"}
+    _patch_load_deployments(monkeypatch, [("mypack", dep)])
+    monkeypatch.setattr(
+        deployments_mod, "ensure_work_pool", lambda *a, **k: (a[0], False)
+    )
+
+    rig = tmp_path / "rig"
+    rig.mkdir()
+    deployments_mod.apply_rig_deployments(rig)
+
+    # setdefault semantics — pack-provided values win
+    assert dep.parameters["rig_path"] == "/pack-side-value"
+    assert dep.parameters["rig"] == "pack-rig"
+
+
+def test_apply_rig_deployments_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(deployments_mod, "load_deployments", lambda: ([], []))
+    rig = tmp_path / "rig"
+    rig.mkdir()
+    applied, errors = deployments_mod.apply_rig_deployments(rig)
+    assert applied == []
+    assert errors == []
+
+
+def test_apply_rig_deployments_apply_error_collected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class BoomDep(_SpyDep):
+        def apply(self, *args, **kwargs) -> str:
+            raise RuntimeError("server down")
+
+    dep = BoomDep("nightly")
+    _patch_load_deployments(monkeypatch, [("mypack", dep)])
+    monkeypatch.setattr(
+        deployments_mod, "ensure_work_pool", lambda *a, **k: (a[0], False)
+    )
+
+    rig = tmp_path / "rig"
+    rig.mkdir()
+    applied, errors = deployments_mod.apply_rig_deployments(rig)
+    assert applied == []
+    assert len(errors) == 1
+    assert "server down" in errors[0].error
+
+
+def test_apply_rig_deployments_create_pools_called(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dep = _SpyDep("nightly", work_pool_name="po")
+    _patch_load_deployments(monkeypatch, [("mypack", dep)])
+
+    pools_ensured: list[str] = []
+    monkeypatch.setattr(
+        deployments_mod,
+        "ensure_work_pool",
+        lambda pn, **k: pools_ensured.append(pn) or (pn, True),
+    )
+
+    rig = tmp_path / "rig"
+    rig.mkdir()
+    deployments_mod.apply_rig_deployments(rig)
+    assert "po" in pools_ensured
+
+
+def test_apply_rig_deployments_skip_pools_when_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dep = _SpyDep("nightly", work_pool_name="po")
+    _patch_load_deployments(monkeypatch, [("mypack", dep)])
+
+    def boom(*a, **k):
+        raise AssertionError("ensure_work_pool must not be called")
+
+    monkeypatch.setattr(deployments_mod, "ensure_work_pool", boom)
+
+    rig = tmp_path / "rig"
+    rig.mkdir()
+    deployments_mod.apply_rig_deployments(rig, create_pools=False)
+
+
+# -- ensure_work_pool -----------------------------------------------------
+
+
+def test_ensure_work_pool_creates_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pool doesn't exist → _ensure_pool_async returns True → ensure_work_pool returns created=True."""
+
+    async def fake_ensure(pool_name: str, pool_type: str) -> bool:
+        assert pool_name == "new-pool"
+        return True
+
+    monkeypatch.setattr(deployments_mod, "_ensure_pool_async", fake_ensure)
+
+    _, was_created = deployments_mod.ensure_work_pool("new-pool")
+    assert was_created is True
+
+
+def test_ensure_work_pool_noop_when_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pool already exists → _ensure_pool_async returns False → ensure_work_pool returns created=False."""
+
+    async def fake_ensure(pool_name: str, pool_type: str) -> bool:
+        return False
+
+    monkeypatch.setattr(deployments_mod, "_ensure_pool_async", fake_ensure)
+
+    _, was_created = deployments_mod.ensure_work_pool("existing-pool")
+    assert was_created is False

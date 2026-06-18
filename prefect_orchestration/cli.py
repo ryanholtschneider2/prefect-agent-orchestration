@@ -1985,8 +1985,21 @@ def packs_install(
     rig_path: Path | None = typer.Option(
         None,
         "--rig-path",
-        help="Rig root to copy overlay/CLAUDE-*.md files into (defaults to cwd).",
+        help="Rig root to materialize the pack into: copies overlay CLAUDE-*.md "
+        "files and applies pack deployments scoped to this rig (requires "
+        "PREFECT_API_URL). Defaults to cwd for overlay-only behavior.",
         exists=False,
+    ),
+    work_pool: str | None = typer.Option(
+        None,
+        "--work-pool",
+        help="Override the work pool for all applied deployments. "
+        "When omitted, each deployment's own pool name is used.",
+    ),
+    no_deploy: bool = typer.Option(
+        False,
+        "--no-deploy",
+        help="Skip applying pack deployments (overlay/skills still run).",
     ),
 ) -> None:
     """Install a pack into po's tool env (delegates to `uv tool`).
@@ -1994,6 +2007,13 @@ def packs_install(
     PO owns pack lifecycle end-to-end (engdocs/principles.md §3). Users
     don't need to learn `uv tool install --force --with-editable …`
     incantations.
+
+    Beyond installing the distribution, when `--rig-path` is given this
+    materializes the pack into the rig: copies each pack's `overlay/CLAUDE-*.md`
+    into `<rig>/.claude/packs/`, and — when `PREFECT_API_URL` is set — applies
+    the pack's `po.deployments register()` scoped to the rig (deployment name
+    gets a `<name>-<rig-slug>` suffix, `rig_path` baked into parameters) and
+    creates any missing work pools they reference.
     """
     try:
         _packs.install(spec, editable=editable)
@@ -2011,6 +2031,29 @@ def packs_install(
         written = apply_pack_index(pack, effective_rig)
         for f in written:
             typer.echo(f"  overlay -> {f.relative_to(effective_rig)}")
+
+    # Apply rig-scoped deployments when a rig-path is given.
+    if rig_path is not None and not no_deploy:
+        from prefect_orchestration.deployments import (
+            apply_rig_deployments,
+            prefect_api_configured,
+        )
+
+        if not prefect_api_configured():
+            typer.echo(
+                "  hint: set PREFECT_API_URL to also apply pack deployments "
+                "scoped to this rig (po packs install ... --rig-path ...)",
+                err=False,
+            )
+        else:
+            applied, errors = apply_rig_deployments(rig_path, work_pool=work_pool)
+            for r in applied:
+                typer.echo(f"  deployment -> {r.deployment_name} [{r.pack}]")
+            for r in errors:
+                typer.echo(
+                    f"  deployment error [{r.pack}/{r.deployment_name}]: {r.error}",
+                    err=True,
+                )
 
 
 @packs_app.command("update")
