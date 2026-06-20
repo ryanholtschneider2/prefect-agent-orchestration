@@ -374,6 +374,14 @@ def run(
         help="Print what would run (formula, kwargs) and exit 0. "
         "No Prefect flow run, no bd writes, no filesystem side effects.",
     ),
+    param: list[str] = typer.Option(
+        [],
+        "--param",
+        help="Pass a formula kwarg as key=value, bypassing reserved po-CLI "
+        "flags. Use to set a formula's own dry_run/execute (e.g. "
+        "--param dry_run=false --param execute=true) since bare --dry-run "
+        "is reserved by po. Repeatable; takes precedence over positional extras.",
+    ),
     stub_backend: bool = typer.Option(
         False,
         "--stub-backend",
@@ -474,6 +482,7 @@ def run(
             from_file=from_file,
             when=when,
             extras=extras,
+            param=param,
             model=model,
             effort=effort,
             start_command=start_command,
@@ -509,6 +518,7 @@ def run(
         effort=effort,
         start_command=start_command,
     )
+    _merge_param_overrides(kwargs, param)
 
     if env_name == "up":
         if env_driver is None:
@@ -569,8 +579,9 @@ def run(
 
     prior_int = signal.signal(signal.SIGINT, _signal_cleanup)
     prior_term = signal.signal(signal.SIGTERM, _signal_cleanup)
+    call_kwargs = _filter_kwargs_for_flow(flow_obj, kwargs, label=label)
     try:
-        result = flow_obj(**kwargs)
+        result = flow_obj(**call_kwargs)
     except TypeError as exc:
         typer.echo(f"bad arguments for {label}: {exc}", err=True)
         if from_file is None:
@@ -635,12 +646,65 @@ def _apply_runtime_overrides(
             kwargs.setdefault(arg_name, val)
 
 
+def _merge_param_overrides(kwargs: dict[str, Any], param: list[str] | None) -> None:
+    """Merge `--param key=value` overrides into `kwargs` (in place).
+
+    A `--param` value takes precedence over a same-named positional extra.
+    This is the non-colliding way to set a formula's own kwargs whose names
+    clash with a reserved `po run` flag — notably `dry_run` (the bare
+    `--dry-run` is reserved for po's print-and-exit), but also any future
+    formula param that shadows a po-CLI option. Values run through the same
+    `_coerce` light-typing as `--key value` extras.
+    """
+    for item in param or []:
+        if "=" not in item:
+            raise typer.BadParameter(
+                f"--param expects key=value, got {item!r}",
+            )
+        key, value = item.split("=", 1)
+        kwargs[key.strip().replace("-", "_")] = _coerce(value)
+
+
+def _filter_kwargs_for_flow(
+    flow_obj: Any, kwargs: dict[str, Any], *, label: str
+) -> dict[str, Any]:
+    """Drop kwargs the target formula's signature doesn't accept.
+
+    `po run` injects CLI-isms (rig, rig_path, …) that the software-dev
+    formulas declare but other formulas (e.g. provision_business) do not.
+    Passing them through raises a Prefect SignatureMismatchError on worker
+    pickup (scheduled path) or a TypeError (synchronous path). Filtering to
+    the flow fn's real parameters lets one `po run` surface dispatch any
+    formula. A formula with a `**kwargs` catch-all keeps everything.
+
+    Dropped keys are reported to stderr — never silent — so a real typo in
+    a `--key` is visible rather than swallowed.
+    """
+    flow_fn = getattr(flow_obj, "fn", flow_obj)
+    try:
+        params = inspect.signature(flow_fn).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    accepted = set(params)
+    dropped = [k for k in kwargs if k not in accepted]
+    if dropped:
+        typer.echo(
+            f"[po] {label}: dropping {len(dropped)} param(s) not in the "
+            f"formula signature: {', '.join(sorted(dropped))}",
+            err=True,
+        )
+    return {k: v for k, v in kwargs.items() if k in accepted}
+
+
 def _run_scheduled(
     *,
     name: str | None,
     from_file: Path | None,
     when: str,
     extras: list[str],
+    param: list[str] | None = None,
     model: str | None = None,
     effort: str | None = None,
     start_command: str | None = None,
@@ -687,7 +751,12 @@ def _run_scheduled(
         effort=effort,
         start_command=start_command,
     )
+    _merge_param_overrides(kwargs, param)
     issue_id = kwargs.get("issue_id")
+    # Filter to the formula signature so non-software-dev formulas don't get
+    # rig/rig_path (etc.) baked into the deployment parameters — those raise
+    # SignatureMismatchError when the worker picks the run up.
+    parameters = _filter_kwargs_for_flow(formulas[name], kwargs, label=name)
 
     import asyncio
 
@@ -698,7 +767,7 @@ def _run_scheduled(
             return await _scheduling.submit_scheduled_run(
                 client=client,
                 formula=name,
-                parameters=kwargs,
+                parameters=parameters,
                 scheduled_time=scheduled_time,
                 issue_id=issue_id if isinstance(issue_id, str) else None,
             )
