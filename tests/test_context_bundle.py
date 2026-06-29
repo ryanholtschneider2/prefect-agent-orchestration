@@ -327,10 +327,19 @@ def test_lessons_none_when_no_dir(
 def test_lessons_none_when_only_readme(
     run_dir: Path, rig_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Dir + boilerplate area headers but no real entry → still (none)."""
+    """Dir + boilerplate area headers but no real entry → still (none).
+
+    The real area-file header explains the lifecycle in prose ("status: open
+    until ... then status: promoted"), so detection must key on a `### ` entry
+    heading, not a bare ``status:`` substring, or every empty area file would
+    false-match and inject its boilerplate.
+    """
     d = _make_ledger(rig_path)
-    # area file with only the boilerplate header (no `status:` marker)
-    (d / "engineering.md").write_text("# Lessons: engineering\n\nAppend-buffer.\n")
+    (d / "engineering.md").write_text(
+        "# Lessons: engineering\n\n"
+        "Append-buffer. Entries are `status: open` until `soloco-improve` "
+        "promotes them, then `status: promoted`. Newest at the bottom.\n"
+    )
     out = _call(run_dir, rig_path, monkeypatch)
     section = out.read_text().split("## Relevant lessons")[1]
     assert "(none)" in section
@@ -360,7 +369,9 @@ def test_lessons_truncated(
     from prefect_orchestration.context_bundle import _lessons_ledger
 
     d = _make_ledger(rig_path)
-    big = "# Lessons: engineering\n\n" + ("status: open\n" + "x" * 100 + "\n") * 500
+    big = "# Lessons: engineering\n\n" + (
+        "### e — 2026-06-29 — status: open\n" + "x" * 100 + "\n"
+    ) * 500
     (d / "engineering.md").write_text(big)
     out = _lessons_ledger(rig_path, max_chars=2_000)
     assert "truncated" in out
