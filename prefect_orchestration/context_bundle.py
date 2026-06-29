@@ -53,6 +53,40 @@ def _latest_build_diff(run_dir: Path) -> str:
     return _read_file(diffs[-1]) if diffs else "(empty)"
 
 
+def _lessons_ledger(rig_path: Path, max_chars: int = 12_000) -> str:
+    """Concatenate a SoloCo-style lessons ledger (standards/lessons/*.md).
+
+    The compound buffer of the learn loop: durable misses a build pass caught,
+    not yet promoted into a standard. Injecting them into CONTEXT.md puts past
+    lessons in front of the agent at the decision point instead of relying on it
+    to read them ambiently.
+
+    Safe to call for every rig: returns ``"(none)"`` when there is no
+    ``standards/lessons/`` directory (i.e. every non-SoloCo rig). A file is
+    included only once it holds a real entry (``status:`` marker), so the empty
+    early state injects nothing rather than five boilerplate headers. "Start
+    dumb" — inject all areas, capped at ``max_chars``; per-area routing can come
+    later once the buffer is large enough to need it.
+    """
+    ledger = rig_path / "standards" / "lessons"
+    if not ledger.is_dir():
+        return "(none)"
+    chunks: list[str] = []
+    for f in sorted(p for p in ledger.glob("*.md") if p.name != "README.md"):
+        try:
+            text = f.read_text().strip()
+        except OSError:
+            continue
+        if "status:" in text:  # has at least one real entry, not just the header
+            chunks.append(f"### {f.stem}\n\n{text}")
+    if not chunks:
+        return "(none)"
+    out = "\n\n".join(chunks)
+    if len(out) > max_chars:
+        out = out[:max_chars] + f"\n\n[...lessons truncated at {max_chars} chars]\n"
+    return out
+
+
 def build_context_md(
     run_dir: Path,
     rig_path: Path,
@@ -93,6 +127,7 @@ def build_context_md(
         f"## Build diff (latest)\n\n{_latest_build_diff(run_dir)}",
         f"## Decision log\n\n{_read_file(run_dir / 'decision-log.md')}",
         f"## Pack-side conventions\n\n{conventions}",
+        f"## Relevant lessons\n\n{_lessons_ledger(rig_path)}",
     ]
 
     out = run_dir / "CONTEXT.md"

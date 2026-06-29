@@ -77,7 +77,7 @@ def test_all_present(
     text = out.read_text()
 
     headers = [line for line in text.splitlines() if line.startswith("## ")]
-    assert len(headers) == 7
+    assert len(headers) == 8
     assert "## Issue" in headers
     assert "## This role-step" in headers
     assert "## Plan" in headers
@@ -85,6 +85,7 @@ def test_all_present(
     assert "## Build diff (latest)" in headers
     assert "## Decision log" in headers
     assert "## Pack-side conventions" in headers
+    assert "## Relevant lessons" in headers
 
 
 def test_missing_plan(
@@ -292,3 +293,75 @@ def test_falls_back_to_convention_id_without_map(
     )
     shown = [c[2] for c in calls if len(c) > 2 and c[1] == "show"]
     assert "proj-abc-build-iter1" in shown
+
+
+# ─── lessons ledger injection (standards/lessons/*.md) ──────────────────────
+
+
+def _entry(slug: str, area: str) -> str:
+    return (
+        f"### {slug} — 2026-06-29 — status: open\n"
+        f"- Problem class: {area} miss\n"
+        f"- Rule: always {slug}\n"
+        f"- Source: soloco-xyz\n"
+        f"- Enforcement: needs-enforcement\n"
+    )
+
+
+def _make_ledger(rig_path: Path) -> Path:
+    d = rig_path / "standards" / "lessons"
+    d.mkdir(parents=True)
+    (d / "README.md").write_text("# Lessons ledger\n\nFormat docs, not an entry.\n")
+    return d
+
+
+def test_lessons_none_when_no_dir(
+    run_dir: Path, rig_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-SoloCo rig (no standards/lessons/) is a clean no-op."""
+    out = _call(run_dir, rig_path, monkeypatch)
+    section = out.read_text().split("## Relevant lessons")[1]
+    assert "(none)" in section
+
+
+def test_lessons_none_when_only_readme(
+    run_dir: Path, rig_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dir + boilerplate area headers but no real entry → still (none)."""
+    d = _make_ledger(rig_path)
+    # area file with only the boilerplate header (no `status:` marker)
+    (d / "engineering.md").write_text("# Lessons: engineering\n\nAppend-buffer.\n")
+    out = _call(run_dir, rig_path, monkeypatch)
+    section = out.read_text().split("## Relevant lessons")[1]
+    assert "(none)" in section
+
+
+def test_lessons_injected_when_present(
+    run_dir: Path, rig_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    d = _make_ledger(rig_path)
+    (d / "engineering.md").write_text(
+        "# Lessons: engineering\n\n" + _entry("run-the-real-thing", "engineering")
+    )
+    (d / "design.md").write_text(
+        "# Lessons: design\n\n" + _entry("no-fake-redesign", "design")
+    )
+    out = _call(run_dir, rig_path, monkeypatch)
+    section = out.read_text().split("## Relevant lessons")[1]
+    assert "run-the-real-thing" in section
+    assert "no-fake-redesign" in section
+    # README content is never injected
+    assert "Format docs" not in section
+
+
+def test_lessons_truncated(
+    run_dir: Path, rig_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from prefect_orchestration.context_bundle import _lessons_ledger
+
+    d = _make_ledger(rig_path)
+    big = "# Lessons: engineering\n\n" + ("status: open\n" + "x" * 100 + "\n") * 500
+    (d / "engineering.md").write_text(big)
+    out = _lessons_ledger(rig_path, max_chars=2_000)
+    assert "truncated" in out
+    assert len(out) < 2_200
