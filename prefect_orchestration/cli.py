@@ -485,7 +485,10 @@ def run(
             param=param,
             model=model,
             effort=effort,
+            backend=backend,
             start_command=start_command,
+            account=account,
+            account_class=account_class,
         )
         return
 
@@ -606,6 +609,18 @@ _RUNTIME_KNOBS: tuple[tuple[str, str], ...] = (
     ("start_command", "PO_START_COMMAND_CLI"),
 )
 
+_SCHEDULED_RUNTIME_ENV_KEYS: tuple[str, ...] = (
+    "PO_BACKEND",
+    "PO_ACCOUNT",
+    "PO_ACCOUNT_CLASS",
+    "PO_MODEL_CLI",
+    "PO_EFFORT_CLI",
+    "PO_START_COMMAND_CLI",
+    "PO_MODEL",
+    "PO_EFFORT",
+    "PO_START_COMMAND",
+)
+
 
 def _print_dry_run_dag(name: str | None, kwargs: dict[str, Any]) -> None:
     """Print a no-effect summary of what `po run` would do."""
@@ -644,6 +659,18 @@ def _apply_runtime_overrides(
         os.environ[env_name] = val
         if arg_name in flow_params:
             kwargs.setdefault(arg_name, val)
+
+
+def _scheduled_runtime_job_variables() -> dict[str, Any] | None:
+    """Return runtime env that must survive handoff to a scheduled worker."""
+    env = {
+        key: value
+        for key in _SCHEDULED_RUNTIME_ENV_KEYS
+        if (value := os.environ.get(key)) is not None
+    }
+    if not env:
+        return None
+    return {"env": env}
 
 
 def _merge_param_overrides(kwargs: dict[str, Any], param: list[str] | None) -> None:
@@ -707,7 +734,10 @@ def _run_scheduled(
     param: list[str] | None = None,
     model: str | None = None,
     effort: str | None = None,
+    backend: str | None = None,
     start_command: str | None = None,
+    account: str | None = None,
+    account_class: str | None = None,
 ) -> None:
     """Implementation of `po run <formula> --at <when>`.
 
@@ -751,6 +781,12 @@ def _run_scheduled(
         effort=effort,
         start_command=start_command,
     )
+    if backend is not None:
+        os.environ["PO_BACKEND"] = backend
+    if account is not None:
+        os.environ["PO_ACCOUNT"] = account
+    if account_class is not None:
+        os.environ["PO_ACCOUNT_CLASS"] = account_class
     _merge_param_overrides(kwargs, param)
     issue_id = kwargs.get("issue_id")
     # Filter to the formula signature so non-software-dev formulas don't get
@@ -770,6 +806,7 @@ def _run_scheduled(
                 parameters=parameters,
                 scheduled_time=scheduled_time,
                 issue_id=issue_id if isinstance(issue_id, str) else None,
+                job_variables=_scheduled_runtime_job_variables(),
             )
 
     try:

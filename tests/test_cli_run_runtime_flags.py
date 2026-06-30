@@ -21,6 +21,8 @@ def _scrub_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "PO_START_COMMAND",
         "PO_START_COMMAND_CLI",
         "PO_BACKEND",
+        "PO_ACCOUNT",
+        "PO_ACCOUNT_CLASS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -188,10 +190,11 @@ def test_flag_does_not_overwrite_explicit_kwarg(
 def test_scheduled_run_stamps_runtime_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`po run … --time 2h --model sonnet` stamps PO_MODEL_CLI before
-    submitting the deferred run. Mirrors the sync-path behavior so a
-    worker picking up the scheduled flow inherits the operator's
-    runtime knobs."""
+    """`po run … --at 2h --model sonnet` forwards runtime env to Prefect.
+
+    Scheduled workers run in a different process, so checking local os.environ
+    is not enough. The runtime tuple must be carried in job_variables.
+    """
     from prefect_orchestration import cli as cli_mod
 
     def _flow() -> str:
@@ -203,10 +206,14 @@ def test_scheduled_run_stamps_runtime_env(
 
     async def _fake_submit(**kwargs: Any) -> tuple[Any, str, None]:
         captured["env_at_submit"] = {
+            "PO_BACKEND": os.environ.get("PO_BACKEND"),
+            "PO_ACCOUNT": os.environ.get("PO_ACCOUNT"),
+            "PO_ACCOUNT_CLASS": os.environ.get("PO_ACCOUNT_CLASS"),
             "PO_MODEL_CLI": os.environ.get("PO_MODEL_CLI"),
             "PO_EFFORT_CLI": os.environ.get("PO_EFFORT_CLI"),
             "PO_START_COMMAND_CLI": os.environ.get("PO_START_COMMAND_CLI"),
         }
+        captured["job_variables"] = kwargs.get("job_variables")
 
         class _FR:
             id = "fr-test"
@@ -233,19 +240,38 @@ def test_scheduled_run_stamps_runtime_env(
             "my-flow",
             "--time",
             "2h",
+            "--backend",
+            "codex-tmux",
+            "--account",
+            "ryan",
+            "--account-class",
+            "personal",
             "--model",
-            "sonnet",
+            "gpt-5.5",
             "--effort",
-            "low",
+            "high",
             "--start-command",
-            "claude --foo",
+            "codex --foo",
         ],
     )
     assert result.exit_code == 0, result.output
     env = captured["env_at_submit"]
-    assert env["PO_MODEL_CLI"] == "sonnet"
-    assert env["PO_EFFORT_CLI"] == "low"
-    assert env["PO_START_COMMAND_CLI"] == "claude --foo"
+    assert env["PO_BACKEND"] == "codex-tmux"
+    assert env["PO_ACCOUNT"] == "ryan"
+    assert env["PO_ACCOUNT_CLASS"] == "personal"
+    assert env["PO_MODEL_CLI"] == "gpt-5.5"
+    assert env["PO_EFFORT_CLI"] == "high"
+    assert env["PO_START_COMMAND_CLI"] == "codex --foo"
+    assert captured["job_variables"] == {
+        "env": {
+            "PO_BACKEND": "codex-tmux",
+            "PO_ACCOUNT": "ryan",
+            "PO_ACCOUNT_CLASS": "personal",
+            "PO_MODEL_CLI": "gpt-5.5",
+            "PO_EFFORT_CLI": "high",
+            "PO_START_COMMAND_CLI": "codex --foo",
+        }
+    }
 
 
 def test_help_documents_new_flags() -> None:
