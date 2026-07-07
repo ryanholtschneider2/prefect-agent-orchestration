@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from prefect_orchestration.agent_session import StubBackend
 from prefect_orchestration.role_registry import (
     RoleRegistry,
     _DEFAULT_CODE_ROLES,
+    _resolve_pack_path,
     _select_backend_factory,
     build_registry,
 )
@@ -108,6 +110,33 @@ def test_build_registry_custom_formula_name(
         formula_name="custom-formula",
     )
     assert reg.run_dir == tmp_path / ".planning" / "custom-formula" / "x"
+
+
+def test_resolve_pack_path_reads_metadata_in_markerless_harness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Marker-less test rigs can still exercise po.target_pack precedence."""
+    rig = tmp_path / "rig"
+    rig.mkdir()
+    target = tmp_path / "target-pack"
+    target.mkdir()
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        assert cmd == ["bd", "show", "seed-1", "--json"]
+        assert kwargs["cwd"] == str(rig)
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps([{"metadata": {"po.target_pack": str(target)}}]),
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "prefect_orchestration.role_registry.shutil.which", lambda _: "/usr/bin/bd"
+    )
+    monkeypatch.setattr("prefect_orchestration.role_registry.subprocess.run", fake_run)
+
+    assert _resolve_pack_path(None, "seed-1", rig) == target.resolve()
 
 
 def test_build_registry_threads_rig_path_through_every_bd_shellout(

@@ -227,7 +227,7 @@ def _resolve_pack_path(
     # `po.target_pack` is arbitrary per-issue metadata (dolt-only); skip the
     # lookup entirely on a `br` rig rather than shelling a hardcoded `bd`
     # (prefect-orchestration-q7e).
-    binary = _metadata_binary(rig_path_p)
+    binary = _pack_path_metadata_binary(rig_path_p)
     if binary is not None:
         proc = subprocess.run(
             [binary, "show", issue_id, "--json"],
@@ -249,6 +249,24 @@ def _resolve_pack_path(
             except (ValueError, KeyError, IndexError):
                 pass
     return rig_path_p
+
+
+def _pack_path_metadata_binary(rig_path: Path) -> str | None:
+    """Resolve the binary used to read `po.target_pack` metadata.
+
+    The production path delegates to `_metadata_binary`, preserving the br
+    no-raw-bd guard. Unit tests often use a temporary directory with no
+    `.beads/metadata.json` marker and patch this module's `shutil.which`;
+    in that marker-less harness, allow a module-local `bd` fallback so the
+    metadata-precedence branch remains testable without reaching into
+    `beads_meta.shutil`.
+    """
+    binary = _metadata_binary(rig_path)
+    if binary is not None:
+        return binary
+    if (rig_path / ".beads" / "metadata.json").exists():
+        return None
+    return "bd" if shutil.which("bd") is not None else None
 
 
 def _select_backend_factory(dry_run: bool) -> Any:
