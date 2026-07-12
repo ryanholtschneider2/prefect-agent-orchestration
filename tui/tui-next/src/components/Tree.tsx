@@ -16,16 +16,18 @@ export function WorkTree({state, width, height, colors, ascii}: {state: UIState;
     lines.push(<Text key={`g-${group}`} bold dimColor color={colors.muted}>{group.toUpperCase()}  {epics.length + standalone.length}</Text>); used++;
     for (const epic of epics) {
       const selected = state.selectedId === epic.id; const roll = epicRollup(epic); const marker = state.expanded.has(epic.id) ? (ascii ? "v" : "▾") : (ascii ? ">" : "▸");
-      const suffix = `${roll.complete}/${roll.total} · ${roll.running} run${roll.blocked ? ` · ${roll.blocked} block` : ""}`;
-      lines.push(<Text key={epic.id} inverse={selected} bold={selected}>{marker} {stateGlyph(epic.state, ascii)} {truncateCells(epic.title, Math.max(8, width - suffix.length - 8))} <Text dimColor>{suffix} {age(epic.updatedAt)}</Text></Text>); used++;
+      const suffix = width >= 48 ? `${roll.complete}/${roll.total} · ${roll.running} run${roll.blocked ? ` · ${roll.blocked} block` : ""} · ${age(epic.updatedAt)}` : `${roll.complete}/${roll.total} · ${age(epic.updatedAt)}`;
+      const prefix = `${marker} ${stateGlyph(epic.state, ascii)} `; const row = `${prefix}${truncateCells(epic.title, Math.max(4, width - prefix.length - suffix.length - 1))} ${suffix}`;
+      lines.push(<Text key={epic.id} inverse={selected} bold={selected}>{truncateCells(row, width)}</Text>); used++;
       if (state.expanded.has(epic.id)) for (const child of epic.children.filter((issue) => state.scope === "all" || lifecycleGroup(issue.state) === state.scope)) {
         const active = state.selectedId === child.id; const attempt = child.attempts[0]; const suffix2 = attempt ? `${attempt.roles.at(-1)?.role ?? attempt.formula ?? "run"} ${age(attempt.startedAt)}` : age(child.updatedAt);
-        lines.push(<Text key={child.id} inverse={active} bold={active}>  {ascii ? "-" : "└"} {stateGlyph(child.state, ascii)} {truncateCells(child.title, Math.max(8, width - suffix2.length - 10))} <Text dimColor>{suffix2}{child.attempts.length > 1 ? ` ×${child.attempts.length}` : ""}</Text></Text>); used++;
+        const prefix2 = `  ${ascii ? "-" : "└"} ${stateGlyph(child.state, ascii)} `; const attempts = child.attempts.length > 1 ? ` ×${child.attempts.length}` : ""; const row2 = `${prefix2}${truncateCells(child.title, Math.max(4, width - prefix2.length - suffix2.length - attempts.length - 1))} ${suffix2}${attempts}`;
+        lines.push(<Text key={child.id} inverse={active} bold={active}>{truncateCells(row2, width)}</Text>); used++;
       }
     }
     if (standalone.length) {
       lines.push(<Text key={`s-${group}`} dimColor>  STANDALONE WORK</Text>); used++;
-      for (const issue of standalone) { const active = state.selectedId === issue.id; lines.push(<Text key={issue.id} inverse={active} bold={active}>  {stateGlyph(issue.state, ascii)} {truncateCells(issue.title, width - 10)} <Text dimColor>{age(issue.updatedAt)}</Text></Text>); used++; }
+      for (const issue of standalone) { const active = state.selectedId === issue.id; const suffix = age(issue.updatedAt); const row = `  ${stateGlyph(issue.state, ascii)} ${truncateCells(issue.title, Math.max(4, width - suffix.length - 6))} ${suffix}`; lines.push(<Text key={issue.id} inverse={active} bold={active}>{truncateCells(row, width)}</Text>); used++; }
     }
   }
   if (!lines.length) lines.push(<Text key="empty" dimColor>No work in this scope. Press : to change scope.</Text>);

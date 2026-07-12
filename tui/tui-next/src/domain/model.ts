@@ -29,7 +29,7 @@ export interface OperationsModel {
 export interface RawBead {
   id: string; title?: string; status?: string; issue_type?: string; type?: string;
   parent_id?: string; parent?: string; updated_at?: string; description?: string;
-  assignee?: string; dependencies?: Array<string | {id?: string; depends_on_id?: string; type?: string; dependency_type?: string}>;
+  assignee?: string; dependent_count?: number; dependencies?: Array<string | {id?: string; depends_on_id?: string; type?: string; dependency_type?: string}>;
 }
 
 const states: Record<string, WorkState> = {
@@ -47,7 +47,8 @@ export function dependencyList(raw?: RawBead["dependencies"]): Dependency[] {
 }
 
 export function normalizeBeads(raw: RawBead[]): {epics: Epic[]; standalone: Issue[]} {
-  const epicRows = raw.filter((row) => (row.issue_type ?? row.type) === "epic");
+  const declaredParents = new Set(raw.map((row) => row.parent_id ?? row.parent).filter((id): id is string => Boolean(id)));
+  const epicRows = raw.filter((row) => (row.issue_type ?? row.type) === "epic" || declaredParents.has(row.id));
   const epicIds = new Set(epicRows.map((row) => row.id));
   const issues = raw.filter((row) => !epicIds.has(row.id)).map<Issue>((row) => ({
     kind: "issue", id: row.id, epicId: row.parent_id ?? row.parent, title: row.title ?? row.id,

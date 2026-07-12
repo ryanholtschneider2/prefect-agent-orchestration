@@ -15,13 +15,20 @@ const scopes: Scope[] = ["all", "active", "blocked", "failed", "completed", "arc
 export function App({rigPath, prefectUrl, refreshMs, ascii = false, initialModel, onAttach}: AppProps) {
   const [state, dispatch] = useReducer(reducer, undefined, initialState); const {exit} = useApp(); const {stdout} = useStdout();
   const colors = useMemo(() => theme(), []); const request = useRef(0); const selected = selectedObject(state) as Selection | undefined;
+  const snapshots = useRef(state.model.snapshots); snapshots.current = state.model.snapshots;
   const columns = stdout.columns || 100; const rows = stdout.rows || 30; const belowMinimum = columns < 56 || rows < 18; const narrow = columns < 80; const compact = columns < 100;
   const results = filterActions(state.query, selected); const selectedAction = results[Math.min(state.commandIndex, Math.max(0, results.length - 1))];
 
   const refresh = useCallback(async () => {
     const id = ++request.current;
     const tmuxTarget = selected?.kind === "issue" && selected.attempts[0]?.roles.at(-1) ? `po-${selected.id}-${selected.attempts[0].roles.at(-1)!.role}` : undefined;
-    const [beads, prefect, tmux, artifacts] = await Promise.all([fetchBeads(rigPath), fetchPrefect(prefectUrl), fetchTmux(tmuxTarget), fetchArtifacts(rigPath)]);
+    const previous = snapshots.current;
+    const [beads, prefect, tmux, artifacts] = await Promise.all([
+      fetchBeads(rigPath, previous.beads as SourceSnapshot<RawBead[]>),
+      fetchPrefect(prefectUrl, undefined, previous.prefect as SourceSnapshot<Attempt[]>),
+      fetchTmux(tmuxTarget, previous.tmux as SourceSnapshot<{target?: string; output: string; available: boolean}>),
+      fetchArtifacts(rigPath, previous.artifacts as SourceSnapshot<Artifact[]>),
+    ]);
     if (id !== request.current) return;
     const joined = reconcile(beads.data, prefect.data, artifacts.data);
     dispatch({type: "model", model: {...joined, snapshots: {beads: beads as SourceSnapshot<unknown>, prefect: prefect as SourceSnapshot<unknown>, tmux: tmux as SourceSnapshot<unknown>, artifacts: artifacts as SourceSnapshot<unknown>}}});
@@ -36,7 +43,7 @@ export function App({rigPath, prefectUrl, refreshMs, ascii = false, initialModel
     if (selectedAction.id === "refresh") { dispatch({type: "overlay"}); await refresh(); return; }
     if (selectedAction.id === "scope") { const next = scopes[(scopes.indexOf(state.scope) + 1) % scopes.length]!; dispatch({type: "scope", scope: next}); dispatch({type: "overlay"}); return; }
     if ((selectedAction.destructive || selectedAction.mutates) && state.pendingActionId !== selectedAction.id) { dispatch({type: "pending", id: selectedAction.id}); return; }
-    const args: Record<string, string> = {formula: process.env.PO_FORMULA ?? "software-dev-agentic", backend: process.env.PO_BACKEND ?? "codex-tmux", account: process.env.PO_ACCOUNT ?? "codex-personal", accountClass: process.env.PO_ACCOUNT_CLASS ?? "personal", model: process.env.PO_MODEL ?? "gpt-5.4", effort: process.env.PO_EFFORT ?? "xhigh"};
+    const args: Record<string, string> = {formula: process.env.PO_FORMULA ?? "software-dev-agentic", backend: process.env.PO_BACKEND ?? "codex-tmux", account: process.env.PO_ACCOUNT ?? "codex-personal", accountClass: process.env.PO_ACCOUNT_CLASS ?? "personal", model: process.env.PO_MODEL ?? "gpt-5.4", effort: process.env.PO_EFFORT ?? "xhigh", prefectUi: prefectUrl.replace(/\/api$/, "")};
     if (process.env.PO_RIG) args.rig = process.env.PO_RIG;
     const result = await executeAction(selectedAction, selected, rigPath, args);
     dispatch({type: "activity", record: {at: new Date().toISOString(), objectId: selected?.id, operation: selectedAction.preview(selected), result: result.message, verification: result.state}});

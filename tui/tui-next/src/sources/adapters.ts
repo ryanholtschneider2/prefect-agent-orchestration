@@ -17,28 +17,43 @@ function arrayPayload<T>(value: unknown): T[] {
   return [];
 }
 
-export async function fetchBeads(rigPath: string): Promise<SourceSnapshot<RawBead[]>> {
+export async function fetchBeads(rigPath: string, previous?: SourceSnapshot<RawBead[]>): Promise<SourceSnapshot<RawBead[]>> {
   const binaries = process.env.PO_BEADS_BACKEND === "br" ? ["br", "bd"] : ["bd", "br"];
   let last: unknown = new Error("no Beads binary available");
   for (const binary of binaries) {
     try {
-      const stdout = await checked(binary, ["list", "--json", "--limit", "0"], {cwd: rigPath});
-      return healthy("beads", arrayPayload<RawBead>(JSON.parse(stdout)));
+      const stdout = await checked(binary, ["list", "--json", "--all", "--limit", "0"], {cwd: rigPath});
+      const rows = arrayPayload<RawBead>(JSON.parse(stdout));
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      const candidates = rows.filter((row) => (row.issue_type ?? row.type) === "epic" || (row.dependent_count ?? 0) > 0);
+      await Promise.all(candidates.map(async (parent) => {
+        try {
+          const edgeOutput = await checked(binary, ["dep", "list", parent.id, "--direction=up", "--json"], {cwd: rigPath});
+          const edges = arrayPayload<{issue_id?: string; id?: string; type?: string}>(JSON.parse(edgeOutput));
+          for (const edge of edges) if (edge.type === "parent-child") {
+            const child = byId.get(edge.issue_id ?? edge.id ?? ""); if (child) child.parent_id = parent.id;
+          }
+        } catch { /* backend may already include parent_id; retain partial hierarchy */ }
+      }));
+      return healthy("beads", rows);
     } catch (error) { last = error; }
   }
-  return unhealthy("beads", [], last);
+  return unhealthy("beads", [], last, previous);
 }
 
 interface RawFlow {id: string; state_type?: string; state_name?: string; start_time?: string; end_time?: string; tags?: string[]; parameters?: Record<string, unknown>}
 interface RawTask {id: string; name?: string; state_type?: string; state_name?: string; start_time?: string; end_time?: string; run_count?: number; flow_run_id?: string}
 const tagValue = (tags: string[] | undefined, prefix: string) => tags?.find((tag) => tag.startsWith(prefix))?.slice(prefix.length);
 
-export async function fetchPrefect(apiUrl: string, signal?: AbortSignal): Promise<SourceSnapshot<Attempt[]>> {
+export async function fetchPrefect(apiUrl: string, signal?: AbortSignal, previous?: SourceSnapshot<Attempt[]>): Promise<SourceSnapshot<Attempt[]>> {
   try {
     const base = apiUrl.replace(/\/$/, "");
-    const response = await fetch(`${base}/flow_runs/filter`, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({limit: 200, sort: "START_TIME_DESC"}), signal});
-    if (!response.ok) throw new Error(`Prefect flow runs: HTTP ${response.status}`);
-    const flows = await response.json() as RawFlow[];
+    const flows: RawFlow[] = [];
+    for (let offset = 0; offset < 1000; offset += 200) {
+      const response = await fetch(`${base}/flow_runs/filter`, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({limit: 200, offset, sort: "START_TIME_DESC"}), signal});
+      if (!response.ok) throw new Error(`Prefect flow runs: HTTP ${response.status}`);
+      const page = await response.json() as RawFlow[]; flows.push(...page); if (page.length < 200) break;
+    }
     const attempts: Attempt[] = [];
     for (const flow of flows) {
       const issueId = tagValue(flow.tags, "issue_id:");
@@ -56,15 +71,15 @@ export async function fetchPrefect(apiUrl: string, signal?: AbortSignal): Promis
       attempts.push({id: flow.id, issueId, epicId, formula: tagValue(flow.tags, "formula:"), state: flow.state_name ?? flow.state_type ?? "unknown", startedAt: flow.start_time, endedAt: flow.end_time, runtime, roles});
     }
     return healthy("prefect", attempts);
-  } catch (error) { return unhealthy("prefect", [], error); }
+  } catch (error) { return unhealthy("prefect", [], error, previous); }
 }
 
-export async function fetchTmux(target?: string): Promise<SourceSnapshot<{target?: string; output: string; available: boolean}>> {
+export async function fetchTmux(target?: string, previous?: SourceSnapshot<{target?: string; output: string; available: boolean}>): Promise<SourceSnapshot<{target?: string; output: string; available: boolean}>> {
   if (!target) return healthy("tmux", {output: "", available: false});
   try {
     const output = await checked("tmux", ["capture-pane", "-t", target, "-p", "-S", "-200"], {timeoutMs: 3_000});
     return healthy("tmux", {target, output, available: true});
-  } catch (error) { return unhealthy("tmux", {target, output: "", available: false}, error); }
+  } catch (error) { return unhealthy("tmux", {target, output: "", available: false}, error, previous); }
 }
 
 async function walkArtifacts(root: string, depth = 0): Promise<Artifact[]> {
@@ -81,9 +96,9 @@ async function walkArtifacts(root: string, depth = 0): Promise<Artifact[]> {
   return found;
 }
 
-export async function fetchArtifacts(rigPath: string): Promise<SourceSnapshot<Artifact[]>> {
+export async function fetchArtifacts(rigPath: string, previous?: SourceSnapshot<Artifact[]>): Promise<SourceSnapshot<Artifact[]>> {
   try { return healthy("artifacts", await walkArtifacts(join(rigPath, ".planning"))); }
-  catch (error) { return unhealthy("artifacts", [], error); }
+  catch (error) { return unhealthy("artifacts", [], error, previous); }
 }
 
 export async function readArtifact(path: string): Promise<string> { return redact((await readFile(path, "utf8")).slice(-100_000)); }

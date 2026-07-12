@@ -8,13 +8,13 @@ import {reconcile} from "./domain/model.js";
 import {fetchArtifacts, fetchBeads, fetchPrefect} from "./sources/adapters.js";
 
 const {values} = parseArgs({options: {
-  rigPath: {type: "string"}, prefectUrl: {type: "string"}, refreshMs: {type: "string"},
+  "rig-path": {type: "string"}, "prefect-url": {type: "string"}, "refresh-ms": {type: "string"},
   ascii: {type: "boolean"}, plain: {type: "boolean"}, help: {type: "boolean", short: "h"},
 }, strict: false});
 const stringOption = (value: string | boolean | undefined, fallback: string): string => typeof value === "string" ? value : fallback;
-const rigPath = stringOption(values.rigPath, process.cwd());
-const prefectUrl = stringOption(values.prefectUrl, process.env.PREFECT_API_URL ?? "http://127.0.0.1:4200/api").replace(/\/$/, "");
-const refreshMs = Math.max(1000, Number(stringOption(values.refreshMs, "5000")));
+const rigPath = stringOption(values["rig-path"], process.cwd());
+const prefectUrl = stringOption(values["prefect-url"], process.env.PREFECT_API_URL ?? "http://127.0.0.1:4200/api").replace(/\/$/, "");
+const refreshMs = Math.max(1000, Number(stringOption(values["refresh-ms"], "5000")));
 
 function usage(): string { return `po tui — epic-first PO operations console
 
