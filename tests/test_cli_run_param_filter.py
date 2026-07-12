@@ -95,7 +95,17 @@ def test_run_filters_rig_for_non_sd_formula(monkeypatch: pytest.MonkeyPatch) -> 
     captured = _patch_flow(monkeypatch, _flow)
     result = CliRunner().invoke(
         app,
-        ["run", "my-flow", "--business", "acme", "--rig", "soloco", "--rig-path", "/x"],
+        [
+            "run",
+            "my-flow",
+            "--foreground",
+            "--business",
+            "acme",
+            "--rig",
+            "soloco",
+            "--rig-path",
+            "/x",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert captured["kwargs"] == {"business": "acme"}
@@ -110,7 +120,15 @@ def test_run_param_sets_shadowed_dry_run(monkeypatch: pytest.MonkeyPatch) -> Non
     captured = _patch_flow(monkeypatch, _flow)
     result = CliRunner().invoke(
         app,
-        ["run", "my-flow", "--business", "acme", "--param", "dry_run=false"],
+        [
+            "run",
+            "my-flow",
+            "--foreground",
+            "--business",
+            "acme",
+            "--param",
+            "dry_run=false",
+        ],
     )
     assert result.exit_code == 0, result.output
     assert captured["kwargs"] == {"business": "acme", "dry_run": False}

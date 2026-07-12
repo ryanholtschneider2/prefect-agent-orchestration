@@ -33,6 +33,8 @@ UNIT_DIR = Path.home() / ".config" / "systemd" / "user"
 PG_UNIT = UNIT_DIR / "prefect-postgres.service"
 SERVER_UNIT = UNIT_DIR / "prefect-server.service"
 WORKER_UNIT = UNIT_DIR / "prefect-worker.service"
+RECONCILE_UNIT = UNIT_DIR / "po-reconcile.service"
+RECONCILE_TIMER = UNIT_DIR / "po-reconcile.timer"
 PG_DATA_DIR = Path.home() / ".local" / "share" / "prefect-postgres"
 CREDS_DIR = Path.home() / ".config" / "po"
 CREDS_FILE = CREDS_DIR / "serve.env"
@@ -146,7 +148,7 @@ Type=simple
 EnvironmentFile={creds_file}
 Environment=PREFECT_HOME=%h/.prefect
 Environment=PREFECT_API_URL=http://127.0.0.1:4200/api
-ExecStartPre=/bin/sh -c 'until curl -sf http://127.0.0.1:4200/api/health >/dev/null 2>&1; do sleep 1; done'
+ExecStartPre=/bin/sh -c 'until curl -sf -X POST http://127.0.0.1:4200/api/flow_runs/filter -H "Content-Type: application/json" -d "{{\\"limit\\":1}}" >/dev/null 2>&1; do sleep 1; done'
 ExecStart={prefect_bin} worker start --pool {pool_name} --type process --name po-serve-worker
 Restart=always
 RestartSec=5
@@ -155,6 +157,33 @@ StandardError=append:%h/.prefect/worker.log
 
 [Install]
 WantedBy=default.target
+"""
+
+RECONCILE_UNIT_TEMPLATE = """\
+[Unit]
+Description=Reconcile abandoned PO flow controllers
+After=prefect-server.service
+Requires=prefect-server.service
+
+[Service]
+Type=oneshot
+EnvironmentFile={creds_file}
+Environment=PREFECT_API_URL=http://127.0.0.1:4200/api
+ExecStart={po_bin} reconcile --stale-secs 600
+"""
+
+RECONCILE_TIMER_TEMPLATE = """\
+[Unit]
+Description=Periodic PO controller reconciliation
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=po-reconcile.service
+
+[Install]
+WantedBy=timers.target
 """
 
 app = typer.Typer(
@@ -351,6 +380,7 @@ def install(
     prefect_bin = (
         str(bundled_prefect) if bundled_prefect.exists() else _require("prefect")
     )
+    po_bin = str(Path(sys.executable).with_name("po"))
 
     per_field_flags = (pg_user, pg_password, pg_db, pg_host, pg_port)
     if external_pg and any(per_field_flags):
@@ -403,6 +433,12 @@ def install(
     else:
         typer.echo("--no-worker — skipping prefect-worker unit")
 
+    RECONCILE_UNIT.write_text(
+        RECONCILE_UNIT_TEMPLATE.format(creds_file=CREDS_FILE, po_bin=po_bin)
+    )
+    RECONCILE_TIMER.write_text(RECONCILE_TIMER_TEMPLATE)
+    typer.echo(f"wrote {RECONCILE_UNIT} + {RECONCILE_TIMER}")
+
     if rotate_password and not creds.is_external() and _data_dir_populated():
         typer.echo(
             "WARN: --rotate-password set but PG data dir is non-empty. The "
@@ -446,18 +482,27 @@ def install(
                 ],
                 check=False,
             )
-        subprocess.run(
+        migration = subprocess.run(
             [prefect_bin, "server", "database", "upgrade", "-y"], check=False
         )
+        if migration.returncode != 0:
+            typer.echo(
+                "error: Prefect database migration failed; server and worker "
+                "were not restarted. Align the installed Prefect version with "
+                "the database, then rerun `po serve install`.",
+                err=True,
+            )
+            raise typer.Exit(1)
         _systemctl("enable", "--now", "prefect-server.service")
         if worker:
             _systemctl("enable", "--now", "prefect-worker.service")
+        _systemctl("enable", "--now", "po-reconcile.timer")
         typer.echo("enabled + started units")
         typer.echo(
             "tip: `loginctl enable-linger $USER` so they survive logout (one-time)"
         )
 
-    status()
+    status(strict=False)
 
 
 def _resolve_creds(
@@ -526,7 +571,7 @@ def uninstall(
     _systemctl("disable", "--now", "prefect-server.service")
     _systemctl("disable", "--now", "prefect-postgres.service")
     subprocess.run(["docker", "rm", "-f", "prefect-postgres"], check=False)
-    for unit in (WORKER_UNIT, SERVER_UNIT, PG_UNIT):
+    for unit in (RECONCILE_TIMER, RECONCILE_UNIT, WORKER_UNIT, SERVER_UNIT, PG_UNIT):
         if unit.exists():
             unit.unlink()
             typer.echo(f"removed {unit}")
@@ -549,8 +594,15 @@ def uninstall(
 
 
 @app.command()
-def status() -> None:
-    """Show is-active state for all units + curl the API + DB ping."""
+def status(
+    strict: bool = typer.Option(
+        True,
+        "--strict/--no-strict",
+        help="Exit nonzero when a required service or readiness probe is unhealthy.",
+    ),
+) -> None:
+    """Show service state plus DB-backed API readiness and DB liveness."""
+    healthy = True
     creds = load_creds()
     if creds is None:
         typer.echo("  creds: (no ~/.config/po/serve.env — run `po serve install`)")
@@ -564,7 +616,7 @@ def status() -> None:
     for unit in (
         "prefect-postgres.service",
         "prefect-server.service",
-        "prefect-worker.service",
+        "po-reconcile.timer",
     ):
         rc = subprocess.run(
             ["systemctl", "--user", "is-active", unit],
@@ -573,6 +625,31 @@ def status() -> None:
         )
         state = (rc.stdout or "").strip() or "unknown"
         typer.echo(f"  {unit}: {state}")
+        if state != "active":
+            healthy = False
+    worker = subprocess.run(
+        [
+            "systemctl",
+            "--user",
+            "list-units",
+            "--state=active",
+            "--no-legend",
+            "prefect-worker*.service",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    active_workers = [
+        line.split()[0]
+        for line in worker.stdout.splitlines()
+        if line.strip() and line.split()
+    ]
+    typer.echo(
+        "  prefect worker: "
+        + (", ".join(active_workers) if active_workers else "inactive")
+    )
+    if not active_workers:
+        healthy = False
     api = subprocess.run(
         [
             "curl",
@@ -587,8 +664,34 @@ def status() -> None:
         text=True,
     ).stdout.strip()
     typer.echo(f"  /api/health: HTTP {api}")
+    if api != "200":
+        healthy = False
+    ready = subprocess.run(
+        [
+            "curl",
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "-X",
+            "POST",
+            "http://127.0.0.1:4200/api/flow_runs/filter",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            '{"limit":1}',
+        ],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    typer.echo(f"  database-backed readiness: HTTP {ready}")
+    if ready != "200":
+        healthy = False
     if creds is not None and creds.is_external():
         typer.echo("  pg_isready: (external — skipped)")
+        if strict and not healthy:
+            raise typer.Exit(1)
         return
     pg_user = creds.pg_user if creds else "prefect"
     pg_db = creds.pg_db if creds else "prefect"
@@ -607,3 +710,7 @@ def status() -> None:
         text=True,
     )
     typer.echo(f"  pg_isready: {(pg.stdout or pg.stderr).strip()}")
+    if pg.returncode != 0:
+        healthy = False
+    if strict and not healthy:
+        raise typer.Exit(1)

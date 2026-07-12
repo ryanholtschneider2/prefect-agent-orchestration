@@ -101,7 +101,7 @@ def test_resume_does_not_archive_run_dir(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: _Empty())
 
-    res = resume.resume_issue("iss-1", force=True)
+    res = resume.resume_issue("iss-1", force=True, foreground=True)
 
     # Run-dir + content untouched.
     assert (run_dir / "triage.md").read_text() == "existing content"
@@ -139,7 +139,7 @@ def test_resume_sets_po_resume_env_during_flow_call(
 
     monkeypatch.setattr(resume, "_load_formula", lambda name: fake_flow)
 
-    resume.resume_issue("iss-2", force=True)
+    resume.resume_issue("iss-2", force=True, foreground=True)
 
     assert captured["po_resume"] == "1"
     assert os.environ.get("PO_RESUME") is None
@@ -164,7 +164,7 @@ def test_resume_restores_prior_po_resume_env(tmp_path: Path, monkeypatch) -> Non
 
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: _Empty())
 
-    resume.resume_issue("iss-3", force=True)
+    resume.resume_issue("iss-3", force=True, foreground=True)
 
     assert os.environ.get("PO_RESUME") == "prior-value"
 
@@ -204,7 +204,7 @@ def test_resume_reopens_closed_bead(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: _Empty())
 
-    res = resume.resume_issue("iss-4", force=True)
+    res = resume.resume_issue("iss-4", force=True, foreground=True)
 
     assert reopen_calls == ["iss-4"]
     assert res.reopened is True
@@ -279,3 +279,64 @@ def test_resume_with_at_scheduling_fails(tmp_path: Path, monkeypatch) -> None:
         resume.resume_issue("iss-7", force=True, when="2h")
     assert exc_info.value.exit_code == 5
     assert "failed to schedule resume" in str(exc_info.value)
+
+
+def test_schedule_resume_inherits_persisted_runtime(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run_dir = tmp_path / ".planning/software-dev-full/iss-8"
+    run_dir.mkdir(parents=True)
+    (run_dir / ".po-dispatch.json").write_text(
+        json.dumps(
+            {
+                "runtime_env": {
+                    "PO_BACKEND": "codex",
+                    "PO_ACCOUNT": "personal",
+                    "PO_MODEL_CLI": "gpt-5.4",
+                }
+            }
+        )
+    )
+    captured: dict[str, object] = {}
+
+    class _ClientContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *args):
+            return None
+
+    async def fake_submit(**kwargs):
+        captured.update(kwargs)
+        return mock.Mock(id="fr-8"), "flow/deployment", None
+
+    monkeypatch.setattr(
+        "prefect.client.orchestration.get_client", lambda: _ClientContext()
+    )
+    monkeypatch.setattr(
+        "prefect_orchestration.scheduling.submit_scheduled_run", fake_submit
+    )
+    for key in (
+        "PO_BACKEND",
+        "PO_ACCOUNT",
+        "PO_ACCOUNT_CLASS",
+        "PO_MODEL_CLI",
+        "PO_EFFORT_CLI",
+        "PO_START_COMMAND_CLI",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    import asyncio
+
+    asyncio.run(
+        resume._schedule_resume("software-dev-full", "rig", tmp_path, "iss-8", None)
+    )
+
+    assert captured["job_variables"] == {
+        "env": {
+            "PO_ACCOUNT": "personal",
+            "PO_BACKEND": "codex",
+            "PO_MODEL_CLI": "gpt-5.4",
+            "PO_RESUME": "1",
+        }
+    }

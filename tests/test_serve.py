@@ -24,6 +24,8 @@ def serve_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
     monkeypatch.setattr(serve_mod, "PG_UNIT", unit_dir / "prefect-postgres.service")
     monkeypatch.setattr(serve_mod, "SERVER_UNIT", unit_dir / "prefect-server.service")
     monkeypatch.setattr(serve_mod, "WORKER_UNIT", unit_dir / "prefect-worker.service")
+    monkeypatch.setattr(serve_mod, "RECONCILE_UNIT", unit_dir / "po-reconcile.service")
+    monkeypatch.setattr(serve_mod, "RECONCILE_TIMER", unit_dir / "po-reconcile.timer")
     monkeypatch.setattr(serve_mod, "PG_DATA_DIR", pg_data)
     monkeypatch.setattr(serve_mod, "CREDS_DIR", creds_dir)
     monkeypatch.setattr(serve_mod, "CREDS_FILE", creds_dir / "serve.env")
@@ -101,9 +103,9 @@ def test_install_writes_worker_unit(serve_env: dict) -> None:
     body = serve_mod.WORKER_UNIT.read_text()
     # Serves the default `po` pool via a process worker.
     assert "worker start --pool po --type process" in body
-    # Depends on the server and waits for /api/health before starting.
+    # Depends on the server and waits for a database-backed readiness query.
     assert "Requires=prefect-server.service" in body
-    assert "/api/health" in body
+    assert "/api/flow_runs/filter" in body
     # Self-heals on crash, survives reboot via the default.target install.
     assert "Restart=always" in body
     assert "WantedBy=default.target" in body
@@ -111,15 +113,21 @@ def test_install_writes_worker_unit(serve_env: dict) -> None:
     assert expected_ref in body
 
     server_start = next(
-        line for line in serve_mod.SERVER_UNIT.read_text().splitlines()
+        line
+        for line in serve_mod.SERVER_UNIT.read_text().splitlines()
         if line.startswith("ExecStart=")
     )
     worker_start = next(
         line for line in body.splitlines() if line.startswith("ExecStart=")
     )
-    assert server_start.split(" server start", 1)[0] == worker_start.split(
-        " worker start", 1
-    )[0]
+    assert (
+        server_start.split(" server start", 1)[0]
+        == worker_start.split(" worker start", 1)[0]
+    )
+
+    assert serve_mod.RECONCILE_UNIT.exists()
+    assert " reconcile --stale-secs 600" in serve_mod.RECONCILE_UNIT.read_text()
+    assert "Persistent=true" in serve_mod.RECONCILE_TIMER.read_text()
 
 
 def test_install_worker_pool_override(serve_env: dict) -> None:
@@ -167,7 +175,47 @@ def test_install_rejects_unsafe_worker_pool(serve_env: dict) -> None:
 def test_status_includes_worker_unit(serve_env: dict) -> None:
     _run("install", "--no-enable")
     result = _run("status")
-    assert "prefect-worker.service" in result.output
+    assert "prefect worker:" in result.output
+    assert "database-backed readiness" in result.output
+
+
+def test_status_exits_nonzero_when_database_probe_fails(
+    serve_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _run("install", "--no-enable")
+
+    def unhealthy(args, **kwargs):
+        if args[:3] == ["systemctl", "--user", "is-active"]:
+            return subprocess.CompletedProcess(args, 0, stdout="active\n", stderr="")
+        if args and args[0] == "curl":
+            code = "500" if any("flow_runs/filter" in arg for arg in args) else "200"
+            return subprocess.CompletedProcess(args, 0, stdout=code, stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="ready", stderr="")
+
+    monkeypatch.setattr(serve_mod.subprocess, "run", unhealthy)
+    result = _run("status")
+    assert result.exit_code == 1
+    assert "database-backed readiness: HTTP 500" in result.output
+
+
+def test_install_stops_when_database_migration_fails(
+    serve_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_run = serve_mod.subprocess.run
+
+    def fail_migration(args, **kwargs):
+        if args[-4:] == ["server", "database", "upgrade", "-y"]:
+            return subprocess.CompletedProcess(args, 1)
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(serve_mod.subprocess, "run", fail_migration)
+    result = _run("install")
+    assert result.exit_code == 1
+    assert "database migration failed" in result.output
+    assert not any(
+        call[-3:] == ["enable", "--now", "prefect-server.service"]
+        for call in serve_env["call"]
+    )
 
 
 def test_uninstall_removes_worker_unit(serve_env: dict) -> None:

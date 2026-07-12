@@ -28,6 +28,7 @@ Failure surface (raised as `ResumeError` with a numeric `exit_code`):
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -53,14 +54,48 @@ async def _schedule_resume(
     rig_name: str,
     rig_path: Path,
     issue_id: str,
-    when: str,
+    when: str | None,
 ) -> tuple[Any, str, Any]:
-    """Schedule a resume as a future Prefect flow-run (PO_RESUME=1 in env)."""
+    """Submit a durable resume flow-run (immediately when ``when`` is None)."""
     from prefect.client.orchestration import get_client
 
     from prefect_orchestration import scheduling as _scheduling
 
-    scheduled_time = _scheduling.parse_when(when)
+    if when is None:
+        from datetime import datetime, timezone
+
+        scheduled_time = datetime.now(timezone.utc)
+    else:
+        scheduled_time = _scheduling.parse_when(when)
+    runtime_keys = (
+        "PO_BACKEND",
+        "PO_ACCOUNT",
+        "PO_ACCOUNT_CLASS",
+        "PO_MODEL_CLI",
+        "PO_EFFORT_CLI",
+        "PO_START_COMMAND_CLI",
+    )
+    runtime_env: dict[str, str] = {}
+    manifest_path = (
+        rig_path / ".planning" / formula_name / issue_id / ".po-dispatch.json"
+    )
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        persisted_env = manifest.get("runtime_env", {})
+        if isinstance(persisted_env, dict):
+            runtime_env.update(
+                {str(key): str(value) for key, value in persisted_env.items()}
+            )
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    runtime_env.update(
+        {
+            key: value
+            for key in runtime_keys
+            if (value := os.environ.get(key)) is not None
+        }
+    )
+    runtime_env["PO_RESUME"] = "1"
     async with get_client() as client:
         flow_run, full_name, _warn = await _scheduling.submit_scheduled_run(
             client=client,
@@ -72,7 +107,7 @@ async def _schedule_resume(
             },
             scheduled_time=scheduled_time,
             issue_id=issue_id,
-            job_variables={"env": {"PO_RESUME": "1"}},
+            job_variables={"env": runtime_env},
         )
     return flow_run, full_name, scheduled_time
 
@@ -158,6 +193,7 @@ def resume_issue(
     force: bool = False,
     formula: str = DEFAULT_FORMULA,
     when: str | None = None,
+    foreground: bool = False,
     _in_flight_probe: Callable[[str], int] | None = None,
 ) -> ResumeResult:
     """Relaunch `formula` on `issue_id` without archiving the run_dir.
@@ -217,7 +253,7 @@ def resume_issue(
 
         rig_name = rig or rig_path.name
 
-        if when is not None:
+        if not foreground:
             import anyio
 
             try:
@@ -238,7 +274,7 @@ def resume_issue(
                 completed_steps=completed,
                 reopened=reopened,
                 flow_result=(
-                    f"scheduled flow-run {flow_run.id} ({full_name}) "
+                    f"submitted flow-run {flow_run.id} ({full_name}) "
                     f"at {scheduled_time.isoformat()}"
                 ),
             )

@@ -79,11 +79,9 @@ po packs update [<pack>]     # refresh EP metadata (all packs if no arg)
 po packs uninstall <pack>
 po packs list                # table of installed packs + what each contributes
 
-# Must be running before po run: Prefect server (provides UI + state)
-prefect server start --host 127.0.0.1 --port 4200 &
+# Install the durable Prefect/Postgres/worker stack once per host.
+po serve install
 # UI: http://127.0.0.1:4200
-# If omitted, each `po run` spins up its own ephemeral server on a
-# random port — UI is still there, just per-run.
 
 # Per-rig: bd must be initialized (usually already is)
 #   cd <rig-path> && bd init    # if not
@@ -101,7 +99,11 @@ prefect worker start --pool po &
 ```bash
 po list                              # every formula registered by installed packs
 po show <formula>                    # signature + docstring
-po run <formula> --args              # run a formula synchronously, in-process
+po run <formula> --args              # submit immediately to the durable worker
+po run <formula> --foreground --args # debug synchronously, in-process
+po resume <issue-id>                 # durable resume; preserves run state
+po cancel <issue-id>                 # explicit cancellation + session cleanup
+po reconcile                         # recover stale transport failures now
 po deploy                            # list pack-declared deployments
 po deploy --apply                    # upsert to Prefect server
 po doctor                            # health check: bd, prefect, pools, entry points

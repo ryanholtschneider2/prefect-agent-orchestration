@@ -105,6 +105,8 @@ Then anywhere `prefect-orchestration` + `my-pack` are installed:
 ```bash
 po list            # shows my-flow
 po run my-flow --issue-id foo --rig-path /some/path
+# registered formulas submit to the durable worker by default
+# use --foreground only for local, in-process debugging
 ```
 
 ## Deployments (cron / interval / manual)
@@ -155,9 +157,15 @@ You rarely have to start one by hand:
   `po` pool (alongside Postgres + the server), so a worker is always running
   and survives reboot. Pass `--no-worker` to opt out, `--worker-pool <name>`
   to serve a different pool.
-- The scheduled-dispatch paths (`po run --at`, `po run --env`) auto-ensure a
+- The durable dispatch paths (`po run`, `po run --at`, `po run --env`) auto-ensure a
   worker on the target pool — if none is online they spawn a detached one.
   Set `PO_AUTO_WORKER=0` to disable that and manage workers yourself.
+
+`po serve install` also installs a persistent reconciliation timer. Every five
+minutes it detects stale Running flow records that have no live controller or
+agent process and durably resumes recoverable run directories. Use
+`po reconcile` for an immediate pass and `po cancel <issue-id>` for intentional
+cancellation; closing a submitting terminal does not cancel the work.
 
 To start one manually anyway:
 

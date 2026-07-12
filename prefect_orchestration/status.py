@@ -310,18 +310,26 @@ def _has_live_process(issue_id: str) -> bool:
     return False
 
 
-def compute_stale_secs(issue_id: str) -> int | None:
-    """Seconds since last run-dir write via bead metadata. None if not computable."""
-    from prefect_orchestration.run_lookup import RunDirNotFound, _bd_show_json
+def compute_stale_secs(issue_id: str, rig_path: Path | None = None) -> int | None:
+    """Seconds since the last run artifact, including metadata-less ``br`` rigs."""
+    from prefect_orchestration.run_lookup import (
+        RunDirNotFound,
+        _bd_show_json,
+        _filesystem_run_dir,
+    )
 
     try:
         row = _bd_show_json(issue_id)
     except (RunDirNotFound, Exception):
         return None
     run_dir_s = (row.get("metadata") or {}).get("po.run_dir")
-    if not run_dir_s:
-        return None
-    run_dir = Path(run_dir_s)
+    if run_dir_s:
+        run_dir = Path(run_dir_s)
+    else:
+        recovered = _filesystem_run_dir(issue_id, [rig_path, Path.cwd()])
+        if recovered is None:
+            return None
+        run_dir = recovered.run_dir
     if not run_dir.exists():
         return None
     mtime = _run_dir_max_mtime(run_dir)

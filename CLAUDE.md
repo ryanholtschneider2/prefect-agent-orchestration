@@ -221,7 +221,7 @@ po serve install        # generates a random PG password on first install,
                         # writes ~/.config/systemd/user/{prefect-postgres,prefect-server,prefect-worker}.service,
                         # sets PREFECT_API_DATABASE_CONNECTION_URL on the active profile,
                         # runs `prefect server database upgrade`, enables + starts all units
-po serve status         # creds source + is-active (all 3 units) + /api/health + pg_isready
+po serve status         # strict unit + API/DB readiness; exits nonzero if unhealthy
 po serve uninstall      # stop/disable/remove (add --purge-data to wipe the volume + serve.env)
 ```
 
@@ -234,6 +234,11 @@ Knobs: `--no-worker` skips it; `--worker-pool <name>` (or `$PO_WORK_POOL`)
 serves a different pool. The runtime safety net for hosts without the unit is
 `prefect_orchestration.workers.ensure_pool_worker(pool)` — see §"Auto-ensure a
 worker" below.
+
+The install also enables `po-reconcile.timer` (every five minutes). Its
+transport-only reconciliation pass marks orphaned stale flow records Failed and
+submits a durable resume when a recoverable run directory exists. It does not
+invent quality verdicts. Run `po reconcile` manually for an immediate pass.
 
 Prereqs: docker, prefect on PATH, systemd user session. Run
 `loginctl enable-linger $USER` once so the units survive logout.
@@ -733,7 +738,8 @@ Background and rationale: `engdocs/formula-modes.md`. Migration plan
 | List installed formulas | `po list` |
 | Show a formula's signature / docstring | `po show <formula>` |
 | Scaffold a new pack / formula / skill / agent in the standard shape | `po new pack\|formula\|skill\|agent <name> [--pack <root>] [--path <dir>]` (see [`engdocs/creating-artifacts.md`](engdocs/creating-artifacts.md)) |
-| Run a formula synchronously, now | `po run <formula> --args` |
+| Submit a formula immediately to the durable worker | `po run <formula> --args` |
+| Debug a formula synchronously in the calling process | `po run <formula> --foreground --args` |
 | Dispatch with an explicit runtime | `po run <formula> --backend cursor-tmux\|codex-tmux\|tmux --account-class personal\|work --model <id> --effort medium\|high\|xhigh\|max --args` |
 | Run a formula on a remote cloud env (push rig, dispatch on env's work pool, mirror run artifacts back) | `po run <formula> --env <name> [--rebuild] --args` |
 | Provision an ephemeral env, run a formula on it, then tear it down automatically (keep alive on failure by default; `--auto-down-on-failure` tears down even on failure; `--auto-down 0` disables the grace window) | `po run <formula> --env up --driver <name> [--auto-down 30m] [--auto-down-on-failure] --args` |
@@ -744,7 +750,9 @@ Background and rationale: `engdocs/formula-modes.md`. Migration plan
 | Show per-role Claude session UUIDs for a run | `po sessions <issue-id> [--resume <role>]` |
 | Attach to an issue's tmux session (local, k8s pod, or remote env) | `po attach <issue-id> [--role <role>] [--list] [--print-argv]` |
 | Archive a run_dir and relaunch its formula | `po retry <issue-id> [--keep-sessions] [--force] [--rig NAME] [--formula NAME]` |
-| Resume a failed flow without archiving run_dir | `po resume <issue-id> [--at <when>] [--force] [--rig NAME] [--formula NAME]` |
+| Durably resume a failed flow without archiving run_dir | `po resume <issue-id> [--at <when>] [--foreground] [--force] [--rig NAME] [--formula NAME]` |
+| Explicitly cancel an issue's active flow and role sessions | `po cancel <issue-id>` |
+| Reconcile stale transport failures immediately | `po reconcile [--stale-secs N]` |
 | Live merged feed of flow state + run_dir artifacts | `po watch <issue-id> [--replay] [--replay-n N]` |
 | List active / recent runs grouped by bead `issue_id` tag; annotates RUNNING flows silent ≥5 min with `(stale: Nm)` and auto-Fails + clears bead assignee for flows silent ≥10 min with no live process (`PO_WATCHDOG_STALE_SECS`, default 600s); annotates non-Completed rows with `[work landed: ✓\|✗] [last: <role>-iter-<n>] [exc: <ExceptionClass>]` from `flow_outcome.json` so operators can tell whether a Crashed/Failed flow actually shipped work without spelunking the run-dir. `po status --json` carries the same fields (`work_landed`, `terminal_role`, `terminal_iter`, `exception_class`) on every row — `None` when the outcome file is absent (Completed flows, pre-fix flows, or no exception guard ran). It also carries `preview_url` (read from `<run_dir>/preview_url.txt`, stripped, non-empty) on every non-Completed row so live in-flight worker cards get a preview link before the flow stamps `po.preview_url` bead metadata; `None` when the file is absent/empty or the flow is Completed. | `po status [--issue-id ID] [--since 24h] [--state Running] [--all]` |
 | List pack-declared deployments | `po deploy` |

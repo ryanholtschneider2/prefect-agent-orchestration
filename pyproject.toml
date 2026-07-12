@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Pluggable Prefect-based orchestration for Claude Code CLI agents. Formula packs ship separately."
 requires-python = ">=3.11"
 dependencies = [
-    "prefect>=3.0",
+    "prefect>=3.7.8",
     "pydantic>=2",
     "typer>=0.12",
     "rich>=13",

@@ -793,12 +793,34 @@ def test_compute_stale_secs_no_bd(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_compute_stale_secs_no_run_dir_metadata(
+    tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import prefect_orchestration.run_lookup as _rl
 
     monkeypatch.setattr(_rl, "_bd_show_json", lambda *a, **k: {"metadata": {}})
-    assert _status.compute_stale_secs("some-issue") is None
+    assert _status.compute_stale_secs("some-issue", tmp_path) is None
+
+
+def test_compute_stale_secs_recovers_br_run_dir(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import time as _time
+
+    run_dir = tmp_path / ".planning" / "software-dev-agentic" / "some-issue"
+    run_dir.mkdir(parents=True)
+    artifact = run_dir / "plan.md"
+    artifact.write_text("done")
+    known_mtime = _time.time() - 90
+    os.utime(artifact, (known_mtime, known_mtime))
+
+    import prefect_orchestration.run_lookup as _rl
+
+    monkeypatch.setattr(_rl, "_bd_show_json", lambda *a, **k: {"metadata": {}})
+    result = _status.compute_stale_secs("some-issue", tmp_path)
+    assert result is not None
+    assert 80 <= result <= 100
 
 
 def test_compute_stale_secs_returns_elapsed(

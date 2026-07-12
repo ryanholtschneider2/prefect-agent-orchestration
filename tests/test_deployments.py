@@ -355,6 +355,8 @@ def test_po_run_still_works(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(cli_mod, "_load_formulas", lambda: {"hello": fake_flow})
-    res = CliRunner().invoke(app, ["run", "hello", "--who", "world", "--n", "3"])
+    res = CliRunner().invoke(
+        app, ["run", "hello", "--who", "world", "--n", "3", "--foreground"]
+    )
     assert res.exit_code == 0, res.stdout
     assert captured == {"who": "world", "n": 3}

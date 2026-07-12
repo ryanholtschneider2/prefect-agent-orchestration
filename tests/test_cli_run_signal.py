@@ -40,7 +40,7 @@ def test_run_installs_and_restores_signal_handlers(monkeypatch):
     )
 
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow"])
+    result = runner.invoke(app, ["run", "my-flow", "--foreground"])
     assert result.exit_code == 0, result.output
 
     assert captured["int_during"] is not sentinel_int
@@ -50,8 +50,8 @@ def test_run_installs_and_restores_signal_handlers(monkeypatch):
     assert signal.getsignal(signal.SIGTERM) is sentinel_term
 
 
-def test_run_handler_kills_tmux_tracker_on_signal(monkeypatch):
-    """When the installed handler fires, it drains the tmux_tracker registry."""
+def test_run_handler_preserves_tmux_tracker_on_signal(monkeypatch):
+    """A submitter signal preserves resumable role sessions."""
     killed: list[int] = []
 
     def _fake_kill_all() -> int:
@@ -78,7 +78,7 @@ def test_run_handler_kills_tmux_tracker_on_signal(monkeypatch):
     )
 
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow"])
+    result = runner.invoke(app, ["run", "my-flow", "--foreground"])
     assert result.exit_code == 0, result.output
 
     # Now exercise the handler we captured by calling it directly. typer.Exit
@@ -89,5 +89,5 @@ def test_run_handler_kills_tmux_tracker_on_signal(monkeypatch):
     with pytest.raises(typer.Exit) as exc_info:
         handler(signal.SIGINT, None)
     assert exc_info.value.exit_code == 128 + signal.SIGINT
-    # And kill_all was invoked.
-    assert killed and killed[0] == 2
+    assert killed == []
+    assert len(tmux_tracker.snapshot()) == 2

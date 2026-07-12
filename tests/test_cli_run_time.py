@@ -61,18 +61,19 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
-# ─── AC §3: --at omitted → existing sync behavior ────────────────────
+# ─── Explicit foreground → synchronous behavior ──────────────────────
 
 
 def test_no_time_falls_through_to_sync_path(runner: CliRunner) -> None:
-    """With `--at` absent, the formula is invoked synchronously and
-    no Prefect deployment lookup happens. Regression for AC §3."""
+    """`--foreground` invokes synchronously without a deployment lookup."""
     fake = _RecordedFormula(return_value="sync-result")
     with (
         patch.object(cli, "_load_formulas", return_value={"foo": fake}),
         patch.object(cli._scheduling, "submit_scheduled_run") as submit,
     ):
-        result = runner.invoke(cli.app, ["run", "foo", "--issue-id", "po-1"])
+        result = runner.invoke(
+            cli.app, ["run", "foo", "--issue-id", "po-1", "--foreground"]
+        )
     assert result.exit_code == 0, result.output
     assert "sync-result" in result.output
     assert fake.calls == [{"issue_id": "po-1"}]

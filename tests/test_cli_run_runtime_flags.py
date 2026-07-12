@@ -67,7 +67,7 @@ def test_model_flag_stamps_po_model_cli(monkeypatch: pytest.MonkeyPatch) -> None
 
     captured = _patch_flow(monkeypatch, _flow)
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow", "--model", "sonnet"])
+    result = runner.invoke(app, ["run", "my-flow", "--foreground", "--model", "sonnet"])
     assert result.exit_code == 0, result.output
     assert captured["env_at_run"]["PO_MODEL_CLI"] == "sonnet"
 
@@ -78,7 +78,7 @@ def test_effort_flag_stamps_po_effort_cli(monkeypatch: pytest.MonkeyPatch) -> No
 
     captured = _patch_flow(monkeypatch, _flow)
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow", "--effort", "low"])
+    result = runner.invoke(app, ["run", "my-flow", "--foreground", "--effort", "low"])
     assert result.exit_code == 0, result.output
     assert captured["env_at_run"]["PO_EFFORT_CLI"] == "low"
 
@@ -91,7 +91,9 @@ def test_start_command_flag_stamps_po_start_command_cli(
 
     captured = _patch_flow(monkeypatch, _flow)
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow", "--start-command", "claude --foo"])
+    result = runner.invoke(
+        app, ["run", "my-flow", "--foreground", "--start-command", "claude --foo"]
+    )
     assert result.exit_code == 0, result.output
     assert captured["env_at_run"]["PO_START_COMMAND_CLI"] == "claude --foo"
 
@@ -107,6 +109,7 @@ def test_all_three_together(monkeypatch: pytest.MonkeyPatch) -> None:
         [
             "run",
             "my-flow",
+            "--foreground",
             "--model",
             "haiku",
             "--effort",
@@ -132,7 +135,7 @@ def test_kwargs_passthrough_when_flow_accepts_model(
 
     captured = _patch_flow(monkeypatch, _flow)
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow", "--model", "sonnet"])
+    result = runner.invoke(app, ["run", "my-flow", "--foreground", "--model", "sonnet"])
     assert result.exit_code == 0, result.output
     assert captured["kwargs"].get("model") == "sonnet"
 
@@ -147,7 +150,7 @@ def test_kwargs_no_passthrough_when_flow_lacks_model(
 
     captured = _patch_flow(monkeypatch, _flow)
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow", "--model", "sonnet"])
+    result = runner.invoke(app, ["run", "my-flow", "--foreground", "--model", "sonnet"])
     assert result.exit_code == 0, result.output
     assert "model" not in captured["kwargs"]
     assert captured["env_at_run"]["PO_MODEL_CLI"] == "sonnet"
@@ -161,7 +164,7 @@ def test_no_flags_no_env_stamped(monkeypatch: pytest.MonkeyPatch) -> None:
 
     captured = _patch_flow(monkeypatch, _flow)
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow"])
+    result = runner.invoke(app, ["run", "my-flow", "--foreground"])
     assert result.exit_code == 0, result.output
     env = captured["env_at_run"]
     assert env["PO_MODEL_CLI"] is None
@@ -182,7 +185,7 @@ def test_flag_does_not_overwrite_explicit_kwarg(
     # Both forms shouldn't be needed in practice, but make sure setdefault
     # doesn't double-stomp if a user passes --model twice somehow.
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow", "--model", "sonnet"])
+    result = runner.invoke(app, ["run", "my-flow", "--foreground", "--model", "sonnet"])
     assert result.exit_code == 0, result.output
     assert captured["kwargs"].get("model") == "sonnet"
 
@@ -294,7 +297,9 @@ def test_backend_flag_stamps_po_backend(monkeypatch: pytest.MonkeyPatch) -> None
 
     captured = _patch_flow(monkeypatch, _flow)
     runner = CliRunner()
-    result = runner.invoke(app, ["run", "my-flow", "--backend", "cursor-cli"])
+    result = runner.invoke(
+        app, ["run", "my-flow", "--foreground", "--backend", "cursor-cli"]
+    )
     assert result.exit_code == 0, result.output
     assert captured["env_at_run"]["PO_BACKEND"] == "cursor-cli"
 
@@ -310,6 +315,7 @@ def test_explicit_dispatch_tuple(monkeypatch: pytest.MonkeyPatch) -> None:
         [
             "run",
             "my-flow",
+            "--foreground",
             "--backend",
             "codex-tmux",
             "--model",

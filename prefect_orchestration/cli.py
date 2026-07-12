@@ -14,6 +14,7 @@ specific formulas — they're pluggable.
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import shutil
 import subprocess
@@ -327,6 +328,11 @@ def run(
         "Auto-applies <formula>-manual if not on the server; CLI warns "
         "when no workers are running on the target pool.",
     ),
+    foreground: bool = typer.Option(
+        False,
+        "--foreground",
+        help="Run in this shell instead of submitting to the durable Prefect worker.",
+    ),
     time_compat: str | None = typer.Option(
         None,
         "--time",
@@ -475,8 +481,22 @@ def run(
     if from_file is not None and name is not None:
         typer.echo("specify either a formula name or --from-file, not both.", err=True)
         raise typer.Exit(2)
+    if from_file is None and name is None:
+        typer.echo(
+            "missing formula name. Run `po list`, or use --from-file <path>.",
+            err=True,
+        )
+        raise typer.Exit(2)
 
-    if when is not None:
+    durable_now = (
+        when is None
+        and not foreground
+        and from_file is None
+        and env_name is None
+        and not dry_run
+        and not stub_backend
+    )
+    if when is not None or durable_now:
         _run_scheduled(
             name=name,
             from_file=from_file,
@@ -500,12 +520,7 @@ def run(
             raise typer.Exit(2) from exc
         label = f"--from-file {from_file}"
     else:
-        if name is None:
-            typer.echo(
-                "missing formula name. Run `po list`, or use --from-file <path>.",
-                err=True,
-            )
-            raise typer.Exit(2)
+        assert name is not None
         formulas = _load_formulas()
         if name not in formulas:
             typer.echo(f"no formula named {name!r}. Run `po list`.", err=True)
@@ -561,22 +576,16 @@ def run(
     if stub_backend:
         os.environ["PO_BACKEND"] = "stub"
 
-    # SIGINT / SIGTERM cleanup: when the user Ctrl-Cs `po run` (or the
-    # process is killed), the spawned tmux sessions are detached so they
-    # outlive us. Drain the in-process registry before exiting so we
-    # don't leak zombie claude+tmux pairs eating rate-limit slots
-    # indefinitely (sav.3).
+    # Foreground interruption is not cancellation. Preserve detached role
+    # sessions and their checkpoints so `po resume` can continue them. Only an
+    # explicit cancellation command may destroy agent sessions.
     import signal
 
-    from prefect_orchestration import tmux_tracker
-
     def _signal_cleanup(signum: int, _frame: Any) -> None:
-        n = tmux_tracker.kill_all()
-        if n:
-            typer.echo(
-                f"[po] killed {n} tmux session(s)/window(s) on signal {signum}",
-                err=True,
-            )
+        typer.echo(
+            f"[po] interrupted by signal {signum}; role sessions preserved for resume",
+            err=True,
+        )
         # 128 + signum — conventional exit code for signal-terminated.
         raise typer.Exit(128 + signum)
 
@@ -673,6 +682,34 @@ def _scheduled_runtime_job_variables() -> dict[str, Any] | None:
     return {"env": env}
 
 
+def _stamp_dispatch_manifest(formula: str, parameters: dict[str, Any]) -> None:
+    """Persist the runtime tuple before a worker can claim the flow run."""
+    issue_id = parameters.get("issue_id")
+    rig_path = parameters.get("rig_path")
+    if not isinstance(issue_id, str) or not isinstance(rig_path, str):
+        return
+
+    run_dir = Path(rig_path).resolve() / ".planning" / formula / issue_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    runtime_env = {
+        key: value
+        for key in _SCHEDULED_RUNTIME_ENV_KEYS
+        if (value := os.environ.get(key)) is not None
+    }
+    manifest = {
+        "formula": formula,
+        "issue_id": issue_id,
+        "rig_path": str(Path(rig_path).resolve()),
+        "parameters": parameters,
+        "runtime_env": runtime_env,
+        "argv": sys.argv,
+    }
+    (run_dir / ".po-dispatch.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n"
+    )
+    (run_dir / _retry.FORMULA_STAMP).write_text(formula)
+
+
 def _merge_param_overrides(kwargs: dict[str, Any], param: list[str] | None) -> None:
     """Merge `--param key=value` overrides into `kwargs` (in place).
 
@@ -729,7 +766,7 @@ def _run_scheduled(
     *,
     name: str | None,
     from_file: Path | None,
-    when: str,
+    when: str | None,
     extras: list[str],
     param: list[str] | None = None,
     model: str | None = None,
@@ -767,11 +804,16 @@ def _run_scheduled(
         typer.echo(f"no formula named {name!r}. Run `po list`.", err=True)
         raise typer.Exit(1)
 
-    try:
-        scheduled_time = _scheduling.parse_when(when)
-    except ValueError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(2) from exc
+    if when is None:
+        from datetime import datetime, timezone
+
+        scheduled_time = datetime.now(timezone.utc)
+    else:
+        try:
+            scheduled_time = _scheduling.parse_when(when)
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(2) from exc
 
     kwargs = _parse_kwargs(extras)
     _apply_runtime_overrides(
@@ -793,6 +835,7 @@ def _run_scheduled(
     # rig/rig_path (etc.) baked into the deployment parameters — those raise
     # SignatureMismatchError when the worker picks the run up.
     parameters = _filter_kwargs_for_flow(formulas[name], kwargs, label=name)
+    _stamp_dispatch_manifest(name, parameters)
 
     import asyncio
 
@@ -825,14 +868,16 @@ def _run_scheduled(
         raise typer.Exit(4) from exc
 
     typer.echo(
-        f"scheduled flow-run {flow_run.id} ({full_name}) at {scheduled_time.isoformat()}"
+        f"submitted flow-run {flow_run.id} ({full_name}) at {scheduled_time.isoformat()}"
     )
     if warn_msg:
         typer.echo(warn_msg, err=True)
     else:
         # A worker is auto-ensured on the pool (see scheduling._ensure_worker_for_pool),
         # so no manual `prefect worker start` reminder here.
-        typer.echo(f"queued for {when}.")
+        typer.echo(
+            "queued on the durable worker." if when is None else f"queued for {when}."
+        )
 
 
 @app.command()
@@ -1457,7 +1502,11 @@ def status(
                 for g in groups:
                     g_state = (getattr(g.latest, "state_name", None) or "").lower()
                     if g_state == "running":
-                        g.stale_secs = _status.compute_stale_secs(g.issue_id)
+                        params = getattr(g.latest, "parameters", None) or {}
+                        rig_path = params.get("rig_path")
+                        g.stale_secs = _status.compute_stale_secs(
+                            g.issue_id, Path(rig_path) if rig_path else None
+                        )
                 watchdog_failed = await _status.watchdog_fail_stale_runs(client, groups)
         except Exception as exc:  # noqa: BLE001 — AC3: observation, no tracebacks
             api_url = os.environ.get("PREFECT_API_URL", "<unset>")
@@ -1861,6 +1910,11 @@ def resume(
             "(2h, 30m, 1d) or ISO-8601 with timezone."
         ),
     ),
+    foreground: bool = typer.Option(
+        False,
+        "--foreground",
+        help="Resume in this shell instead of submitting to the durable worker.",
+    ),
     env_name: str | None = typer.Option(
         None,
         "--env",
@@ -1900,6 +1954,7 @@ def resume(
             force=force,
             formula=formula,
             when=when,
+            foreground=foreground,
         )
     except _run_lookup.RunDirNotFound as exc:
         typer.echo(str(exc), err=True)
@@ -1920,6 +1975,43 @@ def resume(
     if result.reopened:
         typer.echo(f"reopened bead {issue_id}")
     typer.echo(result.flow_result)
+
+
+@app.command()
+def reconcile(
+    stale_secs: int = typer.Option(
+        600,
+        "--stale-secs",
+        min=60,
+        help="Resume controllers with no process or artifact activity for this long.",
+    ),
+) -> None:
+    """Repair abandoned flow controllers from their durable checkpoints."""
+    from prefect_orchestration.reconcile import reconcile_once
+
+    result = reconcile_once(stale_secs=stale_secs)
+    typer.echo(
+        f"inspected={result.inspected} resumed={len(result.resumed)} "
+        f"skipped={len(result.skipped)}"
+    )
+    if result.resumed:
+        typer.echo("resumed: " + ", ".join(result.resumed))
+    if result.skipped:
+        typer.echo("skipped: " + ", ".join(result.skipped), err=True)
+
+
+@app.command()
+def cancel(
+    issue_id: str = typer.Argument(..., help="Issue whose runs should stop."),
+) -> None:
+    """Explicitly cancel Prefect runs and terminate this issue's role sessions."""
+    from prefect_orchestration.cancel import cancel_issue
+
+    result = cancel_issue(issue_id)
+    typer.echo(
+        f"cancelled {result.flow_runs} flow run(s); "
+        f"terminated {result.tmux_sessions} tmux session(s)"
+    )
 
 
 @app.command()
