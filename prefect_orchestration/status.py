@@ -151,6 +151,7 @@ async def find_runs_by_issue_id(
     since: datetime | None = None,
     state: str | None = None,
     limit: int = 200,
+    offset: int = 0,
 ) -> list[Any]:
     """Query Prefect server for flow runs, optionally filtered.
 
@@ -184,6 +185,7 @@ async def find_runs_by_issue_id(
         flow_run_filter=flow_run_filter,
         sort=FlowRunSort.EXPECTED_START_TIME_DESC,
         limit=limit,
+        offset=offset,
     )
     if issue_id is None:
         runs = [r for r in runs if extract_issue_id(getattr(r, "tags", []) or [])]

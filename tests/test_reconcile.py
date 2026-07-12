@@ -11,6 +11,7 @@ from prefect_orchestration import reconcile
 class FakeClient:
     async def read_flow_runs(self, **kwargs):
         assert kwargs["limit"] == 200
+        assert kwargs["offset"] == 0
         return [
             SimpleNamespace(
                 id="run-1",
@@ -33,6 +34,25 @@ async def test_find_abandoned_requires_stale_and_no_live_process(monkeypatch) ->
     found = await reconcile._find_abandoned(FakeClient(), 600)
 
     assert found == [("issue-1", "run-1")]
+
+
+@pytest.mark.asyncio
+async def test_find_abandoned_pages_past_prefect_limit(monkeypatch) -> None:
+    pages = [
+        [SimpleNamespace(id=f"run-{i}") for i in range(200)],
+        [SimpleNamespace(id="run-last")],
+    ]
+    offsets: list[int] = []
+
+    async def find_page(_client, **kwargs):
+        offsets.append(kwargs["offset"])
+        return pages[len(offsets) - 1]
+
+    monkeypatch.setattr(reconcile.status, "find_runs_by_issue_id", find_page)
+    monkeypatch.setattr(reconcile.status, "group_by_issue", lambda _runs: [])
+
+    assert await reconcile._find_abandoned(object(), 600) == []
+    assert offsets == [0, 200]
 
 
 def test_claim_marker_is_idempotent(tmp_path: Path) -> None:

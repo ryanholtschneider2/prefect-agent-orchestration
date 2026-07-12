@@ -28,8 +28,18 @@ def _claim_marker(run_dir: Path, flow_run_id: str) -> Path | None:
 
 
 async def _find_abandoned(client: Any, stale_secs: int) -> list[tuple[str, str]]:
-    # Prefect's flow-run filter API rejects limits above 200.
-    runs = await status.find_runs_by_issue_id(client, state="Running", limit=200)
+    # Prefect caps each filter response at 200. Page until exhaustion so old
+    # Running zombies cannot crowd recoverable work out of reconciliation.
+    runs: list[Any] = []
+    offset = 0
+    while True:
+        page = await status.find_runs_by_issue_id(
+            client, state="Running", limit=200, offset=offset
+        )
+        runs.extend(page)
+        if len(page) < 200:
+            break
+        offset += len(page)
     groups = status.group_by_issue(runs)
     abandoned: list[tuple[str, str]] = []
     for group in groups:
