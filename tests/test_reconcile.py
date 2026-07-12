@@ -12,6 +12,7 @@ class FakeClient:
     async def read_flow_runs(self, **kwargs):
         assert kwargs["limit"] == 200
         assert kwargs["offset"] == 0
+        assert kwargs["flow_run_filter"].expected_start_time.after_ is not None
         return [
             SimpleNamespace(
                 id="run-1",
@@ -46,6 +47,7 @@ async def test_find_abandoned_pages_past_prefect_limit(monkeypatch) -> None:
 
     async def find_page(_client, **kwargs):
         offsets.append(kwargs["offset"])
+        assert kwargs["since"] is not None
         return pages[len(offsets) - 1]
 
     monkeypatch.setattr(reconcile.status, "find_runs_by_issue_id", find_page)
