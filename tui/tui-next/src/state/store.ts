@@ -20,13 +20,17 @@ export const emptyModel = (): OperationsModel => ({epics: [], standalone: [], un
 export const initialState = (): UIState => ({model: emptyModel(), expanded: new Set(), scroll: 0, detailScroll: 0, detailTab: "overview", narrowDetail: false, scope: "all", query: "", commandIndex: 0, activity: [], refreshing: new Set()});
 
 export function visibleObjects(state: UIState): Array<Epic | Issue> {
-  const include = (epic: Epic) => state.scope === "all" || lifecycleGroup(epic.state) === state.scope || epic.children.some((issue) => lifecycleGroup(issue.state) === state.scope);
   const list: Array<Epic | Issue> = [];
-  for (const epic of state.model.epics.filter(include)) {
-    list.push(epic);
-    if (state.expanded.has(epic.id)) list.push(...epic.children.filter((issue) => state.scope === "all" || lifecycleGroup(issue.state) === state.scope));
+  const groups: Scope[] = ["active", "blocked", "failed", "completed", "archived"];
+  for (const group of groups) {
+    if (state.scope !== "all" && state.scope !== group) continue;
+    const epics = state.model.epics.filter((epic) => state.scope === "all" ? lifecycleGroup(epic.state) === group : lifecycleGroup(epic.state) === group || epic.children.some((issue) => lifecycleGroup(issue.state) === group));
+    for (const epic of epics) {
+      list.push(epic);
+      if (state.expanded.has(epic.id)) list.push(...epic.children.filter((issue) => state.scope === "all" || lifecycleGroup(issue.state) === state.scope));
+    }
+    list.push(...state.model.standalone.filter((issue) => lifecycleGroup(issue.state) === group));
   }
-  list.push(...state.model.standalone.filter((issue) => state.scope === "all" || lifecycleGroup(issue.state) === state.scope));
   return list;
 }
 export const selectedObject = (state: UIState) => visibleObjects(state).find((object) => object.id === state.selectedId) ?? visibleObjects(state)[0];
@@ -34,8 +38,9 @@ export const selectedObject = (state: UIState) => visibleObjects(state).find((ob
 export function reducer(state: UIState, action: UIAction): UIState {
   if (action.type === "model") {
     const ids = new Set([...action.model.epics, ...action.model.epics.flatMap((epic) => epic.children), ...action.model.standalone].map((item) => item.id));
-    const selectedId = state.selectedId && ids.has(state.selectedId) ? state.selectedId : action.model.epics[0]?.id ?? action.model.standalone[0]?.id;
-    return {...state, model: action.model, selectedId};
+    const next = {...state, model: action.model};
+    const selectedId = state.selectedId && ids.has(state.selectedId) ? state.selectedId : visibleObjects(next)[0]?.id;
+    return {...next, selectedId};
   }
   if (action.type === "select") return {...state, selectedId: action.id};
   if (action.type === "move") {
