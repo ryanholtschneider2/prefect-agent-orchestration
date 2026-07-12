@@ -28,6 +28,10 @@ The command bar (`:` or `/`) fuzzy-ranks contextual actions followed by global
 actions. Commands declare structured arguments. Dispatch collects formula,
 backend, provider, account, account class, model, effort, rig, and rig path;
 state/comment commands collect their values rather than reading hidden defaults.
+Pause and resume use Prefect's supported orchestration REST endpoints and are
+offered only for compatible run states; cancel continues through the supported
+`prefect flow-run cancel` command. Artifact and attach actions require a choice
+from the paths and tmux sessions discovered by the active source snapshots.
 The final preview names the target and exact transport command. Non-destructive
 mutations execute from that preview. Destructive actions default-cancel and
 require typing the selected object ID. Identical in-flight operations are

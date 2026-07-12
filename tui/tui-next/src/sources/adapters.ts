@@ -1,6 +1,6 @@
 import {readdir, readFile, stat} from "node:fs/promises";
 import {join} from "node:path";
-import type {Artifact, Attempt, RawBead, RoleExecution, SourceName, SourceSnapshot} from "../domain/model.js";
+import type {Artifact, Attempt, RawBead, RoleExecution, SourceName, SourceSnapshot, TmuxSession} from "../domain/model.js";
 import {redact} from "../domain/text.js";
 import {checked, run} from "./process.js";
 
@@ -81,6 +81,14 @@ export async function fetchTmux(target?: string, previous?: SourceSnapshot<{targ
     const output = await checked("tmux", ["capture-pane", "-t", target, "-p", "-S", "-200"], {timeoutMs: 3_000});
     return healthy("tmux", {target, output, available: true}, {operation: "tmux capture-pane", target});
   } catch (error) { return unhealthy("tmux", {target, output: "", available: false}, error, previous, {operation: "tmux capture-pane", target, stderr: redact(String(error))}); }
+}
+
+export async function fetchTmuxSessions(previous?: SourceSnapshot<TmuxSession[]>): Promise<SourceSnapshot<TmuxSession[]>> {
+  try {
+    const output = await checked("tmux", ["list-sessions", "-F", "#{session_name}"], {timeoutMs: 3_000});
+    const sessions = output.split("\n").map((target) => target.trim()).filter((target) => target.startsWith("po-")).map((target) => ({target, available: true}));
+    return healthy("tmux", sessions, {operation: "tmux list-sessions", target: "local tmux server"});
+  } catch (error) { return unhealthy("tmux", [], error, previous, {operation: "tmux list-sessions", target: "local tmux server", stderr: redact(String(error))}); }
 }
 
 async function walkArtifacts(root: string, depth = 0): Promise<Artifact[]> {

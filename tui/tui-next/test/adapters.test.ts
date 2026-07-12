@@ -1,8 +1,8 @@
 import {afterEach, describe, expect, test} from "bun:test";
-import {mkdtemp, mkdir, writeFile} from "node:fs/promises";
+import {chmod, mkdtemp, mkdir, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
-import {arrayPayload, fetchArtifacts, fetchPrefect, healthy, readArtifact, unhealthy} from "../src/sources/adapters.js";
+import {arrayPayload, fetchArtifacts, fetchBeads, fetchPrefect, healthy, readArtifact, unhealthy} from "../src/sources/adapters.js";
 import {checked} from "../src/sources/process.js";
 import {SourceController} from "../src/state/sourceController.js";
 
@@ -26,6 +26,17 @@ describe("source snapshots", () => {
   test("Prefect failure is localized", async () => {
     server = Bun.serve({port: 0, routes: {"/api/flow_runs/filter": {POST: () => new Response("down", {status: 503})}}});
     const snapshot = await fetchPrefect(`http://127.0.0.1:${server.port}/api`); expect(snapshot.freshness).toBe("unavailable"); expect(snapshot.error).toContain("503");
+  });
+  test("Prefect pagination continues through full pages", async () => {
+    const offsets: number[] = []; server = Bun.serve({port: 0, routes: {"/api/flow_runs/filter": {POST: async (request) => { const body = await request.json() as {offset: number}; offsets.push(body.offset); return Response.json(body.offset === 0 ? Array.from({length: 200}, (_, index) => ({id: `flow-${index}`, state_name: "Running", tags: [`issue_id:po-${index}`]})) : []); }}, "/api/task_runs/filter": {POST: () => Response.json([])}}});
+    const snapshot = await fetchPrefect(`http://127.0.0.1:${server.port}/api`); expect(snapshot.data).toHaveLength(200); expect(offsets).toEqual([0, 200]);
+  });
+  test("Prefect abort retains the prior snapshot", async () => {
+    server = Bun.serve({port: 0, routes: {"/api/flow_runs/filter": {POST: async () => { await Bun.sleep(100); return Response.json([]); }}}}); const controller = new AbortController(); const prior = healthy("prefect", [{id: "prior", state: "RUNNING", runtime: {}, roles: []}]); const pending = fetchPrefect(`http://127.0.0.1:${server.port}/api`, controller.signal, prior); controller.abort(); const snapshot = await pending; expect(snapshot.freshness).toBe("stale"); expect(snapshot.data[0]?.id).toBe("prior");
+  });
+  test("Beads backend selection honors PO_BEADS_BACKEND", async () => {
+    const bin = await mkdtemp(join(tmpdir(), "po-tui-bin-")); const script = join(bin, "br"); await writeFile(script, "#!/bin/sh\nif [ \"$1\" = list ]; then printf '[{\"id\":\"from-br\",\"title\":\"selected\"}]'; else printf '[]'; fi\n"); await chmod(script, 0o755); const oldPath = process.env.PATH; const oldBackend = process.env.PO_BEADS_BACKEND; process.env.PATH = `${bin}:${oldPath}`; process.env.PO_BEADS_BACKEND = "br";
+    try { expect((await fetchBeads(".")).data[0]?.id).toBe("from-br"); } finally { process.env.PATH = oldPath; if (oldBackend === undefined) delete process.env.PO_BEADS_BACKEND; else process.env.PO_BEADS_BACKEND = oldBackend; }
   });
 
   test("artifact discovery is bounded by type and depth", async () => {

@@ -1,5 +1,5 @@
 import {describe, expect, test} from "bun:test";
-import {ActionCoordinator, actions, filterActions} from "../src/actions/registry.js";
+import {ActionCoordinator, actions, executeAction, filterActions} from "../src/actions/registry.js";
 import {initialState, reducer, selectedObject, visibleObjects} from "../src/state/store.js";
 import {fixtureModel} from "./fixtures.js";
 
@@ -57,5 +57,25 @@ describe("mutation lifecycle", () => {
   test("normalizes executor errors and releases the lock", async () => {
     const coordinator = new ActionCoordinator(async () => { throw new Error("command failed"); });
     expect(await coordinator.run(retry, issue, ".", {})).toEqual({state: "failed", message: "command failed"}); expect(coordinator.isInFlight(`retry:${issue.id}`)).toBeFalse();
+  });
+  test("pause and resume use supported Prefect orchestration endpoints", async () => {
+    const requests: Array<{path: string; body: unknown}> = []; const api = Bun.serve({port: 0, fetch: async (request) => { requests.push({path: new URL(request.url).pathname, body: await request.json()}); return Response.json({status: "ACCEPT"}); }});
+    try {
+      const pause = actions.find((item) => item.id === "pause")!; const epic = fixtureModel().epics[0]!;
+      expect((await executeAction(pause, epic, ".", {prefectApi: `http://127.0.0.1:${api.port}`})).state).toBe("pending");
+      epic.children[0]!.attempts[0]!.state = "PAUSED"; const resume = actions.find((item) => item.id === "resume")!;
+      expect((await executeAction(resume, epic.children[0], ".", {prefectApi: `http://127.0.0.1:${api.port}`})).state).toBe("pending");
+      expect(requests.map((item) => item.path)).toEqual(["/flow_runs/12345678-flow/set_state", "/flow_runs/12345678-flow/resume"]); expect(requests[0]!.body).toMatchObject({state: {type: "PAUSED"}, force: false});
+    } finally { api.stop(true); }
+  });
+  test("pause/resume reject unsupported states and API failures", async () => {
+    const issue = fixtureModel().epics[0]!.children[0]!; const resume = actions.find((item) => item.id === "resume")!;
+    expect((await executeAction(resume, issue, ".", {prefectApi: "http://invalid"})).message).toContain("expected PAUSED"); issue.attempts[0]!.state = "PAUSED";
+    const api = Bun.serve({port: 0, fetch: () => new Response("denied", {status: 409})}); try { expect((await executeAction(resume, issue, ".", {prefectApi: `http://127.0.0.1:${api.port}`}))).toMatchObject({state: "failed", message: expect.stringContaining("409")}); } finally { api.stop(true); }
+  });
+  test("artifact and attach require an explicitly discovered choice", async () => {
+    const issue = fixtureModel().epics[0]!.children[0]!; const attach = actions.find((item) => item.id === "attach")!; const artifact = actions.find((item) => item.id === "artifact")!;
+    expect(await executeAction(attach, issue, ".", {sessionTarget: "fabricated"})).toMatchObject({state: "failed"}); expect(await executeAction(attach, issue, ".", {sessionTarget: issue.sessions[0]!.target})).toMatchObject({attachTarget: "po-po-child-builder"});
+    expect(await executeAction(artifact, issue, ".", {artifactPath: "/not/discovered"})).toMatchObject({state: "failed"});
   });
 });

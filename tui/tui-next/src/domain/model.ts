@@ -4,6 +4,7 @@ export type SourceName = "beads" | "prefect" | "tmux" | "artifacts";
 export interface Dependency { id: string; type: string }
 export interface Artifact { name: string; kind: string; path: string; producer?: string; createdAt?: string }
 export interface AgentSession {id: string; role: string; target: string; available: boolean; outputHash?: string}
+export interface TmuxSession {target: string; available: boolean; output?: string}
 export interface RoleExecution { id: string; role: string; state: string; iteration: number; startedAt?: string; endedAt?: string }
 export interface Attempt {
   id: string; issueId?: string; epicId?: string; formula?: string; state: string;
@@ -67,7 +68,7 @@ export function normalizeBeads(raw: RawBead[]): {epics: Epic[]; standalone: Issu
   return {epics, standalone: issues.filter((issue) => !issue.epicId || !epicIds.has(issue.epicId))};
 }
 
-export function reconcile(beads: RawBead[], attempts: Attempt[], artifacts: Artifact[]): Pick<OperationsModel, "epics" | "standalone" | "unattributedAttempts" | "unresolved"> {
+export function reconcile(beads: RawBead[], attempts: Attempt[], artifacts: Artifact[], tmuxSessions: TmuxSession[] = []): Pick<OperationsModel, "epics" | "standalone" | "unattributedAttempts" | "unresolved"> {
   const result = normalizeBeads(beads);
   const issues = [...result.epics.flatMap((epic) => epic.children), ...result.standalone];
   const byId = new Map(issues.map((issue) => [issue.id, issue]));
@@ -79,6 +80,12 @@ export function reconcile(beads: RawBead[], attempts: Attempt[], artifacts: Arti
   for (const artifact of artifacts) {
     const match = issues.find((issue) => artifact.path.includes(issue.id));
     if (match) match.artifacts.push(artifact);
+  }
+  for (const session of tmuxSessions) {
+    const issue = issues.find((candidate) => session.target.startsWith(`po-${candidate.id}-`));
+    if (!issue) continue;
+    const role = session.target.slice(`po-${issue.id}-`.length) || "agent";
+    issue.sessions.push({id: session.target, role, target: session.target, available: session.available});
   }
   for (const issue of issues) issue.attempts.sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""));
   const unresolved: OperationsModel["unresolved"] = beads.flatMap((row) => row.relationship_error ? [{source: "beads" as const, id: row.id, reason: row.relationship_error}] : row.parent_id && !beads.some((candidate) => candidate.id === row.parent_id) ? [{source: "beads" as const, id: row.id, reason: `missing parent ${row.parent_id}`}] : []);

@@ -4,8 +4,8 @@ import {ActionCoordinator, filterActions, type OperatorAction, type Selection} f
 import {Detail} from "../components/Detail.js";
 import {ActionForm, Diagnostics, Help, Palette, type ActionFormView} from "../components/Overlays.js";
 import {WorkTree} from "../components/Tree.js";
-import {reconcile, type Artifact, type Attempt, type OperationsModel, type RawBead, type SourceSnapshot} from "../domain/model.js";
-import {fetchArtifacts, fetchBeads, fetchPrefect, fetchTmux} from "../sources/adapters.js";
+import {reconcile, type Artifact, type Attempt, type OperationsModel, type RawBead, type SourceSnapshot, type TmuxSession} from "../domain/model.js";
+import {fetchArtifacts, fetchBeads, fetchPrefect, fetchTmux, fetchTmuxSessions} from "../sources/adapters.js";
 import {initialState, reducer, selectedObject, type Scope} from "../state/store.js";
 import {SourceController} from "../state/sourceController.js";
 import {theme} from "../theme/theme.js";
@@ -30,7 +30,7 @@ export function App({rigPath, prefectUrl, refreshMs, ascii = false, initialModel
     return undefined;
   }), [prefectUrl, rigPath]);
   const controllers = useRef<Array<SourceController<unknown>>>([]);
-  const sourceData = useRef<{beads: RawBead[]; prefect: Attempt[]; artifacts: Artifact[]}>({beads: [], prefect: [], artifacts: []});
+  const sourceData = useRef<{beads: RawBead[]; prefect: Attempt[]; artifacts: Artifact[]; tmux: TmuxSession[]}>({beads: [], prefect: [], artifacts: [], tmux: []});
   const sourceSnapshots = useRef(state.model.snapshots);
   const columns = dimensions?.columns ?? (stdout.columns || 100); const rows = dimensions?.rows ?? (stdout.rows || 30); const belowMinimum = columns < 56 || rows < 18; const narrow = columns < 80; const compact = columns < 100;
   const bodyRows = Math.max(1, rows - 4);
@@ -41,7 +41,8 @@ export function App({rigPath, prefectUrl, refreshMs, ascii = false, initialModel
     if (source === "beads") sourceData.current.beads = snapshot.data as RawBead[];
     if (source === "prefect") sourceData.current.prefect = snapshot.data as Attempt[];
     if (source === "artifacts") sourceData.current.artifacts = snapshot.data as Artifact[];
-    const joined = reconcile(sourceData.current.beads, sourceData.current.prefect, sourceData.current.artifacts);
+    if (source === "tmux" && Array.isArray(snapshot.data)) sourceData.current.tmux = snapshot.data as TmuxSession[];
+    const joined = reconcile(sourceData.current.beads, sourceData.current.prefect, sourceData.current.artifacts, sourceData.current.tmux);
     dispatch({type: "model", model: {...joined, snapshots: sourceSnapshots.current}});
   }, []);
 
@@ -54,6 +55,7 @@ export function App({rigPath, prefectUrl, refreshMs, ascii = false, initialModel
       {source: "beads" as const, controller: new SourceController<RawBead[]>({intervalMs: Math.max(2000, refreshMs * 2), timeoutMs: 8000, load: (_signal, previous) => fetchBeads(rigPath, previous)})},
       {source: "prefect" as const, controller: new SourceController<Attempt[]>({intervalMs: Math.max(1000, refreshMs), timeoutMs: 8000, load: (signal, previous) => fetchPrefect(prefectUrl, signal, previous)})},
       {source: "artifacts" as const, controller: new SourceController<Artifact[]>({intervalMs: Math.max(3000, refreshMs * 2), timeoutMs: 5000, load: (_signal, previous) => fetchArtifacts(rigPath, previous)})},
+      {source: "tmux" as const, controller: new SourceController<TmuxSession[]>({intervalMs: Math.max(2000, refreshMs), timeoutMs: 3000, load: (_signal, previous) => fetchTmuxSessions(previous)})},
     ];
     controllers.current = configs.map(({controller}) => controller as SourceController<unknown>);
     const unsub = configs.map(({source, controller}) => controller.subscribe((snapshot) => publish(source, snapshot as SourceSnapshot<unknown>)));
@@ -75,7 +77,7 @@ export function App({rigPath, prefectUrl, refreshMs, ascii = false, initialModel
     if (selectedAction.id === "refresh") { dispatch({type: "overlay"}); await refresh(); return; }
     if (selectedAction.id === "scope") { const next = scopes[(scopes.indexOf(state.scope) + 1) % scopes.length]!; dispatch({type: "scope", scope: next}); dispatch({type: "overlay"}); return; }
     setForm({...active, stage: "executing"});
-    const args = {...active.args, prefectUi: prefectUrl.replace(/\/api$/, "")};
+    const args = {...active.args, prefectApi: prefectUrl, prefectUi: prefectUrl.replace(/\/api$/, "")};
     const result = await actionCoordinator.run(selectedAction, selected, rigPath, args);
     dispatch({type: "activity", record: {at: new Date().toISOString(), objectId: selected?.id, operation: selectedAction.preview(selected, args), result: result.message, verification: result.state}});
     setForm(undefined); dispatch({type: "overlay"});
@@ -86,10 +88,12 @@ export function App({rigPath, prefectUrl, refreshMs, ascii = false, initialModel
     if (action.id === "diagnostics") { dispatch({type: "overlay", overlay: "diagnostics"}); return; }
     if (action.id === "refresh") { dispatch({type: "overlay"}); void refresh(); return; }
     if (action.id === "scope") { const next = scopes[(scopes.indexOf(state.scope) + 1) % scopes.length]!; dispatch({type: "scope", scope: next}); dispatch({type: "overlay"}); return; }
-    const args = Object.fromEntries((action.arguments ?? []).map((spec) => [spec.key, spec.defaultValue?.() ?? ""]));
+    const artifacts = selected?.kind === "issue" ? selected.artifacts : selected?.kind === "epic" ? selected.children.flatMap((issue) => issue.artifacts) : [];
+    const defaults: Record<string, string | undefined> = {artifactPath: artifacts[0]?.path, sessionTarget: selected?.kind === "issue" ? selected.sessions.find((item) => item.available)?.target : undefined};
+    const args = Object.fromEntries((action.arguments ?? []).map((spec) => [spec.key, defaults[spec.key] ?? spec.defaultValue?.() ?? ""]));
     const stage = action.arguments?.length ? "args" : "preview";
-    setForm({action, args, index: 0, input: action.arguments?.[0]?.defaultValue?.() ?? "", stage});
-  }, [refresh, state.scope]);
+    setForm({action, args, index: 0, input: action.arguments?.[0] ? args[action.arguments[0].key] ?? "" : "", stage});
+  }, [refresh, selected, state.scope]);
 
   useInput((input, key) => {
     if (state.overlay === "palette") {
