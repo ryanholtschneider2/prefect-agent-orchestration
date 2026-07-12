@@ -323,7 +323,7 @@ def compute_stale_secs(issue_id: str, rig_path: Path | None = None) -> int | Non
     try:
         row = _bd_show_json(issue_id)
     except (RunDirNotFound, Exception):
-        return None
+        row = {}
     run_dir_s = (row.get("metadata") or {}).get("po.run_dir")
     if run_dir_s:
         run_dir = Path(run_dir_s)

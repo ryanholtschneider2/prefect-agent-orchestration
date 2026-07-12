@@ -823,6 +823,25 @@ def test_compute_stale_secs_recovers_br_run_dir(
     assert 80 <= result <= 100
 
 
+def test_compute_stale_secs_recovers_when_cwd_tracker_misses_issue(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from prefect_orchestration import run_lookup as _rl
+
+    run_dir = tmp_path / ".planning/software-dev-agentic/other-rig-1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "role-sessions.json").write_text("{}")
+    monkeypatch.setattr(
+        _rl,
+        "_bd_show_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            _rl.RunDirNotFound("not in cwd tracker")
+        ),
+    )
+
+    assert _status.compute_stale_secs("other-rig-1", tmp_path) is not None
+
+
 def test_compute_stale_secs_returns_elapsed(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
