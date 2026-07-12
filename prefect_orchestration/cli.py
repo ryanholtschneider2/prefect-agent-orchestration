@@ -1483,7 +1483,6 @@ def status(
             return
 
     async def _main() -> None:
-        watchdog_failed: list[str] = []
         try:
             async with get_client() as client:
                 runs = await _status.find_runs_by_issue_id(
@@ -1507,7 +1506,6 @@ def status(
                         g.stale_secs = _status.compute_stale_secs(
                             g.issue_id, Path(rig_path) if rig_path else None
                         )
-                watchdog_failed = await _status.watchdog_fail_stale_runs(client, groups)
         except Exception as exc:  # noqa: BLE001 — AC3: observation, no tracebacks
             api_url = os.environ.get("PREFECT_API_URL", "<unset>")
             typer.echo(
@@ -1532,12 +1530,6 @@ def status(
                 )
         else:
             typer.echo(_status.render_table(groups))
-        if watchdog_failed:
-            typer.echo(
-                f"\n  (watchdog: {len(watchdog_failed)} run(s) auto-Failed: "
-                f"{', '.join(watchdog_failed)})",
-                err=True,
-            )
 
     anyio.run(_main)
 
