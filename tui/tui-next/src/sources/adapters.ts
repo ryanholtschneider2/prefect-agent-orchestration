@@ -1,0 +1,94 @@
+import {readdir, readFile, stat} from "node:fs/promises";
+import {join} from "node:path";
+import type {Artifact, Attempt, RawBead, RoleExecution, SourceName, SourceSnapshot} from "../domain/model.js";
+import {redact} from "../domain/text.js";
+import {checked, run} from "./process.js";
+
+const now = () => new Date().toISOString();
+export const healthy = <T>(source: SourceName, data: T): SourceSnapshot<T> => ({source, data, fetchedAt: now(), lastSuccessAt: now(), freshness: "fresh"});
+export const unhealthy = <T>(source: SourceName, data: T, error: unknown, previous?: SourceSnapshot<T>): SourceSnapshot<T> => ({
+  source, data: previous?.data ?? data, fetchedAt: now(), lastSuccessAt: previous?.lastSuccessAt,
+  freshness: previous?.lastSuccessAt ? "stale" : "unavailable", error: redact(error instanceof Error ? error.message : String(error)),
+});
+
+function arrayPayload<T>(value: unknown): T[] {
+  if (Array.isArray(value)) return value as T[];
+  if (value && typeof value === "object" && "issues" in value && Array.isArray((value as {issues: unknown}).issues)) return (value as {issues: T[]}).issues;
+  return [];
+}
+
+export async function fetchBeads(rigPath: string): Promise<SourceSnapshot<RawBead[]>> {
+  const binaries = process.env.PO_BEADS_BACKEND === "br" ? ["br", "bd"] : ["bd", "br"];
+  let last: unknown = new Error("no Beads binary available");
+  for (const binary of binaries) {
+    try {
+      const stdout = await checked(binary, ["list", "--json", "--limit", "0"], {cwd: rigPath});
+      return healthy("beads", arrayPayload<RawBead>(JSON.parse(stdout)));
+    } catch (error) { last = error; }
+  }
+  return unhealthy("beads", [], last);
+}
+
+interface RawFlow {id: string; state_type?: string; state_name?: string; start_time?: string; end_time?: string; tags?: string[]; parameters?: Record<string, unknown>}
+interface RawTask {id: string; name?: string; state_type?: string; state_name?: string; start_time?: string; end_time?: string; run_count?: number; flow_run_id?: string}
+const tagValue = (tags: string[] | undefined, prefix: string) => tags?.find((tag) => tag.startsWith(prefix))?.slice(prefix.length);
+
+export async function fetchPrefect(apiUrl: string, signal?: AbortSignal): Promise<SourceSnapshot<Attempt[]>> {
+  try {
+    const base = apiUrl.replace(/\/$/, "");
+    const response = await fetch(`${base}/flow_runs/filter`, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({limit: 200, sort: "START_TIME_DESC"}), signal});
+    if (!response.ok) throw new Error(`Prefect flow runs: HTTP ${response.status}`);
+    const flows = await response.json() as RawFlow[];
+    const attempts: Attempt[] = [];
+    for (const flow of flows) {
+      const issueId = tagValue(flow.tags, "issue_id:");
+      const epicId = tagValue(flow.tags, "epic_id:");
+      if (!issueId && !epicId) continue;
+      let roles: RoleExecution[] = [];
+      try {
+        const taskResponse = await fetch(`${base}/task_runs/filter`, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({limit: 200, task_runs: {flow_run_id: {any_: [flow.id]}}}), signal});
+        if (taskResponse.ok) roles = (await taskResponse.json() as RawTask[]).map((task) => ({id: task.id, role: task.name ?? "task", state: task.state_name ?? task.state_type ?? "unknown", iteration: task.run_count ?? 1, startedAt: task.start_time, endedAt: task.end_time}));
+      } catch { /* a task page failure degrades this attempt, not the hierarchy */ }
+      const runtime: Record<string, string> = {};
+      for (const key of ["backend", "provider", "account", "account_class", "model", "effort", "rig", "rig_path"] as const) {
+        const value = flow.parameters?.[key]; if (typeof value === "string") runtime[key] = value;
+      }
+      attempts.push({id: flow.id, issueId, epicId, formula: tagValue(flow.tags, "formula:"), state: flow.state_name ?? flow.state_type ?? "unknown", startedAt: flow.start_time, endedAt: flow.end_time, runtime, roles});
+    }
+    return healthy("prefect", attempts);
+  } catch (error) { return unhealthy("prefect", [], error); }
+}
+
+export async function fetchTmux(target?: string): Promise<SourceSnapshot<{target?: string; output: string; available: boolean}>> {
+  if (!target) return healthy("tmux", {output: "", available: false});
+  try {
+    const output = await checked("tmux", ["capture-pane", "-t", target, "-p", "-S", "-200"], {timeoutMs: 3_000});
+    return healthy("tmux", {target, output, available: true});
+  } catch (error) { return unhealthy("tmux", {target, output: "", available: false}, error); }
+}
+
+async function walkArtifacts(root: string, depth = 0): Promise<Artifact[]> {
+  if (depth > 3) return [];
+  let entries; try { entries = await readdir(root, {withFileTypes: true}); } catch { return []; }
+  const found: Artifact[] = [];
+  for (const entry of entries.slice(0, 500)) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) found.push(...await walkArtifacts(path, depth + 1));
+    else if (/\.(json|md|txt|log|diff|svg|html)$/i.test(entry.name)) {
+      const info = await stat(path); found.push({name: entry.name, kind: entry.name.split(".").pop() ?? "file", path, createdAt: info.mtime.toISOString()});
+    }
+  }
+  return found;
+}
+
+export async function fetchArtifacts(rigPath: string): Promise<SourceSnapshot<Artifact[]>> {
+  try { return healthy("artifacts", await walkArtifacts(join(rigPath, ".planning"))); }
+  catch (error) { return unhealthy("artifacts", [], error); }
+}
+
+export async function readArtifact(path: string): Promise<string> { return redact((await readFile(path, "utf8")).slice(-100_000)); }
+
+export async function sourceDiagnostics(rigPath: string): Promise<Record<string, string>> {
+  const [bd, tmux] = await Promise.all([run("bd", ["where"], {cwd: rigPath}), run("tmux", ["list-sessions"], {timeoutMs: 3_000})]);
+  return {beads: redact(bd.stderr || bd.stdout), tmux: redact(tmux.stderr || tmux.stdout)};
+}

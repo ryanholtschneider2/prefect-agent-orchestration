@@ -1,131 +1,94 @@
 # po-tui
 
-Live, issue-centric TUI for the `po` Prefect-orchestration swarm.
+The production `po tui` is an epic-first operations console built with Ink 7,
+React 19, and Bun. It keeps Beads work as the navigation model while joining
+Prefect attempts, tmux sessions, and run artifacts through stable identifiers.
+Each source degrades independently; a missing Prefect service never hides the
+Beads hierarchy.
 
-Same aesthetic as Claude Code (Ink + React 18). Bun is the runtime and
-the bundler; the production build is a single self-contained binary.
+## Layout and breakpoints
 
-## Layout
+```text
+PO  epic operations  scope: all  sources: +b +p +t +a
 
-```
-┌─ po · <epic or "all">    run:N  stuck:N  ok:N  fail:N ─┬──────────────────────┐
-│ ISSUES (running on top, done collapsed below ─)        │ DETAIL: <selected>   │
-│ ▶ 5vh  fast    4m   build ⟲1     Add overview         │ [LIVE][TRACE][BD][ACT]│
-│   ld9  full   52m   plan  ⟲2  ⚠  IssueList rows       ├──────────────────────┤
-│   1qn  full   48m   review ⟲3   RoleTL+tmux fix       │ ━━ LIVE ━━━━━━━━━━━━ │
-│   3ti  full  1h7m   build ⟲1                          │ planner✓ → builder⟳ │
-│ ─                                                       │ tmux tail (last 30): │
-│   oiu  fast    ✓5m  graph_run fix                      │   <live agent output>│
-└────────────────────────────────────────────────────────┴──────────────────────┘
- [↑↓] sibs  [←→] tree  [t] tab  [1-4] jump  [c] cancel  [r] retry  [d] dispatch
- [D] show-done  [a] attach  [A] in-place  [/] filter  [e/E] drill  [q] quit
+ACTIVE
+▾ ◆ Formula graph migration  1/3 · 1 run
+  └ ◆ Replace verdict channel        builder 4m  │ EPIC / ISSUE DETAIL
+  └ ○ Migrate role prompts                    2h │ progress, dependencies,
+                                                  │ attempts, roles, artifacts
+> Type a command…
 ```
 
-The right pane is a 4-tab detail view, default tab **LIVE**:
+At 100 columns and above the hierarchy and detail remain side by side. At
+80–99 columns secondary row metadata collapses. At 60–79 columns the hierarchy
+becomes a drill-down stack (`Enter` opens detail and `Esc` returns). Below
+56×18 the app renders a clear size explanation instead of compressing.
 
-| Tab | Content | Source |
+The command bar (`:` or `/`) fuzzy-ranks contextual actions followed by global
+actions. It displays the exact target and underlying command before execution;
+mutations require a second Enter and remain verification-pending until refresh.
+
+## Detail views
+
+| View | Content | Source |
 |---|---|---|
-| LIVE | RoleTimeline + tmux tail of the active role | tmux + Prefect |
-| TRACE | placeholder (`coming soon — see prefect-orchestration-qhg`) | — |
-| BD | `bd show <id>` — description, metadata, dependents, `close_reason` | `bd show --json` |
-| ACTIONS | static keybind reference panel | — |
+| overview | Epic roll-up or current issue execution | Beads + Prefect |
+| activity | Exact local operations and verification | action executor |
+| artifacts | Produced evidence | PO run directories |
+| description | Full issue description | Beads |
 
-Per-row columns: `<id>  <flow-mode>  <wall>  <step+iter>  <stuck>  <title>`.
-`flow-mode` is `fast`/`full`; `wall` humanizes (`4m` / `1h7m`, red over 1h);
-`stuck` (`⚠`) flags rows whose wall exceeds 2× the step-typical heuristic
-(see `STEP_TYPICAL_MS` in `state/store.ts`). Done rows collapse below an `─`
-separator (toggled by `D`); the header counts running / stuck / ok / fail.
+`Tab` cycles the detail view. Epics expose progress, dependencies, blockers,
+active children, and recent outcomes. Issues expose the latest attempt, runtime
+tuple, role timeline, attempt history, dependencies, and artifacts.
 
-## Data sources
+## Data sources and degraded operation
 
-All read-only, polled every `--refresh-ms` (default 2000):
+Each adapter refreshes independently (default 5000 ms):
 
-1. **Prefect REST** at `http://127.0.0.1:4200/api`
-   - `POST /flow_runs/filter` — filtered by tags `issue_id:*` / `epic_id:*`
-   - `POST /task_runs/filter` — per flow run, derives the role->state map
-2. **`bd list --json`** / **`bd show <id> --json`** via `Bun.spawn` — title,
-   bd status, dependencies, plus (for `show`) full description, metadata,
-   `dependents`, and `close_reason`. `bdShow()` unwraps the single-element
-   array `bd` returns and throws on shellout failure / bad JSON; the store
-   catches and renders a "stale" overlay on top of the last cached value.
-   `bd list` failure is non-fatal.
-3. **`tmux capture-pane -t po-<issue>-<role> -p -S -200`** — the live tail
-   of the active role's pane.
+1. **Beads** — epics, child relationships, dependencies, descriptions, state.
+2. **Prefect REST** — flow attempts and task/role execution.
+3. **tmux** — local session availability and bounded captured output only.
+4. **run artifacts** — bounded discovery below the rig's `.planning/` tree.
 
-## Develop
+Press `:` and choose “Open source diagnostics” to see freshness and concise,
+redacted errors. `NO_COLOR=1` and `--ascii` preserve all state information.
+Non-TTY/CI invocation automatically prints a concise plain summary.
+
+## Develop and verify
 
 ```bash
-cd prefect-orchestration/tui
-bun --version          # require: ≥ 1.1
+cd tui
 bun install
-bun run dev            # runs src/cli.tsx in-place
-bun run typecheck      # tsc --noEmit, strict
-```
-
-If `bun: command not found`, install Bun first
-(<https://bun.sh/docs/installation>) — this scaffold does not auto-install.
-
-## Build the binary
-
-```bash
+bun run typecheck
+bun test
 bun run build
-# → ./dist/po-tui   (a single self-contained executable)
+./dist/po-tui --plain --rig-path ..
 ```
 
-The exact command:
+The production build is `tui/tui-next/src/cli.tsx`; legacy `tui/src` files are
+not imported or compiled. `po tui update` compiles the Bun binary and atomically
+copies it to `bin/po-tui`, which remains the public launcher path.
 
-```bash
-bun build --compile --target=bun-linux-x64 src/cli.tsx --outfile dist/po-tui
-```
+## Options
 
-To wire it into the `po` CLI lookup path, copy or symlink the binary to
-`prefect-orchestration/bin/po-tui`:
-
-```bash
-mkdir -p ../bin
-cp dist/po-tui ../bin/po-tui
-```
-
-`po tui` (the Python CLI subcommand) searches in this order:
-1. `prefect-orchestration/bin/po-tui`
-2. `prefect-orchestration/tui/dist/po-tui`
-3. `po-tui` on `$PATH`
-
-If none of those exist it prints a friendly hint pointing back here.
-
-## CLI args
-
-| flag | default | purpose |
+| Flag | Default | Purpose |
 |---|---|---|
-| `--epic <id>` | (none — show all) | filter to a single epic via `epic_id:<id>` Prefect tag |
-| `--prefect-url <url>` | `$PREFECT_API_URL` or `http://127.0.0.1:4200/api` | API base |
-| `--refresh-ms <n>` | `2000` | poll cadence |
+| `--rig-path` | current directory | Beads and run-artifact root |
+| `--prefect-url` | `$PREFECT_API_URL` or local API | Prefect API base |
+| `--refresh-ms` | `5000` | external-source polling cadence |
+| `--ascii` | false | ASCII state/disclosure glyphs |
+| `--plain` | auto for non-TTY | concise non-interactive summary |
 
-## Hotkeys
+## Keys
 
-Navigation:
-- `↑` / `↓` — siblings of the selected row
-- `←` / `→` — parent / first child
-- `e` / `E` — drill into selection's parent / pop back out
-- `/` — filter issues by id or title substring
+- `↑`/`↓` or `j`/`k`: move selection
+- `←`/`→` or `h`/`l`: collapse/expand an epic
+- `Enter`: open narrow detail or confirm a command
+- `Esc`: cancel or return from narrow detail
+- `/` or `:`: fuzzy command bar with all operator actions
+- `Tab`: cycle detail views
+- `r`: refresh all sources; `?`: help; `q`: quit
 
-Tabs (right pane):
-- `t` — cycle tabs (LIVE → TRACE → BD → ACTIONS)
-- `1` / `2` / `3` / `4` — jump to LIVE / TRACE / BD / ACTIONS
-- `j` / `k` / `g` / `G` — scroll the BD tab (active only while BD is selected)
-
-Actions on the selected run:
-- `c` — cancel (confirm overlay; shells `prefect flow-run cancel <flow_run_id>`)
-- `r` — retry (confirm overlay; shells `po retry <issue_id>`)
-- `d` — dispatch a new run (multi-step form: issue id → flow → rig → rig-path)
-- `o` — open the flow run in the Prefect UI (`xdg-open`)
-- `D` — toggle show-done (collapse / expand the done block)
-- `a` — `tmux attach` to the active role's pane in a new terminal window
-- `A` — exit cleanly and `tmux attach -t <session>` in-place
-- `q` — quit
-
-## Status
-
-This is a scaffold — layout, data wiring, and build pipeline are solid.
-UI polish (colors, table density, sparklines, role-graph from
-`graph-v2`) iterates from here.
+Terminal-owned controls (`Ctrl+C`, `Ctrl+Z`, `Ctrl+\`, `Ctrl+S`, `Ctrl+Q`) are
+not application bindings. Alternate-screen, cursor, suspend/resume, fatal error,
+and signal cleanup are handled by the entry point.

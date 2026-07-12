@@ -2,32 +2,26 @@
   "name": "@nanocorps/po-tui",
   "version": "0.1.0",
   "private": true,
-  "description": "Live TUI dashboard for the po Prefect-orchestration swarm",
+  "description": "Epic-first operations console for PO",
   "type": "module",
   "bin": {
     "po-tui": "dist/po-tui"
   },
   "scripts": {
-    "dev": "bun run src/cli.tsx",
-    "build": "bun build --compile --target=bun-linux-x64 src/cli.tsx --outfile dist/po-tui",
+    "dev": "bun run tui-next/src/cli.tsx",
+    "build": "bun build --compile --target=bun-linux-x64 tui-next/src/cli.tsx --outfile dist/po-tui",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
   "dependencies": {
-    "ink": "^5.0.1",
-    "ink-big-text": "^2.0.0",
-    "ink-gradient": "^3.0.0",
-    "ink-spinner": "^5.0.0",
-    "ink-table": "^3.1.0",
-    "ink-text-input": "^6.0.0",
-    "meow": "^13.2.0",
-    "react": "^18.3.1",
-    "zustand": "^5.0.2"
+    "ink": "^7.0.0",
+    "react": "^19.1.0"
   },
   "devDependencies": {
-    "@types/react": "^18.3.12",
+    "@types/react": "^19.1.0",
+    "ink-testing-library": "^4.0.0",
+    "string-width": "^7.2.0",
     "bun-types": "latest",
-    "react-devtools-core": "^7.0.1",
     "typescript": "^5.6.3"
   },
   "engines": {
