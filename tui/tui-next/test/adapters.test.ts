@@ -50,6 +50,11 @@ describe("source snapshots", () => {
     const bin = await mkdtemp(join(tmpdir(), "po-tui-bin-")); const script = join(bin, "br"); await writeFile(script, "#!/bin/sh\nif [ \"$1\" = list ]; then printf '[{\"id\":\"from-br\",\"title\":\"selected\"}]'; else printf '[]'; fi\n"); await chmod(script, 0o755); const oldPath = process.env.PATH; const oldBackend = process.env.PO_BEADS_BACKEND; process.env.PATH = `${bin}:${oldPath}`; process.env.PO_BEADS_BACKEND = "br";
     try { expect((await fetchBeads(".")).data[0]?.id).toBe("from-br"); } finally { process.env.PATH = oldPath; if (oldBackend === undefined) delete process.env.PO_BEADS_BACKEND; else process.env.PO_BEADS_BACKEND = oldBackend; }
   });
+  test("Beads adapter excludes deleted and tombstoned records", async () => {
+    const bin = await mkdtemp(join(tmpdir(), "po-tui-deleted-")); const script = join(bin, "br"); await writeFile(script, "#!/bin/sh\nif [ \"$1\" = list ]; then printf '[{\"id\":\"live\",\"status\":\"open\"},{\"id\":\"gone\",\"status\":\"tombstone\"}]'; else printf '[]'; fi\n"); await chmod(script, 0o755);
+    const oldPath = process.env.PATH; const oldBackend = process.env.PO_BEADS_BACKEND; process.env.PATH = `${bin}:${oldPath}`; process.env.PO_BEADS_BACKEND = "br";
+    try { expect((await fetchBeads(".")).data.map((row) => row.id)).toEqual(["live"]); } finally { process.env.PATH = oldPath; if (oldBackend === undefined) delete process.env.PO_BEADS_BACKEND; else process.env.PO_BEADS_BACKEND = oldBackend; }
+  });
   test("single Beads reads expose authoritative comments for verification", async () => {
     const bin = await mkdtemp(join(tmpdir(), "po-tui-show-")); const script = join(bin, "br"); await writeFile(script, "#!/bin/sh\nif [ \"$1\" = show ]; then printf '[{\"id\":\"po-1\",\"comments\":[{\"text\":\"verified note\"}]}]'; else printf '[]'; fi\n"); await chmod(script, 0o755);
     const oldPath = process.env.PATH; const oldBackend = process.env.PO_BEADS_BACKEND; process.env.PATH = `${bin}:${oldPath}`; process.env.PO_BEADS_BACKEND = "br";

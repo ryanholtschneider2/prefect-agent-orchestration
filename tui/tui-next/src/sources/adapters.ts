@@ -23,7 +23,7 @@ export async function fetchBeads(rigPath: string, previous?: SourceSnapshot<RawB
   for (const binary of binaries) {
     try {
       const stdout = await checked(binary, ["list", "--json", "--all", "--limit", "0"], {cwd: rigPath});
-      const rows = arrayPayload<RawBead>(JSON.parse(stdout));
+      const rows = arrayPayload<RawBead>(JSON.parse(stdout)).filter((row) => !["deleted", "tombstone"].includes((row.status ?? "").toLowerCase()));
       const byId = new Map(rows.map((row) => [row.id, row]));
       const candidates = rows.filter((row) => (row.issue_type ?? row.type) === "epic" || (row.dependent_count ?? 0) > 0);
       await Promise.all(candidates.map(async (parent) => {

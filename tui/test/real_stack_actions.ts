@@ -52,5 +52,9 @@ try {
   process.stdout.write(`PASS real-stack dispatch/retry: ${issueId} · ${afterDispatch[0]!.id.slice(0, 8)} -> ${afterRetry[0]!.id.slice(0, 8)}\n`);
 } finally {
   await rm(resolve(rigPath, ".planning", "software-dev-agentic", `${issueId}.retry.lock`), {force: true});
+  const rows = JSON.parse(await checked("bd", ["list", "--all", "--limit", "0", "--json"], {cwd: rigPath})) as Array<{id: string; title?: string}>;
+  for (const row of rows.filter((item) => item.title?.endsWith(` for ${issueId}`))) {
+    await checked("bd", ["delete", row.id, "--reason", "completed TUI real-stack smoke"], {cwd: rigPath});
+  }
   await checked("bd", ["delete", issueId, "--cascade", "--reason", "completed TUI real-stack smoke"], {cwd: rigPath});
 }

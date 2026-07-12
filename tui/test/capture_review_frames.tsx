@@ -10,23 +10,45 @@ if (!output) throw new Error("usage: capture_review_frames.tsx <output-dir>");
 await mkdir(output, {recursive: true});
 
 const escape = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-async function capture(name: string, columns: number, rows: number, keys = "", degraded = false) {
-  const model = fixtureModel();
-  if (degraded) model.snapshots.prefect = {...model.snapshots.prefect, freshness: "stale", error: "Prefect HTTP 503; last-good snapshot retained"};
-  const app = render(<App rigPath="/fixture/rig" prefectUrl="http://127.0.0.1:4200/api" refreshMs={0} initialModel={model} dimensions={{columns, rows}} />);
-  await Bun.sleep(20);
-  for (const key of keys) { app.stdin.write(key); await Bun.sleep(8); }
-  const frame = app.lastFrame() ?? ""; app.unmount();
+async function writeFrame(name: string, frame: string, columns: number, rows: number) {
   const lines = frame.split("\n"); const width = columns * 8 + 32; const height = Math.max(rows, lines.length) * 17 + 32;
   const text = lines.map((line, index) => `<text x="16" y="${28 + index * 17}">${escape(line)}</text>`).join("\n");
   await Bun.write(join(output, `${name}.svg`), `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#111418"/><g xml:space="preserve" fill="#e6e2d9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">${text}</g></svg>\n`);
   await Bun.write(join(output, `${name}.txt`), frame + "\n");
 }
+async function capture(name: string, columns: number, rows: number, keys = "", degraded = false, ascii = false) {
+  const model = fixtureModel();
+  if (degraded) model.snapshots.prefect = {...model.snapshots.prefect, freshness: "stale", error: "Prefect HTTP 503; last-good snapshot retained"};
+  const app = render(<App rigPath="/fixture/rig" prefectUrl="http://127.0.0.1:4200/api" refreshMs={0} initialModel={model} dimensions={{columns, rows}} ascii={ascii} />);
+  await Bun.sleep(20);
+  for (const key of keys) { app.stdin.write(key); await Bun.sleep(8); }
+  const frame = app.lastFrame() ?? ""; app.unmount();
+  await writeFrame(name, frame, columns, rows);
+}
+
+async function captureLive() {
+  const columns = 160; const rows = 48;
+  const app = render(<App rigPath={process.cwd()} prefectUrl={(process.env.PREFECT_API_URL ?? "http://127.0.0.1:4200/api").replace(/\/$/, "")} refreshMs={5000} dimensions={{columns, rows}} />);
+  await Bun.sleep(1500);
+  const frame = app.lastFrame() ?? ""; app.unmount();
+  await writeFrame("live-repository", frame, columns, rows);
+}
 
 await capture("wide-160x48", 160, 48);
+await capture("expanded-epic", 160, 48, "l");
+await capture("child-execution", 160, 48, "lj");
+await capture("child-activity", 160, 48, "lj\t");
+await capture("child-artifacts", 160, 48, "lj\t\t");
+await capture("child-description", 160, 48, "lj\t\t\t");
 await capture("compact-80x24", 80, 24);
 await capture("narrow-60x24", 60, 24);
+await capture("narrow-detail", 60, 24, "\r");
 await capture("below-minimum-50x16", 50, 16);
+await capture("help", 100, 30, "?");
+await capture("all-commands", 100, 30, "lj:");
 await capture("command-palette", 100, 30, ":pause");
+await capture("destructive-confirmation", 100, 30, "lj:cancel\r");
 await capture("artifact-choice", 100, 30, ":artifact\r");
 await capture("degraded-prefect", 80, 24, "", true);
+await capture("ascii-fallback", 80, 24, "", false, true);
+await captureLive();
