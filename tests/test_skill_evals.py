@@ -104,6 +104,26 @@ def test_resolve_pack_skill_dir_editable(monkeypatch: pytest.MonkeyPatch) -> Non
     assert out == FIXTURES / "skills" / "sample"
 
 
+def test_resolve_pack_skill_dir_skips_nested_skill_without_evals(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    nested = tmp_path / "skills" / "sample"
+    nested.mkdir(parents=True)
+    (nested / "SKILL.md").write_text("legacy alias")
+    single = tmp_path / "skills"
+    (single / "SKILL.md").write_text("canonical skill")
+    (single / "evals").mkdir()
+    (single / "evals" / "cases.yaml").write_text("cases: []")
+    direct_url = json.dumps(
+        {"url": f"file://{tmp_path}", "dir_info": {"editable": True}}
+    )
+    monkeypatch.setattr(
+        se, "distribution", lambda name: _FakeDist(direct_url_json=direct_url)
+    )
+
+    assert se.resolve_pack_skill_dir("sample-pack", "sample") == single
+
+
 def test_resolve_pack_skill_dir_wheel(monkeypatch: pytest.MonkeyPatch) -> None:
     skill_md = FIXTURES / "skills" / "sample" / "SKILL.md"
     fake = _FakeDist(files=[skill_md])
@@ -163,7 +183,9 @@ def test_filter_cases_by_tier_and_prefix() -> None:
 
 
 def test_build_judges_one_per_criterion() -> None:
-    pytest.importorskip("pydantic_evals", reason="skill-evals [evals] extra not installed")
+    pytest.importorskip(
+        "pydantic_evals", reason="skill-evals [evals] extra not installed"
+    )
     rubrics = se.load_rubrics(SAMPLE_SKILL_DIR)
     judges = se.build_judges(rubrics, default_model="anthropic:claude-sonnet-4-6")
     assert set(judges.keys()) == {"correctness", "safety"}
@@ -395,7 +417,9 @@ def test_skill_evals_flow_real_judges_mocked(
     asyncio.gather is used (single asyncio.run from the sync flow),
     and that scores propagate into the verdict.
     """
-    pytest.importorskip("pydantic_evals", reason="skill-evals [evals] extra not installed")
+    pytest.importorskip(
+        "pydantic_evals", reason="skill-evals [evals] extra not installed"
+    )
     dst = _stage_pack(tmp_path)
     _patch_distribution_to(dst, monkeypatch)
 
@@ -432,7 +456,9 @@ def test_skill_evals_flow_claude_judge_mocked(
     Asserts the SDK query is invoked, the JSON-on-last-line output is
     parsed, and scores + reasons propagate into the verdict.
     """
-    pytest.importorskip("claude_agent_sdk", reason="skill-evals [evals] extra not installed")
+    pytest.importorskip(
+        "claude_agent_sdk", reason="skill-evals [evals] extra not installed"
+    )
     dst = _stage_pack(tmp_path)
     _patch_distribution_to(dst, monkeypatch)
 

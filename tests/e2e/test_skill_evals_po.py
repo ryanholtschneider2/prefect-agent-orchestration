@@ -1,9 +1,11 @@
 """E2E test for `po run skill-evals --pack prefect-orchestration --skill po`.
 
-Subprocesses the real `po` CLI against the in-tree `skills/po/` suite and
+Subprocesses the real `po` CLI against the in-tree skill suite and
 asserts that `reports/latest.json` is written and parseable.
 
-We use `--dry-run` to avoid spending tokens / requiring API keys in CI:
+We pass the formula's `dry_run=true` parameter to avoid spending tokens or
+requiring API keys in CI. The bare `po run --dry-run` flag only previews the
+dispatch and intentionally does not execute the formula or write reports.
 - StubBackend returns deterministic ack output (no Claude CLI needed)
 - Stub judge produces deterministic [0.5, 1.0) scores (no judge API key needed)
 
@@ -21,7 +23,8 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILL_REPORTS_DIR = REPO_ROOT / "skills" / "po" / "reports"
+SKILL_ROOT = REPO_ROOT / "skills"
+SKILL_REPORTS_DIR = SKILL_ROOT / "reports"
 
 
 def _po_bin() -> Path:
@@ -32,7 +35,7 @@ def _po_bin() -> Path:
 
 
 def test_skill_evals_po_dry_run_writes_report(tmp_path: Path) -> None:
-    """`po run skill-evals --dry-run` produces a parseable verdict JSON.
+    """The skill-evals formula's dry-run mode produces a verdict JSON.
 
     We back up `skills/po/reports/latest.json` first because the dry-run
     will overwrite it with stub-scored output, and the real run committed
@@ -43,7 +46,7 @@ def test_skill_evals_po_dry_run_writes_report(tmp_path: Path) -> None:
     backup_md_payload: bytes | None = None
     json_path = SKILL_REPORTS_DIR / "latest.json"
     md_path = SKILL_REPORTS_DIR / "latest.md"
-    skill_md_path = REPO_ROOT / "skills" / "po" / "SKILL.md"
+    skill_md_path = SKILL_ROOT / "SKILL.md"
     skill_md_backup = skill_md_path.read_bytes() if skill_md_path.exists() else None
     if json_path.exists():
         backup_payload = json_path.read_bytes()
@@ -51,9 +54,9 @@ def test_skill_evals_po_dry_run_writes_report(tmp_path: Path) -> None:
         backup_md_payload = md_path.read_bytes()
 
     env = os.environ.copy()
-    # `--dry-run` short-circuits both halves of the pipeline; ANTHROPIC_API_KEY
-    # absence is irrelevant in that mode but we belt-and-suspenders unset it
-    # to make the dry-run path obvious in logs.
+    # Formula-level dry_run short-circuits both halves of the pipeline;
+    # ANTHROPIC_API_KEY absence is irrelevant in that mode, but unsetting it
+    # makes the no-network contract obvious in logs.
     env.pop("ANTHROPIC_API_KEY", None)
 
     try:
@@ -66,7 +69,9 @@ def test_skill_evals_po_dry_run_writes_report(tmp_path: Path) -> None:
                 "prefect-orchestration",
                 "--skill",
                 "po",
-                "--dry-run",
+                "--foreground",
+                "--param",
+                "dry_run=true",
                 "--tier",
                 "smoke",
             ],

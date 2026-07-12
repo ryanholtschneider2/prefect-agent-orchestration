@@ -128,14 +128,22 @@ def resolve_pack_skill_dir(pack: str, skill: str) -> Path:
             # Multi-skill layout: skills/<skill>/SKILL.md
             candidate = base / "skills" / skill
             attempted.append(str(candidate))
-            if candidate.is_dir() and (candidate / "SKILL.md").is_file():
+            if (
+                candidate.is_dir()
+                and (candidate / "SKILL.md").is_file()
+                and (candidate / "evals" / "cases.yaml").is_file()
+            ):
                 return candidate
             # Single-skill layout: skills/SKILL.md (the whole `skills/`
             # IS the skill). Accept when the pack ships exactly one
             # skill matching `--skill`.
             single = base / "skills"
             attempted.append(str(single))
-            if single.is_dir() and (single / "SKILL.md").is_file():
+            if (
+                single.is_dir()
+                and (single / "SKILL.md").is_file()
+                and (single / "evals" / "cases.yaml").is_file()
+            ):
                 return single
 
     # 2) Wheel install — dist.files holds RECORD entries.

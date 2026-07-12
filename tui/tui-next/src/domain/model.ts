@@ -3,6 +3,7 @@ export type SourceName = "beads" | "prefect" | "tmux" | "artifacts";
 
 export interface Dependency { id: string; type: string }
 export interface Artifact { name: string; kind: string; path: string; producer?: string; createdAt?: string }
+export interface AgentSession {id: string; role: string; target: string; available: boolean; outputHash?: string}
 export interface RoleExecution { id: string; role: string; state: string; iteration: number; startedAt?: string; endedAt?: string }
 export interface Attempt {
   id: string; issueId?: string; epicId?: string; formula?: string; state: string;
@@ -11,7 +12,7 @@ export interface Attempt {
 export interface Issue {
   kind: "issue"; id: string; epicId?: string; title: string; state: WorkState;
   description?: string; dependencies: Dependency[]; attempts: Attempt[]; artifacts: Artifact[];
-  updatedAt?: string; assignee?: string;
+  sessions: AgentSession[]; comments: Array<{author?: string; text: string; createdAt?: string}>; updatedAt?: string; assignee?: string;
 }
 export interface Epic {
   kind: "epic"; id: string; title: string; state: WorkState; children: Issue[];
@@ -19,17 +20,20 @@ export interface Epic {
 }
 export interface SourceSnapshot<T> {
   source: SourceName; data: T; fetchedAt: string; lastSuccessAt?: string;
-  freshness: "fresh" | "stale" | "unavailable"; error?: string;
+  freshness: "fresh" | "stale" | "unavailable"; error?: string; contentHash?: string;
+  retry?: {attempt: number; nextAt?: string; inFlight: boolean};
+  diagnostic?: {operation: string; target?: string; exitStatus?: number; stderr?: string; logPath?: string};
 }
 export interface OperationsModel {
   epics: Epic[]; standalone: Issue[]; unattributedAttempts: Attempt[];
+  unresolved: Array<{source: SourceName; id: string; reason: string}>;
   snapshots: Record<SourceName, SourceSnapshot<unknown>>;
 }
 
 export interface RawBead {
   id: string; title?: string; status?: string; issue_type?: string; type?: string;
   parent_id?: string; parent?: string; updated_at?: string; description?: string;
-  assignee?: string; dependent_count?: number; dependencies?: Array<string | {id?: string; depends_on_id?: string; type?: string; dependency_type?: string}>;
+  assignee?: string; dependent_count?: number; relationship_error?: string; comments?: Array<{author?: string; text?: string; created_at?: string}>; dependencies?: Array<string | {id?: string; depends_on_id?: string; type?: string; dependency_type?: string}>;
 }
 
 const states: Record<string, WorkState> = {
@@ -53,7 +57,7 @@ export function normalizeBeads(raw: RawBead[]): {epics: Epic[]; standalone: Issu
   const issues = raw.filter((row) => !epicIds.has(row.id)).map<Issue>((row) => ({
     kind: "issue", id: row.id, epicId: row.parent_id ?? row.parent, title: row.title ?? row.id,
     state: normalizeState(row.status), description: row.description, dependencies: dependencyList(row.dependencies),
-    attempts: [], artifacts: [], updatedAt: row.updated_at, assignee: row.assignee,
+    attempts: [], artifacts: [], sessions: [], comments: (row.comments ?? []).map((comment) => ({author: comment.author, text: comment.text ?? "", createdAt: comment.created_at})), updatedAt: row.updated_at, assignee: row.assignee,
   }));
   const epics = epicRows.map<Epic>((row) => ({
     kind: "epic", id: row.id, title: row.title ?? row.id, state: normalizeState(row.status),
@@ -63,7 +67,7 @@ export function normalizeBeads(raw: RawBead[]): {epics: Epic[]; standalone: Issu
   return {epics, standalone: issues.filter((issue) => !issue.epicId || !epicIds.has(issue.epicId))};
 }
 
-export function reconcile(beads: RawBead[], attempts: Attempt[], artifacts: Artifact[]): Pick<OperationsModel, "epics" | "standalone" | "unattributedAttempts"> {
+export function reconcile(beads: RawBead[], attempts: Attempt[], artifacts: Artifact[]): Pick<OperationsModel, "epics" | "standalone" | "unattributedAttempts" | "unresolved"> {
   const result = normalizeBeads(beads);
   const issues = [...result.epics.flatMap((epic) => epic.children), ...result.standalone];
   const byId = new Map(issues.map((issue) => [issue.id, issue]));
@@ -77,7 +81,9 @@ export function reconcile(beads: RawBead[], attempts: Attempt[], artifacts: Arti
     if (match) match.artifacts.push(artifact);
   }
   for (const issue of issues) issue.attempts.sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""));
-  return {...result, unattributedAttempts};
+  const unresolved: OperationsModel["unresolved"] = beads.flatMap((row) => row.relationship_error ? [{source: "beads" as const, id: row.id, reason: row.relationship_error}] : row.parent_id && !beads.some((candidate) => candidate.id === row.parent_id) ? [{source: "beads" as const, id: row.id, reason: `missing parent ${row.parent_id}`}] : []);
+  unresolved.push(...unattributedAttempts.map((attempt) => ({source: "prefect" as const, id: attempt.id, reason: attempt.issueId ? `unknown issue ${attempt.issueId}` : "missing issue_id tag"})));
+  return {...result, unattributedAttempts, unresolved};
 }
 
 export function epicRollup(epic: Epic): {complete: number; running: number; blocked: number; failed: number; total: number} {

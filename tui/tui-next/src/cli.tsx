@@ -39,6 +39,9 @@ async function main(): Promise<void> {
   const fatal = (error: unknown) => { lifecycle.restore(); process.stderr.write(`po tui: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`); process.exit(1); };
   process.once("uncaughtException", fatal); process.once("unhandledRejection", fatal);
   try {
+    if (process.env.PO_TUI_TEST_FAILURE === "throw") throw new Error("intentional PTY crash test");
+    if (process.env.PO_TUI_TEST_FAILURE === "reject") queueMicrotask(() => void Promise.reject(new Error("intentional PTY rejection test")));
+    if (process.env.PO_TUI_TEST_ATTACH_TARGET) { lifecycle.restore(); process.stdout.write(`Attach with: tmux attach -t ${process.env.PO_TUI_TEST_ATTACH_TARGET}\n`); return; }
     app = render(<App rigPath={rigPath} prefectUrl={prefectUrl} refreshMs={refreshMs} ascii={Boolean(values.ascii)} onAttach={(target) => { lifecycle.restore(); app?.unmount(); process.stdout.write(`Attach with: tmux attach -t ${target}\n`); }} />, {exitOnCtrlC: false, patchConsole: false});
     await app.waitUntilExit();
   } finally { lifecycle.dispose(); process.off("uncaughtException", fatal); process.off("unhandledRejection", fatal); }

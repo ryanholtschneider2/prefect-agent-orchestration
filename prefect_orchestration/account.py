@@ -334,9 +334,7 @@ def resolve_environment_for_backend(
 def _resolve_provider_executable(provider: str) -> str:
     """Return the first matching provider CLI executable on PATH."""
     normalized_provider = normalize_provider(provider)
-    candidates = PROVIDER_EXECUTABLES.get(
-        normalized_provider, (normalized_provider,)
-    )
+    candidates = PROVIDER_EXECUTABLES.get(normalized_provider, (normalized_provider,))
     for executable_name in candidates:
         executable = shutil.which(executable_name)
         if executable is not None:
@@ -484,9 +482,7 @@ def resolve(
     provider: str = typer.Option(..., "--provider"),
     cwd: Path = typer.Option(Path.cwd(), "--cwd"),
     account: str | None = typer.Option(None, "--account"),
-    account_class: str | None = typer.Option(
-        None, "--account-class", "--account-type"
-    ),
+    account_class: str | None = typer.Option(None, "--account-class", "--account-type"),
     output_json: bool = typer.Option(False, "--json", help="Output JSON."),
     config: Path = typer.Option(CONFIG_PATH, "--config", hidden=True),
 ) -> None:

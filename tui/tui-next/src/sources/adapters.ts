@@ -5,13 +5,13 @@ import {redact} from "../domain/text.js";
 import {checked, run} from "./process.js";
 
 const now = () => new Date().toISOString();
-export const healthy = <T>(source: SourceName, data: T): SourceSnapshot<T> => ({source, data, fetchedAt: now(), lastSuccessAt: now(), freshness: "fresh"});
-export const unhealthy = <T>(source: SourceName, data: T, error: unknown, previous?: SourceSnapshot<T>): SourceSnapshot<T> => ({
+export const healthy = <T>(source: SourceName, data: T, diagnostic?: SourceSnapshot<T>["diagnostic"]): SourceSnapshot<T> => ({source, data, fetchedAt: now(), lastSuccessAt: now(), freshness: "fresh", diagnostic});
+export const unhealthy = <T>(source: SourceName, data: T, error: unknown, previous?: SourceSnapshot<T>, diagnostic?: SourceSnapshot<T>["diagnostic"]): SourceSnapshot<T> => ({
   source, data: previous?.data ?? data, fetchedAt: now(), lastSuccessAt: previous?.lastSuccessAt,
-  freshness: previous?.lastSuccessAt ? "stale" : "unavailable", error: redact(error instanceof Error ? error.message : String(error)),
+  freshness: previous?.lastSuccessAt ? "stale" : "unavailable", error: redact(error instanceof Error ? error.message : String(error)), diagnostic,
 });
 
-function arrayPayload<T>(value: unknown): T[] {
+export function arrayPayload<T>(value: unknown): T[] {
   if (Array.isArray(value)) return value as T[];
   if (value && typeof value === "object" && "issues" in value && Array.isArray((value as {issues: unknown}).issues)) return (value as {issues: T[]}).issues;
   return [];
@@ -33,12 +33,12 @@ export async function fetchBeads(rigPath: string, previous?: SourceSnapshot<RawB
           for (const edge of edges) if (edge.type === "parent-child") {
             const child = byId.get(edge.issue_id ?? edge.id ?? ""); if (child) child.parent_id = parent.id;
           }
-        } catch { /* backend may already include parent_id; retain partial hierarchy */ }
+        } catch (error) { parent.relationship_error = redact(error instanceof Error ? error.message : String(error)); }
       }));
-      return healthy("beads", rows);
+      return healthy("beads", rows, {operation: `${binary} list/dep list`, target: rigPath, logPath: join(rigPath, ".planning", "logs")});
     } catch (error) { last = error; }
   }
-  return unhealthy("beads", [], last, previous);
+  return unhealthy("beads", [], last, previous, {operation: "bd/br list --json", target: rigPath, stderr: redact(String(last))});
 }
 
 interface RawFlow {id: string; state_type?: string; state_name?: string; start_time?: string; end_time?: string; tags?: string[]; parameters?: Record<string, unknown>}
@@ -55,12 +55,13 @@ export async function fetchPrefect(apiUrl: string, signal?: AbortSignal, previou
       const page = await response.json() as RawFlow[]; flows.push(...page); if (page.length < 200) break;
     }
     const attempts: Attempt[] = [];
-    for (const flow of flows) {
+    for (const [flowIndex, flow] of flows.entries()) {
       const issueId = tagValue(flow.tags, "issue_id:");
       const epicId = tagValue(flow.tags, "epic_id:");
       if (!issueId && !epicId) continue;
       let roles: RoleExecution[] = [];
       try {
+        if (flowIndex >= 50) throw new Error("task details deferred until attempt is visible");
         const taskResponse = await fetch(`${base}/task_runs/filter`, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({limit: 200, task_runs: {flow_run_id: {any_: [flow.id]}}}), signal});
         if (taskResponse.ok) roles = (await taskResponse.json() as RawTask[]).map((task) => ({id: task.id, role: task.name ?? "task", state: task.state_name ?? task.state_type ?? "unknown", iteration: task.run_count ?? 1, startedAt: task.start_time, endedAt: task.end_time}));
       } catch { /* a task page failure degrades this attempt, not the hierarchy */ }
@@ -70,16 +71,16 @@ export async function fetchPrefect(apiUrl: string, signal?: AbortSignal, previou
       }
       attempts.push({id: flow.id, issueId, epicId, formula: tagValue(flow.tags, "formula:"), state: flow.state_name ?? flow.state_type ?? "unknown", startedAt: flow.start_time, endedAt: flow.end_time, runtime, roles});
     }
-    return healthy("prefect", attempts);
-  } catch (error) { return unhealthy("prefect", [], error, previous); }
+    return healthy("prefect", attempts, {operation: "POST flow_runs/filter + task_runs/filter", target: apiUrl});
+  } catch (error) { return unhealthy("prefect", [], error, previous, {operation: "Prefect REST refresh", target: apiUrl, stderr: redact(String(error))}); }
 }
 
 export async function fetchTmux(target?: string, previous?: SourceSnapshot<{target?: string; output: string; available: boolean}>): Promise<SourceSnapshot<{target?: string; output: string; available: boolean}>> {
   if (!target) return healthy("tmux", {output: "", available: false});
   try {
     const output = await checked("tmux", ["capture-pane", "-t", target, "-p", "-S", "-200"], {timeoutMs: 3_000});
-    return healthy("tmux", {target, output, available: true});
-  } catch (error) { return unhealthy("tmux", {target, output: "", available: false}, error, previous); }
+    return healthy("tmux", {target, output, available: true}, {operation: "tmux capture-pane", target});
+  } catch (error) { return unhealthy("tmux", {target, output: "", available: false}, error, previous, {operation: "tmux capture-pane", target, stderr: redact(String(error))}); }
 }
 
 async function walkArtifacts(root: string, depth = 0): Promise<Artifact[]> {
@@ -97,8 +98,8 @@ async function walkArtifacts(root: string, depth = 0): Promise<Artifact[]> {
 }
 
 export async function fetchArtifacts(rigPath: string, previous?: SourceSnapshot<Artifact[]>): Promise<SourceSnapshot<Artifact[]>> {
-  try { return healthy("artifacts", await walkArtifacts(join(rigPath, ".planning"))); }
-  catch (error) { return unhealthy("artifacts", [], error, previous); }
+  try { return healthy("artifacts", await walkArtifacts(join(rigPath, ".planning")), {operation: "bounded artifact scan", target: join(rigPath, ".planning")}); }
+  catch (error) { return unhealthy("artifacts", [], error, previous, {operation: "bounded artifact scan", target: join(rigPath, ".planning"), stderr: redact(String(error))}); }
 }
 
 export async function readArtifact(path: string): Promise<string> { return redact((await readFile(path, "utf8")).slice(-100_000)); }

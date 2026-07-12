@@ -298,9 +298,10 @@ def test_uv_tool_fresh_divergence(monkeypatch):
 
 
 def test_editable_installs_all_resolve(monkeypatch):
-    # A real, existing, non-transient dir (the repo root). tmp_path can't be
-    # used here: pytest puts it under /tmp, which is itself a transient marker.
-    canon = Path(__file__).resolve().parent.parent
+    # A real, existing, non-transient directory. The repository itself may be
+    # checked out under a deliberately transient .agentic worktree, which is
+    # the negative case this check is designed to detect.
+    canon = Path.home()
     monkeypatch.setattr(
         doctor_mod, "_editable_source_dirs", lambda: [("prefect-orchestration", canon)]
     )

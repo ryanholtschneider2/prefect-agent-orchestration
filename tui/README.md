@@ -25,8 +25,14 @@ becomes a drill-down stack (`Enter` opens detail and `Esc` returns). Below
 56×18 the app renders a clear size explanation instead of compressing.
 
 The command bar (`:` or `/`) fuzzy-ranks contextual actions followed by global
-actions. It displays the exact target and underlying command before execution;
-mutations require a second Enter and remain verification-pending until refresh.
+actions. Commands declare structured arguments. Dispatch collects formula,
+backend, provider, account, account class, model, effort, rig, and rig path;
+state/comment commands collect their values rather than reading hidden defaults.
+The final preview names the target and exact transport command. Non-destructive
+mutations execute from that preview. Destructive actions default-cancel and
+require typing the selected object ID. Identical in-flight operations are
+suppressed. After execution, the console re-reads Beads or Prefect for a bounded
+window and records `verified`, `pending` (window expired), or `failed`.
 
 ## Detail views
 
@@ -43,16 +49,21 @@ tuple, role timeline, attempt history, dependencies, and artifacts.
 
 ## Data sources and degraded operation
 
-Each adapter refreshes independently (default 5000 ms):
+Each adapter owns an independent refresh controller; a slow source never delays
+another source. Controllers use per-source intervals, abortable timeouts,
+bounded exponential backoff/jitter, content hashes to avoid unchanged renders,
+and last-good snapshots for stale operation:
 
 1. **Beads** — epics, child relationships, dependencies, descriptions, state.
 2. **Prefect REST** — flow attempts and task/role execution.
 3. **tmux** — local session availability and bounded captured output only.
 4. **run artifacts** — bounded discovery below the rig's `.planning/` tree.
 
-Press `:` and choose “Open source diagnostics” to see freshness and concise,
-redacted errors. `NO_COLOR=1` and `--ascii` preserve all state information.
-Non-TTY/CI invocation automatically prints a concise plain summary.
+Press `:` and choose “Open source diagnostics” to see operation/endpoint or
+command, freshness, last success, retry attempt/next time, exit status, redacted
+stderr, unresolved stable IDs, and log path. `r` retries every controller now.
+`NO_COLOR=1` and `--ascii` preserve all state information. Non-TTY/CI invocation
+automatically prints a concise plain summary.
 
 ## Develop and verify
 
@@ -62,6 +73,7 @@ bun install
 bun run typecheck
 bun test
 bun run build
+uv run python test/pty_smoke.py
 ./dist/po-tui --plain --rig-path ..
 ```
 
@@ -87,8 +99,11 @@ copies it to `bin/po-tui`, which remains the public launcher path.
 - `Esc`: cancel or return from narrow detail
 - `/` or `:`: fuzzy command bar with all operator actions
 - `Tab`: cycle detail views
+- `PageUp`/`PageDown`: scroll detail; `J`/`K`: scroll live output; `G`: resume follow
 - `r`: refresh all sources; `?`: help; `q`: quit
 
 Terminal-owned controls (`Ctrl+C`, `Ctrl+Z`, `Ctrl+\`, `Ctrl+S`, `Ctrl+Q`) are
-not application bindings. Alternate-screen, cursor, suspend/resume, fatal error,
-and signal cleanup are handled by the entry point.
+not application bindings. Alternate-screen, cursor, suspend/resume, resize,
+SIGINT/SIGTERM, exception/rejection, and attach-handoff cleanup are handled by
+the entry point. `test/pty_smoke.py` verifies every path against the compiled
+binary in a real pseudo-terminal.

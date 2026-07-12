@@ -6,7 +6,8 @@ export function installTerminalLifecycle(output: NodeJS.WriteStream, onResume: (
   const restore = () => { if (owned && !restored) { output.write(ALT_OFF); restored = true; owned = false; } };
   const stop = () => { restore(); process.kill(process.pid, "SIGSTOP"); };
   const resume = () => { enter(); onResume(); };
-  const term = () => { restore(); process.exitCode = 130; };
-  enter(); process.on("SIGTSTP", stop); process.on("SIGCONT", resume); process.on("SIGINT", term); process.on("SIGTERM", term);
-  return {restore, dispose: () => { restore(); process.off("SIGTSTP", stop); process.off("SIGCONT", resume); process.off("SIGINT", term); process.off("SIGTERM", term); }};
+  const interrupt = () => { restore(); process.exit(130); };
+  const terminate = () => { restore(); process.exit(143); };
+  enter(); process.on("SIGTSTP", stop); process.on("SIGCONT", resume); process.on("SIGINT", interrupt); process.on("SIGTERM", terminate);
+  return {restore, dispose: () => { restore(); process.off("SIGTSTP", stop); process.off("SIGCONT", resume); process.off("SIGINT", interrupt); process.off("SIGTERM", terminate); }};
 }
