@@ -18,7 +18,10 @@ from po_formulas import mail as mail_mod
 
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("bd") is None, reason="bd not on PATH; skipping real-bd e2e"
+    shutil.which("bd") is None
+    or "br version"
+    in subprocess.run(["bd", "version"], capture_output=True, text=True).stdout,
+    reason="mail pack still requires the legacy dolt bd create contract",
 )
 
 

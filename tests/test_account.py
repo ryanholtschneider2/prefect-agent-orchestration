@@ -117,7 +117,9 @@ def test_unique_provider_account_is_fallback(tmp_path: Path) -> None:
     assert result.environment == {"CODEX_HOME": str(Path("~/.codex").expanduser())}
 
 
-def test_launch_agent_execs_cursor_agent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_launch_agent_execs_cursor_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config = Registry(
         accounts={
             "cursor-personal": Account(
@@ -316,6 +318,8 @@ def test_sync_shared_config_links_cursor_cli_files(tmp_path: Path) -> None:
 
     links = sync_shared_config(config)
 
-    assert (work_home / "cli-config.json").resolve() == personal_home / "cli-config.json"
+    assert (
+        work_home / "cli-config.json"
+    ).resolve() == personal_home / "cli-config.json"
     assert (work_home / "mcp.json").resolve() == personal_home / "mcp.json"
     assert any(target.name == "cli-config.json" for target, _ in links)

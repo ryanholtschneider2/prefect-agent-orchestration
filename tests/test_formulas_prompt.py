@@ -89,7 +89,9 @@ def test_mint_seed_bead_uses_requested_id_on_success(
     assert got.startswith("feature-x-")  # <prefix>-<utc-timestamp>
 
 
-def test_prompt_formula_supports_cursor_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prompt_formula_supports_cursor_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("PO_BACKEND", "cursor-cli")
     from prefect_orchestration.agent_session import CursorCliBackend
 

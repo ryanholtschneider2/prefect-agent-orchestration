@@ -122,6 +122,11 @@ def test_po_watch_replay_and_degrades_gracefully(monkeypatch, tmp_path: Path) ->
 
     monkeypatch.setattr(cli._status, "find_runs_by_issue_id", fake_find)
 
+    async def finish_run_dir(_run_dir, queue, **_kwargs):
+        await queue.put(None)
+
+    monkeypatch.setattr(cli._watch, "_poll_run_dir", finish_run_dir)
+
     runner = CliRunner()
     result = runner.invoke(
         cli.app,

@@ -2300,7 +2300,14 @@ app.add_typer(tui_app, name="tui")
     invoke_without_command=True,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
-def _tui_default(ctx: typer.Context) -> None:
+def _tui_default(
+    ctx: typer.Context,
+    rig_path: Path | None = typer.Option(None, "--rig-path"),
+    prefect_url: str | None = typer.Option(None, "--prefect-url"),
+    refresh_ms: int | None = typer.Option(None, "--refresh-ms", min=1000),
+    ascii_mode: bool = typer.Option(False, "--ascii"),
+    plain: bool = typer.Option(False, "--plain"),
+) -> None:
     """Default action: open the TUI. Subcommands (`update`) skip this body."""
     if ctx.invoked_subcommand is not None:
         return
@@ -2328,7 +2335,17 @@ def _tui_default(ctx: typer.Context) -> None:
             err=True,
         )
         raise SystemExit(1)
-    extra = ctx.args or []
+    extra = list(ctx.args or [])
+    if rig_path is not None:
+        extra.extend(["--rig-path", str(rig_path)])
+    if prefect_url is not None:
+        extra.extend(["--prefect-url", prefect_url])
+    if refresh_ms is not None:
+        extra.extend(["--refresh-ms", str(refresh_ms)])
+    if ascii_mode:
+        extra.append("--ascii")
+    if plain:
+        extra.append("--plain")
     os.execvp(binary, [binary, *extra])
 
 

@@ -48,7 +48,12 @@ def _bd_in(
 def test_po_run_graph_discovers_via_bd_dep_edges(
     po_runner: Callable[..., subprocess.CompletedProcess[str]],
     tmp_path: Path,
+    prefect_api_url: str,
 ) -> None:
+    if "graph" not in po_runner("list").stdout:
+        pytest.skip(
+            "graph formula pack is not installed in the isolated project environment"
+        )
     rig = tmp_path / "rig"
     rig.mkdir()
 
@@ -65,8 +70,8 @@ def test_po_run_graph_discovers_via_bd_dep_edges(
         proc = _bd_in(
             rig,
             "create",
+            title,
             f"--type={kind}",
-            f"--title={title}",
             "--priority=2",
             "--json",
         )
@@ -97,14 +102,7 @@ def test_po_run_graph_discovers_via_bd_dep_edges(
     # needs a Prefect API to record flow state — point at the live
     # local server (started via `prefect server start`); skip if
     # unreachable.
-    import urllib.request
-
-    api_url = "http://127.0.0.1:4200/api"
-    try:
-        with urllib.request.urlopen(f"{api_url}/health", timeout=2):
-            pass
-    except Exception:
-        pytest.skip(f"Prefect server not reachable at {api_url}")
+    api_url = prefect_api_url
 
     try:
         result = po_runner(
