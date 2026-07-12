@@ -58,9 +58,13 @@ def run_case(name: str, action: str, env_extra: dict[str, str] | None = None) ->
         os.write(master, b"q")
     elif action == "suspend":
         os.killpg(process.pid, signal.SIGTSTP)
-        time.sleep(0.1)
+        suspended = drain(master, 1.0)
+        output += suspended
+        assert ALT_OFF in suspended, f"{name}: terminal not restored before stop"
         os.killpg(process.pid, signal.SIGCONT)
-        time.sleep(0.1)
+        resumed = drain(master, 1.0)
+        output += resumed
+        assert ALT_ON in resumed, f"{name}: alternate screen not re-entered on resume"
         os.write(master, b"q")
     elif action == "sigint":
         os.killpg(process.pid, signal.SIGINT)
