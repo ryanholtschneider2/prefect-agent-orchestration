@@ -20,6 +20,12 @@ describe("responsive rendering", () => {
     const frame = renderToString(<WorkTree state={state} width={columns} height={20} colors={theme(true)} ascii={columns === 60} />, {columns});
     expect(frame).toContain("Formula graph migration"); expect(frame).toContain("Replace verdict channel"); expect(frame.split("\n").every((line) => line.length <= columns)).toBeTrue();
   });
+  test("tree keeps a selected row visible across lifecycle headers", () => {
+    const model = fixtureModel(); model.standalone = Array.from({length: 12}, (_, index) => ({kind: "issue" as const, id: `closed-${index}`, title: `Closed issue ${index}`, state: "closed" as const, dependencies: [], artifacts: [], sessions: [], comments: [], attempts: []}));
+    let selected = reducer(initialState(), {type: "model", model}); selected = reducer(selected, {type: "select", id: "closed-11"});
+    const frame = renderToString(<WorkTree state={selected} width={60} height={5} colors={theme(true)} ascii />, {columns: 60});
+    expect(frame).toContain("Closed issue 11");
+  });
   test("epic and child detail expose required facts", () => {
     const epic = renderToString(<Detail object={fixtureModel().epics[0]} state={state} width={78} height={22} colors={theme(true)} />, {columns: 80});
     expect(epic).toContain("Progress"); expect(epic).toContain("Blockers & decisions"); expect(epic).toContain("Active work");

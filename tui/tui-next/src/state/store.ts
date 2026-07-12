@@ -5,7 +5,7 @@ export type Scope = "all" | "active" | "blocked" | "failed" | "completed" | "arc
 export interface ActivityRecord {at: string; objectId?: string; operation: string; result: string; verification: "verified" | "pending" | "failed"}
 export interface UIState {
   model: OperationsModel; selectedId?: string; expanded: Set<string>; scroll: number; detailScroll: number;
-  liveScroll: number; followOutput: boolean;
+  liveOutput: string; liveTarget?: string; liveError?: string; liveScroll: number; followOutput: boolean;
   detailTab: "overview" | "activity" | "artifacts" | "description"; narrowDetail: boolean; scope: Scope;
   overlay?: "palette" | "help" | "diagnostics"; query: string; commandIndex: number; pendingActionId?: string;
   activity: ActivityRecord[]; refreshing: Set<SourceName>;
@@ -15,11 +15,12 @@ export type UIAction =
   | {type: "toggle"; id: string} | {type: "overlay"; overlay?: UIState["overlay"]} | {type: "query"; value: string}
   | {type: "commandMove"; delta: number} | {type: "scope"; scope: Scope} | {type: "narrowDetail"; value: boolean}
   | {type: "activity"; record: ActivityRecord} | {type: "pending"; id?: string} | {type: "tab"; tab: UIState["detailTab"]}
-  | {type: "detailScroll"; delta: number} | {type: "liveScroll"; delta: number} | {type: "follow"; value: boolean};
+  | {type: "detailScroll"; delta: number} | {type: "liveScroll"; delta: number} | {type: "follow"; value: boolean}
+  | {type: "liveOutput"; output: string; target?: string; error?: string};
 
 const emptySnapshot = (source: SourceName): SourceSnapshot<unknown> => ({source, data: [], fetchedAt: new Date(0).toISOString(), freshness: "unavailable"});
 export const emptyModel = (): OperationsModel => ({epics: [], standalone: [], unattributedAttempts: [], unresolved: [], snapshots: {beads: emptySnapshot("beads"), prefect: emptySnapshot("prefect"), tmux: emptySnapshot("tmux"), artifacts: emptySnapshot("artifacts")}});
-export const initialState = (): UIState => ({model: emptyModel(), expanded: new Set(), scroll: 0, detailScroll: 0, liveScroll: 0, followOutput: true, detailTab: "overview", narrowDetail: false, scope: "all", query: "", commandIndex: 0, activity: [], refreshing: new Set()});
+export const initialState = (): UIState => ({model: emptyModel(), expanded: new Set(), scroll: 0, detailScroll: 0, liveOutput: "", liveScroll: 0, followOutput: true, detailTab: "overview", narrowDetail: false, scope: "all", query: "", commandIndex: 0, activity: [], refreshing: new Set()});
 
 export function visibleObjects(state: UIState): Array<Epic | Issue> {
   const list: Array<Epic | Issue> = [];
@@ -63,5 +64,6 @@ export function reducer(state: UIState, action: UIAction): UIState {
   if (action.type === "detailScroll") return {...state, detailScroll: Math.max(0, state.detailScroll + action.delta)};
   if (action.type === "liveScroll") return {...state, liveScroll: Math.max(0, state.liveScroll + action.delta), followOutput: false};
   if (action.type === "follow") return {...state, followOutput: action.value, liveScroll: action.value ? 0 : state.liveScroll};
+  if (action.type === "liveOutput") return {...state, liveOutput: action.output, liveTarget: action.target, liveError: action.error};
   return state;
 }

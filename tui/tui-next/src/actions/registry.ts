@@ -1,14 +1,15 @@
-import type {Epic, Issue} from "../domain/model.js";
+import type {Attempt, Epic, Issue} from "../domain/model.js";
+import {redact} from "../domain/text.js";
 import {run} from "../sources/process.js";
 
 export type Selection = Epic | Issue;
-export type ActionId = "dispatch" | "retry" | "pause" | "resume" | "cancel" | "attach" | "prefect" | "artifact" | "state" | "comment" | "refresh" | "diagnostics" | "scope";
+export type ActionId = "dispatch" | "retry" | "pause" | "resume" | "cancel" | "attach" | "prefect" | "logs" | "artifact" | "state" | "comment" | "refresh" | "diagnostics" | "scope";
 export interface OperatorAction {
   id: ActionId; title: string; aliases: string[]; applies: Array<Selection["kind"] | "global">;
   destructive?: boolean; mutates?: boolean; arguments?: ArgumentSpec[];
   preview(selection?: Selection, args?: Record<string, string>): string;
 }
-export interface ArgumentSpec {key: string; label: string; required?: boolean; defaultValue?: () => string}
+export interface ArgumentSpec {key: string; label: string; required?: boolean; defaultValue?: () => string; choices?: string[]}
 const env = (key: string, fallback: string) => () => process.env[key] ?? fallback;
 
 export const actions: OperatorAction[] = [
@@ -18,19 +19,23 @@ export const actions: OperatorAction[] = [
     {key: "accountClass", label: "Account class", required: true, defaultValue: env("PO_ACCOUNT_CLASS", "personal")}, {key: "model", label: "Model", required: true, defaultValue: env("PO_MODEL", "gpt-5.4")},
     {key: "effort", label: "Effort", required: true, defaultValue: env("PO_EFFORT", "xhigh")}, {key: "rig", label: "Rig", required: true, defaultValue: env("PO_RIG", "prefect-orchestration")},
     {key: "rigPath", label: "Rig path", required: true, defaultValue: () => process.cwd()},
-  ], preview: (s, a = {}) => `po run ${a.formula ?? "<formula>"} --backend ${a.backend ?? "<backend>"} --provider ${a.provider ?? "<provider>"} --account ${a.account ?? "<account>"} --account-class ${a.accountClass ?? "<class>"} --model ${a.model ?? "<model>"} --effort ${a.effort ?? "<effort>"} --issue-id ${s?.id ?? "<issue>"} --rig ${a.rig ?? "<rig>"} --rig-path ${a.rigPath ?? "<path>"}`},
+  ], preview: (s, a = {}) => `PO_PROVIDER=${a.provider ?? "<provider>"} po run ${a.formula ?? "<formula>"} --backend ${a.backend ?? "<backend>"} --account ${a.account ?? "<account>"} --account-class ${a.accountClass ?? "<class>"} --model ${a.model ?? "<model>"} --effort ${a.effort ?? "<effort>"} --issue-id ${s?.id ?? "<issue>"} --rig ${a.rig ?? "<rig>"} --rig-path ${a.rigPath ?? "<path>"}`},
   {id: "retry", title: "Retry latest attempt", aliases: ["rerun"], applies: ["issue"], mutates: true, preview: (s) => `po retry ${s?.id ?? "<issue>"}`},
-  {id: "pause", title: "Pause epic…", aliases: ["hold"], applies: ["epic"], destructive: true, mutates: true, preview: (s) => `Pause active Prefect runs belonging to ${s?.id ?? "<epic>"}`},
+  {id: "pause", title: "Pause epic…", aliases: ["hold"], applies: ["epic"], destructive: true, mutates: true, preview: (s) => {
+    const attempts = s?.kind === "epic" ? s.children.map((issue) => issue.attempts[0]).filter((attempt) => attempt?.state.toUpperCase() === "RUNNING") : [];
+    return `Pause ${attempts.length} active Prefect attempt(s) in ${s?.id ?? "<epic>"}: ${attempts.map((attempt) => attempt?.id).join(", ") || "none"}`;
+  }},
   {id: "resume", title: "Resume paused run", aliases: ["continue"], applies: ["issue"], mutates: true, preview: (s) => `Resume the latest paused Prefect attempt for ${s?.id ?? "<issue>"}`},
   {id: "cancel", title: "Cancel current attempt…", aliases: ["stop", "terminate"], applies: ["issue"], destructive: true, mutates: true, preview: (s) => `Cancel the current Prefect attempt for ${s?.id ?? "<issue>"}; agent work may stop`},
   {id: "attach", title: "Attach to active agent…", aliases: ["tmux", "session"], applies: ["issue"], arguments: [{key: "sessionTarget", label: "Discovered tmux target", required: true}], preview: (s, a = {}) => `tmux attach -t ${a.sessionTarget ?? "<discovered-target>"} for ${s?.id ?? "<issue>"}`},
   {id: "prefect", title: "Open Prefect run", aliases: ["flow", "browser"], applies: ["issue"], preview: (s) => `Open the latest flow run for ${s?.id ?? "<issue>"}`},
+  {id: "logs", title: "Show run logs", aliases: ["tail", "output"], applies: ["issue"], preview: (s) => `po logs ${s?.id ?? "<issue>"}`},
   {id: "artifact", title: "Open artifact…", aliases: ["file", "evidence"], applies: ["issue", "epic"], arguments: [{key: "artifactPath", label: "Artifact path", required: true}], preview: (s, a = {}) => `Open ${a.artifactPath ?? "<chosen-artifact>"} from ${s?.id ?? "selection"}`},
   {id: "state", title: "Update issue state…", aliases: ["beads", "status"], applies: ["issue", "epic"], mutates: true, arguments: [{key: "state", label: "State", required: true, defaultValue: env("PO_TUI_STATE", "in_progress")}], preview: (s, a = {}) => `bd update ${s?.id ?? "<issue>"} --status ${a.state ?? "<state>"}`},
   {id: "comment", title: "Add Beads comment…", aliases: ["note"], applies: ["issue", "epic"], mutates: true, arguments: [{key: "comment", label: "Comment", required: true}], preview: (s, a = {}) => `bd comments add ${s?.id ?? "<issue>"} "${a.comment ?? "<comment>"}"`},
   {id: "refresh", title: "Refresh all sources", aliases: ["reload", "sync"], applies: ["global"], preview: () => "Refresh Beads, Prefect, tmux, and artifacts independently"},
   {id: "diagnostics", title: "Open source diagnostics", aliases: ["health", "errors"], applies: ["global"], preview: () => "Show source commands, endpoints, freshness, and errors"},
-  {id: "scope", title: "Change scope…", aliases: ["filter", "lifecycle"], applies: ["global"], preview: () => "Choose all, active, blocked, failed, completed, or archived work"},
+  {id: "scope", title: "Change scope…", aliases: ["filter", "lifecycle"], applies: ["global"], arguments: [{key: "scope", label: "Scope", required: true, defaultValue: () => "all", choices: ["all", "active", "blocked", "failed", "completed", "archived"]}], preview: (_s, args = {}) => `Show ${args.scope ?? "<scope>"} work`},
 ];
 
 export function applicableActions(selection?: Selection): OperatorAction[] {
@@ -52,6 +57,9 @@ export function filterActions(input: string, selection?: Selection): OperatorAct
   return applicableActions(selection).map((action) => ({action, score: score(`${action.title} ${action.aliases.join(" ")}`, input)}))
     .filter((entry) => entry.score >= 0).sort((a, b) => b.score - a.score).map((entry) => entry.action);
 }
+
+export const newAttemptObserved = (attempts: Attempt[], previousAttemptId?: string): boolean =>
+  attempts.some((attempt) => attempt.id !== previousAttemptId);
 
 async function prefectMutation(apiUrl: string, path: string, body?: unknown): Promise<{ok: boolean; message: string}> {
   try {
@@ -81,13 +89,18 @@ export async function executeAction(action: OperatorAction, selection: Selection
     const result = await run("xdg-open", [`${args.prefectUi ?? "http://127.0.0.1:4200"}/runs/flow-run/${attempt.id}`], {timeoutMs: 5_000});
     return result.code === 0 ? {state: "verified", message: `Opened Prefect run ${attempt.id}`} : {state: "failed", message: result.stderr.trim()};
   }
+  if (action.id === "logs") {
+    const result = await run("po", ["logs", selection.id], {cwd: rigPath, timeoutMs: 10_000});
+    const output = redact((result.stdout || result.stderr).trim().slice(-4_000));
+    return result.code === 0 ? {state: "verified", message: output || `No logs found for ${selection.id}`} : {state: "failed", message: output || `po logs exited ${result.code}`};
+  }
   let command = "po"; let commandArgs: string[] = [];
   if (action.id === "retry") commandArgs = ["retry", selection.id];
   else if (action.id === "dispatch") {
     const required = ["formula", "backend", "provider", "account", "accountClass", "model", "effort", "rig", "rigPath"];
     const missing = required.filter((key) => !args[key]);
     if (missing.length) return {state: "failed", message: `Dispatch needs: ${missing.join(", ")}`};
-    commandArgs = ["run", args.formula!, "--backend", args.backend!, "--provider", args.provider!, "--account", args.account!, "--account-class", args.accountClass!, "--model", args.model!, "--effort", args.effort!, "--issue-id", selection.id, "--rig", args.rig!, "--rig-path", args.rigPath ?? rigPath];
+    commandArgs = ["run", args.formula!, "--backend", args.backend!, "--account", args.account!, "--account-class", args.accountClass!, "--model", args.model!, "--effort", args.effort!, "--issue-id", selection.id, "--rig", args.rig!, "--rig-path", args.rigPath ?? rigPath];
   } else if (action.id === "state") { command = "bd"; commandArgs = ["update", selection.id, `--status=${args.state ?? "in_progress"}`]; }
   else if (action.id === "comment") { command = "bd"; commandArgs = ["comments", "add", selection.id, args.comment ?? "Updated from po tui"]; }
   else if (["pause", "resume", "cancel"].includes(action.id)) {
@@ -105,7 +118,8 @@ export async function executeAction(action: OperatorAction, selection: Selection
     const failed = outcomes.find((outcome) => !outcome.ok);
     return failed ? {state: "failed", message: failed.message} : {state: "pending", message: `${action.id} requested for ${attempts.length} attempt(s); Prefect verification pending`};
   }
-  const result = await run(command, commandArgs, {cwd: rigPath, timeoutMs: 30_000});
+  const commandEnv = action.id === "dispatch" || action.id === "retry" ? {...process.env, ...(args.beadsBackend ? {PO_BEADS_BACKEND: args.beadsBackend} : {}), ...(action.id === "retry" && args.retryBackend ? {PO_BACKEND: args.retryBackend} : {}), ...(action.id === "dispatch" ? {PO_PROVIDER: args.provider} : {})} : undefined;
+  const result = await run(command, commandArgs, {cwd: rigPath, env: commandEnv, timeoutMs: 30_000});
   return result.code === 0 ? {state: "pending", message: `${command} ${commandArgs.join(" ")} completed; source verification pending`} : {state: "failed", message: result.stderr.trim() || `exit ${result.code}`};
 }
 

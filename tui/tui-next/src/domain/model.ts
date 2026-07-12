@@ -2,7 +2,7 @@ export type WorkState = "open" | "in_progress" | "blocked" | "failed" | "closed"
 export type SourceName = "beads" | "prefect" | "tmux" | "artifacts";
 
 export interface Dependency { id: string; type: string }
-export interface Artifact { name: string; kind: string; path: string; producer?: string; createdAt?: string }
+export interface Artifact { name: string; kind: string; path: string; ownerId?: string; producer?: string; createdAt?: string }
 export interface AgentSession {id: string; role: string; target: string; available: boolean; outputHash?: string}
 export interface TmuxSession {target: string; available: boolean; output?: string}
 export interface RoleExecution { id: string; role: string; state: string; iteration: number; startedAt?: string; endedAt?: string }
@@ -78,19 +78,53 @@ export function reconcile(beads: RawBead[], attempts: Attempt[], artifacts: Arti
     if (issue) issue.attempts.push(attempt); else unattributedAttempts.push(attempt);
   }
   for (const artifact of artifacts) {
-    const match = issues.find((issue) => artifact.path.includes(issue.id));
+    const match = artifact.ownerId ? byId.get(artifact.ownerId) : undefined;
     if (match) match.artifacts.push(artifact);
   }
-  for (const session of tmuxSessions) {
-    const issue = issues.find((candidate) => session.target.startsWith(`po-${candidate.id}-`));
-    if (!issue) continue;
-    const role = session.target.slice(`po-${issue.id}-`.length) || "agent";
-    issue.sessions.push({id: session.target, role, target: session.target, available: session.available});
+  for (const issue of issues) {
+    const seen = new Set<string>();
+    for (const attempt of issue.attempts) for (const role of attempt.roles) {
+      const target = resolveSessionTarget(issue.id, role.role, tmuxSessions, attempt.formula);
+      if (target && !seen.has(target)) { seen.add(target); issue.sessions.push({id: target, role: role.role, target, available: true}); }
+    }
   }
   for (const issue of issues) issue.attempts.sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""));
   const unresolved: OperationsModel["unresolved"] = beads.flatMap((row) => row.relationship_error ? [{source: "beads" as const, id: row.id, reason: row.relationship_error}] : row.parent_id && !beads.some((candidate) => candidate.id === row.parent_id) ? [{source: "beads" as const, id: row.id, reason: `missing parent ${row.parent_id}`}] : []);
   unresolved.push(...unattributedAttempts.map((attempt) => ({source: "prefect" as const, id: attempt.id, reason: attempt.issueId ? `unknown issue ${attempt.issueId}` : "missing issue_id tag"})));
   return {...result, unattributedAttempts, unresolved};
+}
+
+const registryRoles: Record<string, string> = {
+  triage: "triager", baseline: "tester", plan: "builder", critique: "critic",
+  critique_plan: "critic", "critique-plan": "critic", build: "builder", lint: "linter",
+  test: "tester", run_tests: "tester", regression: "tester", regression_gate: "tester",
+  review: "critic", review_artifacts: "releaser", "review-artifacts": "releaser",
+  deploy_smoke: "releaser", "deploy-smoke": "releaser", verification: "verifier",
+  ralph: "cleaner", docs: "documenter", learn: "documenter", demo_video: "documenter",
+  agentic: "agentic-worker", "agentic-worker": "agentic-worker", reviewer: "agentic-reviewer",
+  review_agentic: "agentic-reviewer", "agentic-reviewer": "agentic-reviewer",
+};
+
+export const sanitizeIssueId = (issueId: string): string => issueId.replaceAll(".", "_");
+export const registryRoleFor = (role: string, formula?: string): string => {
+  const base = role.replace(/-iter-\d+$/i, "").replace(/-[a-f0-9]{3,8}$/i, "");
+  if (formula?.includes("agentic")) {
+    if (base === "agentic" || base === "build") return "agentic-worker";
+    if (base === "review" || base === "critic") return "agentic-reviewer";
+  }
+  return registryRoles[base] ?? base;
+};
+
+const forked = (value: string, base: string): boolean => value === base || (value.startsWith(`${base}-`) && /^[a-f0-9]{6}$/.test(value.slice(base.length + 1)));
+
+export function resolveSessionTarget(issueId: string, role: string, sessions: TmuxSession[], formula?: string): string | undefined {
+  const sessionBase = `po-${sanitizeIssueId(issueId)}-${registryRoleFor(role, formula)}`;
+  const windowBase = sessionBase.slice(3);
+  return sessions.find((session) => {
+    const separator = session.target.indexOf(":");
+    const name = separator >= 0 ? session.target.slice(separator + 1) : session.target;
+    return forked(name, separator >= 0 ? windowBase : sessionBase);
+  })?.target;
 }
 
 export function epicRollup(epic: Epic): {complete: number; running: number; blocked: number; failed: number; total: number} {

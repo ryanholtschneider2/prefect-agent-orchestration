@@ -19,7 +19,7 @@ async function capture(name: string, columns: number, rows: number, keys = "", d
   const frame = app.lastFrame() ?? ""; app.unmount();
   const lines = frame.split("\n"); const width = columns * 8 + 32; const height = Math.max(rows, lines.length) * 17 + 32;
   const text = lines.map((line, index) => `<text x="16" y="${28 + index * 17}">${escape(line)}</text>`).join("\n");
-  await Bun.write(join(output, `${name}.svg`), `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#111418"/><g fill="#e6e2d9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">${text}</g></svg>\n`);
+  await Bun.write(join(output, `${name}.svg`), `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#111418"/><g xml:space="preserve" fill="#e6e2d9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">${text}</g></svg>\n`);
   await Bun.write(join(output, `${name}.txt`), frame + "\n");
 }
 

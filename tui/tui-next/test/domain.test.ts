@@ -1,5 +1,5 @@
 import {describe, expect, test} from "bun:test";
-import {epicRollup, lifecycleGroup, normalizeBeads, reconcile} from "../src/domain/model.js";
+import {epicRollup, lifecycleGroup, normalizeBeads, reconcile, resolveSessionTarget} from "../src/domain/model.js";
 import {redact, truncateCells} from "../src/domain/text.js";
 import {fixtureModel} from "./fixtures.js";
 
@@ -21,6 +21,29 @@ describe("normalized operations model", () => {
   test("derives mechanical rollups and lifecycle groups", () => {
     expect(epicRollup(fixtureModel().epics[0]!)).toEqual({complete: 1, running: 1, blocked: 1, failed: 0, total: 3});
     expect(lifecycleGroup("closed")).toBe("completed"); expect(lifecycleGroup("in_progress")).toBe("active");
+  });
+
+  test("assigns artifacts only by an exact declared owner", () => {
+    const rows = [{id: "issue-1", title: "One"}, {id: "issue-10", title: "Ten"}];
+    const model = reconcile(rows, [], [
+      {name: "one.txt", kind: "txt", path: "/tmp/issue-10/one.txt", ownerId: "issue-1"},
+      {name: "unknown.txt", kind: "txt", path: "/tmp/issue-1/unknown.txt"},
+    ]);
+    expect(model.standalone.find((issue) => issue.id === "issue-1")?.artifacts.map((item) => item.name)).toEqual(["one.txt"]);
+    expect(model.standalone.find((issue) => issue.id === "issue-10")?.artifacts).toHaveLength(0);
+  });
+
+  test("resolves dedicated, forked, scoped, and agentic tmux targets", () => {
+    const sessions = [
+      {target: "po-po_1-builder", available: true},
+      {target: "po-po_1-tester-a1b2c3", available: true},
+      {target: "po-shared:po_1-verifier", available: true},
+      {target: "po-po_1-agentic-reviewer", available: true},
+    ];
+    expect(resolveSessionTarget("po.1", "build", sessions)).toBe("po-po_1-builder");
+    expect(resolveSessionTarget("po.1", "run_tests", sessions)).toBe("po-po_1-tester-a1b2c3");
+    expect(resolveSessionTarget("po.1", "verification", sessions)).toBe("po-shared:po_1-verifier");
+    expect(resolveSessionTarget("po.1", "review", sessions, "software-dev-agentic")).toBe("po-po_1-agentic-reviewer");
   });
 });
 

@@ -1,5 +1,8 @@
 import {describe, expect, test} from "bun:test";
-import {ActionCoordinator, actions, executeAction, filterActions} from "../src/actions/registry.js";
+import {chmod, mkdtemp, readFile, writeFile} from "node:fs/promises";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {ActionCoordinator, actions, executeAction, filterActions, newAttemptObserved} from "../src/actions/registry.js";
 import {initialState, reducer, selectedObject, visibleObjects} from "../src/state/store.js";
 import {fixtureModel} from "./fixtures.js";
 
@@ -28,14 +31,27 @@ describe("navigation state", () => {
     let state = reducer(initialState(), {type: "liveScroll", delta: 5}); expect(state.followOutput).toBeFalse(); expect(state.liveScroll).toBe(5);
     state = reducer(state, {type: "follow", value: true}); expect(state.followOutput).toBeTrue(); expect(state.liveScroll).toBe(0);
   });
+  test("keeps selected live output separate from tmux inventory health", () => {
+    let state = reducer(initialState(), {type: "model", model: fixtureModel()});
+    state = reducer(state, {type: "liveOutput", output: "agent line", target: "po-po-child-builder"});
+    const nextModel = fixtureModel(); nextModel.snapshots.tmux = {...nextModel.snapshots.tmux, data: [{target: "po-other", available: true}]};
+    state = reducer(state, {type: "model", model: nextModel});
+    expect(state.liveOutput).toBe("agent line"); expect(state.liveTarget).toBe("po-po-child-builder");
+  });
 });
 
 describe("command discovery", () => {
   const issue = fixtureModel().epics[0]!.children[0]!;
   test("ranks aliases and contextual actions", () => { expect(filterActions("rer", issue)[0]?.id).toBe("retry"); expect(filterActions("Pause", issue).map((item) => item.id)).not.toContain("pause"); });
   test("smart-case is respected", () => { expect(filterActions("PREFECT", issue)).toHaveLength(0); expect(filterActions("prefect", issue)[0]?.id).toBe("prefect"); });
-  test("every approved operator action is registered", () => { expect(filterActions("", issue).map((item) => item.id)).toEqual(expect.arrayContaining(["dispatch", "retry", "resume", "cancel", "attach", "prefect", "artifact", "state", "comment", "refresh", "diagnostics", "scope"])); });
+  test("every approved operator action is registered", () => { expect(filterActions("", issue).map((item) => item.id)).toEqual(expect.arrayContaining(["dispatch", "retry", "resume", "cancel", "attach", "prefect", "logs", "artifact", "state", "comment", "refresh", "diagnostics", "scope"])); });
   test("dispatch declares the complete runtime tuple", () => { expect(actions.find((item) => item.id === "dispatch")?.arguments?.map((item) => item.key)).toEqual(["formula", "backend", "provider", "account", "accountClass", "model", "effort", "rig", "rigPath"]); });
+  test("scope command exposes every lifecycle group explicitly", () => { expect(actions.find((item) => item.id === "scope")?.arguments?.[0]?.choices).toEqual(["all", "active", "blocked", "failed", "completed", "archived"]); });
+  test("dispatch and retry require a genuinely new Prefect attempt", () => {
+    const attempts = fixtureModel().epics[0]!.children[0]!.attempts;
+    expect(newAttemptObserved(attempts, attempts[0]!.id)).toBeFalse();
+    expect(newAttemptObserved([{...attempts[0]!, id: "new-flow"}, ...attempts], attempts[0]!.id)).toBeTrue();
+  });
 });
 
 describe("mutation lifecycle", () => {
@@ -68,6 +84,10 @@ describe("mutation lifecycle", () => {
       expect(requests.map((item) => item.path)).toEqual(["/flow_runs/12345678-flow/set_state", "/flow_runs/12345678-flow/resume"]); expect(requests[0]!.body).toMatchObject({state: {type: "PAUSED"}, force: false});
     } finally { api.stop(true); }
   });
+  test("bulk pause preview names the exact target count and attempt ids", () => {
+    const pause = actions.find((item) => item.id === "pause")!; const epic = fixtureModel().epics[0]!;
+    expect(pause.preview(epic)).toBe("Pause 1 active Prefect attempt(s) in po-road: 12345678-flow");
+  });
   test("pause/resume reject unsupported states and API failures", async () => {
     const issue = fixtureModel().epics[0]!.children[0]!; const resume = actions.find((item) => item.id === "resume")!;
     expect((await executeAction(resume, issue, ".", {prefectApi: "http://invalid"})).message).toContain("expected PAUSED"); issue.attempts[0]!.state = "PAUSED";
@@ -77,5 +97,16 @@ describe("mutation lifecycle", () => {
     const issue = fixtureModel().epics[0]!.children[0]!; const attach = actions.find((item) => item.id === "attach")!; const artifact = actions.find((item) => item.id === "artifact")!;
     expect(await executeAction(attach, issue, ".", {sessionTarget: "fabricated"})).toMatchObject({state: "failed"}); expect(await executeAction(attach, issue, ".", {sessionTarget: issue.sessions[0]!.target})).toMatchObject({attachTarget: "po-po-child-builder"});
     expect(await executeAction(artifact, issue, ".", {artifactPath: "/not/discovered"})).toMatchObject({state: "failed"});
+  });
+  test("dispatch executes the exact supported PO command with provider context", async () => {
+    const bin = await mkdtemp(join(tmpdir(), "po-tui-actions-")); const record = join(bin, "record.json"); const script = join(bin, "po");
+    await writeFile(script, `#!/bin/sh\nprintf '{"provider":"%s","beadsBackend":"%s","args":"%s"}' "$PO_PROVIDER" "$PO_BEADS_BACKEND" "$*" > "$PO_TUI_RECORD"\n`); await chmod(script, 0o755);
+    const priorPath = process.env.PATH; const priorRecord = process.env.PO_TUI_RECORD; process.env.PATH = `${bin}:${priorPath}`; process.env.PO_TUI_RECORD = record;
+    try {
+      const dispatch = actions.find((item) => item.id === "dispatch")!; const issue = fixtureModel().epics[0]!.children[0]!;
+      const result = await executeAction(dispatch, issue, ".", {formula: "software-dev-agentic", backend: "codex-tmux", provider: "openai", account: "codex-personal", accountClass: "personal", model: "gpt-5.4", effort: "high", rig: "fixture", rigPath: "/tmp/rig", beadsBackend: "br"});
+      const invocation = JSON.parse(await readFile(record, "utf8")) as {provider: string; beadsBackend: string; args: string};
+      expect(result.state).toBe("pending"); expect(invocation.provider).toBe("openai"); expect(invocation.beadsBackend).toBe("br"); expect(invocation.args).toBe("run software-dev-agentic --backend codex-tmux --account codex-personal --account-class personal --model gpt-5.4 --effort high --issue-id po-child --rig fixture --rig-path /tmp/rig");
+    } finally { process.env.PATH = priorPath; if (priorRecord === undefined) delete process.env.PO_TUI_RECORD; else process.env.PO_TUI_RECORD = priorRecord; }
   });
 });

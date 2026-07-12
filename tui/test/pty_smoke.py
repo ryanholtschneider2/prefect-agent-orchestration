@@ -9,7 +9,6 @@ import select
 import signal
 import struct
 import subprocess
-import sys
 import termios
 import time
 from pathlib import Path
@@ -34,6 +33,14 @@ def drain(fd: int, seconds: float = 0.5) -> bytes:
     return bytes(output)
 
 
+def drain_until(fd: int, marker: bytes, seconds: float = 3.0) -> bytes:
+    output = bytearray()
+    deadline = time.monotonic() + seconds
+    while marker not in output and time.monotonic() < deadline:
+        output.extend(drain(fd, 0.1))
+    return bytes(output)
+
+
 def run_case(name: str, action: str, env_extra: dict[str, str] | None = None) -> None:
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
@@ -49,7 +56,7 @@ def run_case(name: str, action: str, env_extra: dict[str, str] | None = None) ->
         start_new_session=True,
     )
     os.close(slave)
-    output = drain(master, 0.4)
+    output = drain_until(master, ALT_ON)
     if action == "quit":
         os.write(master, b"q")
     elif action == "resize":
@@ -93,8 +100,19 @@ def main() -> None:
     run_case("suspend-resume", "suspend")
     run_case("uncaught-exception", "wait", {"PO_TUI_TEST_FAILURE": "throw"})
     run_case("unhandled-rejection", "wait", {"PO_TUI_TEST_FAILURE": "reject"})
-    run_case("attach-handoff", "wait", {"PO_TUI_TEST_ATTACH_TARGET": "po-fixture-builder"})
-    plain = subprocess.run([str(BINARY), "--plain", "--rig-path", str(BINARY.parents[2])], capture_output=True, check=True)
+    run_case(
+        "attach-handoff",
+        "wait",
+        {
+            "PO_TUI_TEST_ATTACH_TARGET": "po-fixture-builder",
+            "PO_TUI_ATTACH_DRY_RUN": "1",
+        },
+    )
+    plain = subprocess.run(
+        [str(BINARY), "--plain", "--rig-path", str(BINARY.parents[2])],
+        capture_output=True,
+        check=True,
+    )
     assert ALT_ON not in plain.stdout and b"PO operations" in plain.stdout
     print("PASS non-tty-plain")
 

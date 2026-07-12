@@ -41,11 +41,23 @@ export async function fetchBeads(rigPath: string, previous?: SourceSnapshot<RawB
   return unhealthy("beads", [], last, previous, {operation: "bd/br list --json", target: rigPath, stderr: redact(String(last))});
 }
 
+export async function fetchBead(rigPath: string, issueId: string): Promise<RawBead | undefined> {
+  const binaries = process.env.PO_BEADS_BACKEND === "br" ? ["br", "bd"] : ["bd", "br"];
+  let last: unknown = new Error("no Beads binary available");
+  for (const binary of binaries) {
+    try {
+      const output = await checked(binary, ["show", issueId, "--json"], {cwd: rigPath});
+      return arrayPayload<RawBead>(JSON.parse(output))[0];
+    } catch (error) { last = error; }
+  }
+  throw last;
+}
+
 interface RawFlow {id: string; state_type?: string; state_name?: string; start_time?: string; end_time?: string; tags?: string[]; parameters?: Record<string, unknown>}
 interface RawTask {id: string; name?: string; state_type?: string; state_name?: string; start_time?: string; end_time?: string; run_count?: number; flow_run_id?: string}
 const tagValue = (tags: string[] | undefined, prefix: string) => tags?.find((tag) => tag.startsWith(prefix))?.slice(prefix.length);
 
-export async function fetchPrefect(apiUrl: string, signal?: AbortSignal, previous?: SourceSnapshot<Attempt[]>): Promise<SourceSnapshot<Attempt[]>> {
+export async function fetchPrefect(apiUrl: string, signal?: AbortSignal, previous?: SourceSnapshot<Attempt[]>, detailIssueId?: string): Promise<SourceSnapshot<Attempt[]>> {
   try {
     const base = apiUrl.replace(/\/$/, "");
     const flows: RawFlow[] = [];
@@ -61,7 +73,8 @@ export async function fetchPrefect(apiUrl: string, signal?: AbortSignal, previou
       if (!issueId && !epicId) continue;
       let roles: RoleExecution[] = [];
       try {
-        if (flowIndex >= 50) throw new Error("task details deferred until attempt is visible");
+        const active = ["RUNNING", "PENDING", "SCHEDULED", "PAUSED"].includes((flow.state_type ?? flow.state_name ?? "").toUpperCase());
+        if (issueId !== detailIssueId && (!active || flowIndex >= 50)) throw new Error("task details deferred until attempt is active or selected");
         const taskResponse = await fetch(`${base}/task_runs/filter`, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({limit: 200, task_runs: {flow_run_id: {any_: [flow.id]}}}), signal});
         if (taskResponse.ok) roles = (await taskResponse.json() as RawTask[]).map((task) => ({id: task.id, role: task.name ?? "task", state: task.state_name ?? task.state_type ?? "unknown", iteration: task.run_count ?? 1, startedAt: task.start_time, endedAt: task.end_time}));
       } catch { /* a task page failure degrades this attempt, not the hierarchy */ }
@@ -85,28 +98,35 @@ export async function fetchTmux(target?: string, previous?: SourceSnapshot<{targ
 
 export async function fetchTmuxSessions(previous?: SourceSnapshot<TmuxSession[]>): Promise<SourceSnapshot<TmuxSession[]>> {
   try {
-    const output = await checked("tmux", ["list-sessions", "-F", "#{session_name}"], {timeoutMs: 3_000});
-    const sessions = output.split("\n").map((target) => target.trim()).filter((target) => target.startsWith("po-")).map((target) => ({target, available: true}));
-    return healthy("tmux", sessions, {operation: "tmux list-sessions", target: "local tmux server"});
+    const [sessionOutput, windowOutput] = await Promise.all([
+      checked("tmux", ["list-sessions", "-F", "#{session_name}"], {timeoutMs: 3_000}),
+      checked("tmux", ["list-windows", "-a", "-F", "#{session_name}:#{window_name}"], {timeoutMs: 3_000}),
+    ]);
+    const targets = new Set([
+      ...sessionOutput.split("\n").map((target) => target.trim()).filter((target) => target.startsWith("po-")),
+      ...windowOutput.split("\n").map((target) => target.trim()).filter((target) => target.startsWith("po-") && target.includes(":")),
+    ]);
+    return healthy("tmux", [...targets].map((target) => ({target, available: true})), {operation: "tmux list-sessions/list-windows", target: "local tmux server"});
   } catch (error) { return unhealthy("tmux", [], error, previous, {operation: "tmux list-sessions", target: "local tmux server", stderr: redact(String(error))}); }
 }
 
-async function walkArtifacts(root: string, depth = 0): Promise<Artifact[]> {
-  if (depth > 3) return [];
+async function walkArtifacts(root: string, ownerIds: ReadonlySet<string>, depth = 0, ownerId?: string): Promise<Artifact[]> {
+  if (depth > 6) return [];
   let entries; try { entries = await readdir(root, {withFileTypes: true}); } catch { return []; }
   const found: Artifact[] = [];
   for (const entry of entries.slice(0, 500)) {
     const path = join(root, entry.name);
-    if (entry.isDirectory()) found.push(...await walkArtifacts(path, depth + 1));
+    const entryOwner = ownerId ?? (ownerIds.has(entry.name) ? entry.name : undefined);
+    if (entry.isDirectory()) found.push(...await walkArtifacts(path, ownerIds, depth + 1, entryOwner));
     else if (/\.(json|md|txt|log|diff|svg|html)$/i.test(entry.name)) {
-      const info = await stat(path); found.push({name: entry.name, kind: entry.name.split(".").pop() ?? "file", path, createdAt: info.mtime.toISOString()});
+      const info = await stat(path); found.push({name: entry.name, kind: entry.name.split(".").pop() ?? "file", path, ownerId: entryOwner, createdAt: info.mtime.toISOString()});
     }
   }
   return found;
 }
 
-export async function fetchArtifacts(rigPath: string, previous?: SourceSnapshot<Artifact[]>): Promise<SourceSnapshot<Artifact[]>> {
-  try { return healthy("artifacts", await walkArtifacts(join(rigPath, ".planning")), {operation: "bounded artifact scan", target: join(rigPath, ".planning")}); }
+export async function fetchArtifacts(rigPath: string, previous?: SourceSnapshot<Artifact[]>, issueIds: ReadonlySet<string> = new Set()): Promise<SourceSnapshot<Artifact[]>> {
+  try { return healthy("artifacts", await walkArtifacts(join(rigPath, ".planning"), issueIds), {operation: "bounded artifact scan", target: join(rigPath, ".planning")}); }
   catch (error) { return unhealthy("artifacts", [], error, previous, {operation: "bounded artifact scan", target: join(rigPath, ".planning"), stderr: redact(String(error))}); }
 }
 

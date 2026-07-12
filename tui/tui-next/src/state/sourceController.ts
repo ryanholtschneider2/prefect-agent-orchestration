@@ -36,6 +36,7 @@ export class SourceController<T> {
     const timeout = setTimeout(() => this.abort?.abort(new Error("source refresh timed out")), this.options.timeoutMs ?? 10_000);
     try {
       const next = await this.options.load(this.abort.signal, this.snapshot);
+      if (this.stopped) return;
       const contentHash = hash(next.data); const unchanged = contentHash === this.snapshot?.contentHash && next.freshness === this.snapshot?.freshness && next.error === this.snapshot?.error;
       this.attempt = next.freshness === "fresh" ? 0 : this.attempt + 1;
       const delay = next.freshness === "fresh" ? this.options.intervalMs : Math.min(this.options.maxBackoffMs ?? 60_000, this.options.intervalMs * 2 ** Math.min(this.attempt, 6));
