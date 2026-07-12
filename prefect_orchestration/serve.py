@@ -22,6 +22,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -64,14 +65,13 @@ PG_UNIT_TEMPLATE = """\
 [Unit]
 Description=Postgres for Prefect (po backend)
 After=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
+Type=simple
 EnvironmentFile={creds_file}
 ExecStartPre=-/usr/bin/docker rm -f prefect-postgres
-ExecStart=/usr/bin/docker run -d --name prefect-postgres \\
-    --restart=no \\
+ExecStart=/usr/bin/docker run --rm --name prefect-postgres \\
     -e POSTGRES_USER \\
     -e POSTGRES_PASSWORD \\
     -e POSTGRES_DB \\
@@ -79,6 +79,8 @@ ExecStart=/usr/bin/docker run -d --name prefect-postgres \\
     -v %h/.local/share/prefect-postgres:/var/lib/postgresql/data \\
     postgres:16-alpine
 ExecStop=/usr/bin/docker stop prefect-postgres
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=default.target
@@ -89,6 +91,7 @@ SERVER_UNIT_TEMPLATE_LOCAL = """\
 Description=Prefect Server (UI + API on :4200)
 After=prefect-postgres.service network-online.target
 Requires=prefect-postgres.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -96,7 +99,7 @@ EnvironmentFile={creds_file}
 Environment=PREFECT_HOME=%h/.prefect
 ExecStartPre=/bin/sh -c 'until /usr/bin/docker exec prefect-postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; do sleep 1; done'
 ExecStart={prefect_bin} server start --host 127.0.0.1 --port 4200
-Restart=on-failure
+Restart=always
 RestartSec=5
 StandardOutput=append:%h/.prefect/server.log
 StandardError=append:%h/.prefect/server.log
@@ -109,13 +112,14 @@ SERVER_UNIT_TEMPLATE_EXTERNAL = """\
 [Unit]
 Description=Prefect Server (UI + API on :4200, external Postgres)
 After=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 EnvironmentFile={creds_file}
 Environment=PREFECT_HOME=%h/.prefect
 ExecStart={prefect_bin} server start --host 127.0.0.1 --port 4200
-Restart=on-failure
+Restart=always
 RestartSec=5
 StandardOutput=append:%h/.prefect/server.log
 StandardError=append:%h/.prefect/server.log
@@ -135,6 +139,7 @@ WORKER_UNIT_TEMPLATE = """\
 Description=Prefect Worker (pool {pool_name})
 After=prefect-server.service network-online.target
 Requires=prefect-server.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -143,7 +148,7 @@ Environment=PREFECT_HOME=%h/.prefect
 Environment=PREFECT_API_URL=http://127.0.0.1:4200/api
 ExecStartPre=/bin/sh -c 'until curl -sf http://127.0.0.1:4200/api/health >/dev/null 2>&1; do sleep 1; done'
 ExecStart={prefect_bin} worker start --pool {pool_name} --type process --name po-serve-worker
-Restart=on-failure
+Restart=always
 RestartSec=5
 StandardOutput=append:%h/.prefect/worker.log
 StandardError=append:%h/.prefect/worker.log
@@ -340,7 +345,12 @@ def install(
     unit means you never have to remember `prefect worker start` — scheduled
     runs always have a worker to claim them. Pass --no-worker to skip it.
     """
-    prefect_bin = _require("prefect")
+    # Keep the durable server and worker on the Prefect version bundled with
+    # PO. Resolving an unrelated global executable permits silent drift.
+    bundled_prefect = Path(sys.executable).with_name("prefect")
+    prefect_bin = (
+        str(bundled_prefect) if bundled_prefect.exists() else _require("prefect")
+    )
 
     per_field_flags = (pg_user, pg_password, pg_db, pg_host, pg_port)
     if external_pg and any(per_field_flags):

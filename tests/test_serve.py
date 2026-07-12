@@ -81,6 +81,13 @@ def test_install_no_flags_generates_random_password(serve_env: dict) -> None:
     assert expected_ref in server_unit
     # No more hardcoded prefect:prefect creds in the unit body.
     assert "POSTGRES_PASSWORD=prefect" not in pg_unit
+    # Supervise the foreground container. A detached oneshot can remain
+    # systemd-active for days after Postgres has stopped.
+    assert "Type=simple" in pg_unit
+    assert "docker run --rm --name prefect-postgres" in pg_unit
+    assert "Restart=always" in pg_unit
+    assert "RemainAfterExit" not in pg_unit
+    assert "--restart=no" not in pg_unit
 
 
 # ---- prefect-orchestration-2r6n: always-on worker unit ----------------------
@@ -98,10 +105,21 @@ def test_install_writes_worker_unit(serve_env: dict) -> None:
     assert "Requires=prefect-server.service" in body
     assert "/api/health" in body
     # Self-heals on crash, survives reboot via the default.target install.
-    assert "Restart=on-failure" in body
+    assert "Restart=always" in body
     assert "WantedBy=default.target" in body
     expected_ref = f"EnvironmentFile={serve_mod.CREDS_FILE}"
     assert expected_ref in body
+
+    server_start = next(
+        line for line in serve_mod.SERVER_UNIT.read_text().splitlines()
+        if line.startswith("ExecStart=")
+    )
+    worker_start = next(
+        line for line in body.splitlines() if line.startswith("ExecStart=")
+    )
+    assert server_start.split(" server start", 1)[0] == worker_start.split(
+        " worker start", 1
+    )[0]
 
 
 def test_install_worker_pool_override(serve_env: dict) -> None:
