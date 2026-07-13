@@ -172,8 +172,13 @@ async def ensure_manual_deployment(client: Any, formula: str) -> tuple[Any, str 
     from prefect_orchestration import deployments as _deployments
 
     deployment = await find_manual_deployment(client, formula)
-    if deployment is None:
-        # First fallback: auto-apply from pack-declared deployments.
+    needs_pool_repair = deployment is not None and not getattr(
+        deployment, "work_pool_name", None
+    )
+    if deployment is None or needs_pool_repair:
+        # First fallback: auto-apply from pack-declared deployments. These carry
+        # the pack's module entrypoint; applying them with the default pool is
+        # safe for a worker in another cwd and repairs old poolless deployments.
         loaded, _errors = _deployments.load_deployments()
         target_name = f"{formula}-manual"
         matches = [
@@ -184,9 +189,11 @@ async def ensure_manual_deployment(client: Any, formula: str) -> tuple[Any, str 
                 warnings.simplefilter("ignore", RuntimeWarning)
                 for item in matches:
                     await asyncio.to_thread(
-                        _deployments.apply_deployment, item.deployment
+                        _deployments.apply_deployment,
+                        item.deployment,
+                        DEFAULT_WORK_POOL,
                     )
-        deployment = await find_manual_deployment(client, formula)
+            deployment = await find_manual_deployment(client, formula)
 
     # Repair an existing-but-poolless deployment: a `<formula>-manual` created
     # by an older buggy auto-create path has work_pool_name=None, so it is
@@ -200,21 +207,23 @@ async def ensure_manual_deployment(client: Any, formula: str) -> tuple[Any, str 
         # Second fallback: auto-create (or repair) from the formula's flow object.
         flow_obj = _load_formula_flow(formula)
         if flow_obj is not None:
+            from prefect.types.entrypoint import EntrypointType
+
             target_name = f"{formula}-manual"
             pool_name = DEFAULT_WORK_POOL
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning)
                 runner_dep = await asyncio.to_thread(
                     lambda: flow_obj.to_deployment(
-                        name=target_name, work_pool_name=pool_name
+                        name=target_name,
+                        work_pool_name=pool_name,
+                        entrypoint_type=EntrypointType.MODULE_PATH,
                     )
                 )
-                # Without a work pool the deployment is NOT_READY and no worker
-                # ever claims its scheduled runs. And the local auto-create
-                # infers a dispatcher-relative file-path entrypoint that a
-                # worker in its own cwd can't resolve — rewrite to module form
-                # so it imports the installed formula from sys.path. (Mirrors
-                # the --env path in ensure_env_deployment below.)
+                # Without a work pool the deployment is NOT_READY. Force a
+                # module entrypoint and clear inferred local storage so a
+                # durable worker imports the installed formula from sys.path
+                # instead of trying to copy code from a dispatcher-local path.
                 fn = getattr(flow_obj, "fn", None)
                 mod = getattr(fn, "__module__", None)
                 fname = getattr(fn, "__name__", None)

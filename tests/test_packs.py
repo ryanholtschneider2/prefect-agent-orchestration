@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from prefect_orchestration import packs
+
+
+@pytest.fixture(autouse=True)
+def isolated_pack_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(packs.PACKS_MANIFEST_ENV, str(tmp_path / "packs.json"))
 
 
 # ---- source classification & spec disambiguation -----------------------------
@@ -215,6 +221,144 @@ def test_two_sequential_editable_installs_both_survive(
     assert "/abs/pack-a" in second
     assert "/abs/pack-b" in second
     assert second.count("--reinstall") == 1
+
+
+def test_safe_editable_core_reinstall_preserves_manifest_packs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    core = tmp_path / "prefect-orchestration"
+    core.mkdir()
+    (core / "pyproject.toml").write_text(
+        '[project]\nname = "prefect-orchestration"\n'
+    )
+    manifest = Path(os.environ[packs.PACKS_MANIFEST_ENV])
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "core": {"spec": packs.CORE_DISTRIBUTION, "editable": False},
+                "packs": [
+                    {"name": "po-a", "spec": "/src/a", "editable": True},
+                    {"name": "po-b", "spec": "po-b", "editable": False},
+                ],
+            }
+        )
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(packs, "discover_packs", lambda: [])
+    monkeypatch.setattr(
+        packs,
+        "_run_uv",
+        lambda args: calls.append(args)
+        or subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr=""),
+    )
+
+    packs.install(str(core), editable=True)
+
+    assert calls == [
+        [
+            "tool",
+            "install",
+            "--reinstall",
+            "--no-sources-package",
+            "prefect-orchestration",
+            "--editable",
+            str(core),
+            "--no-sources-package",
+            "po-a",
+            "--with-editable",
+            "/src/a",
+            "--with",
+            "po-b",
+        ]
+    ]
+    payload = json.loads(manifest.read_text())
+    assert payload["core"] == {"editable": True, "spec": str(core)}
+
+
+def test_restore_uses_external_manifest_after_environment_eviction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = Path(os.environ[packs.PACKS_MANIFEST_ENV])
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "core": {"spec": "/src/core", "editable": True},
+                "packs": [
+                    {"name": "po-a", "spec": "/src/a", "editable": True}
+                ],
+            }
+        )
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        packs,
+        "_run_uv",
+        lambda args: calls.append(args)
+        or subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr=""),
+    )
+
+    assert packs.restore() == ["po-a"]
+    assert calls == [
+        [
+            "tool",
+            "install",
+            "--reinstall",
+            "--no-sources-package",
+            "prefect-orchestration",
+            "--editable",
+            "/src/core",
+            "--no-sources-package",
+            "po-a",
+            "--with-editable",
+            "/src/a",
+        ]
+    ]
+
+
+def test_install_replaces_prior_editable_path_by_distribution_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    old = tmp_path / "old" / "pack"
+    new = tmp_path / "new" / "pack"
+    new.mkdir(parents=True)
+    (new / "pyproject.toml").write_text('[project]\nname = "po-soloco"\n')
+    manifest = Path(os.environ[packs.PACKS_MANIFEST_ENV])
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "core": {"spec": packs.CORE_DISTRIBUTION, "editable": False},
+                "packs": [
+                    {"name": "po-soloco", "spec": str(old), "editable": True}
+                ],
+            }
+        )
+    )
+    calls: list[list[str]] = []
+    old_pack = packs.PackInfo(
+        name="po-soloco",
+        version="0.1",
+        source="editable",
+        source_detail=str(old),
+    )
+    monkeypatch.setattr(packs, "discover_packs", lambda: [old_pack])
+    monkeypatch.setattr(
+        packs,
+        "_run_uv",
+        lambda args: calls.append(args)
+        or subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr=""),
+    )
+
+    packs.install(str(new), editable=True)
+
+    assert str(old) not in calls[0]
+    assert calls[0].count(str(new)) == 1
+    payload = json.loads(manifest.read_text())
+    assert payload["packs"] == [
+        {"editable": True, "name": "po-soloco", "spec": str(new)}
+    ]
 
 
 def test_install_dedups_reinstall_of_same_pack(

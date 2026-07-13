@@ -14,6 +14,7 @@ GETs, env reads, and `importlib.metadata` introspection.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -340,11 +341,11 @@ def check_uv_tool_fresh() -> CheckResult:
             name=name,
             status=Status.WARN,
             message="`po` binary not on PATH — skipped",
-            remediation="uv tool install --force --editable .",
+            remediation="po packs install --editable <canonical-core-path>",
         )
     try:
         proc = subprocess.run(
-            [po_bin, "list"],
+            [po_bin, "list", "--json"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -355,30 +356,31 @@ def check_uv_tool_fresh() -> CheckResult:
             name=name,
             status=Status.WARN,
             message="`po list` timed out",
-            remediation="uv tool install --force --editable .",
+            remediation="po packs install --editable <canonical-core-path>",
         )
     if proc.returncode != 0:
         return CheckResult(
             name=name,
             status=Status.WARN,
             message=f"`po list` exited {proc.returncode}",
-            remediation="uv tool install --force --editable .",
+            remediation="po packs install --editable <canonical-core-path>",
         )
-    # Parse the first whitespace token of each non-indented line-pair.
-    # `po list` output shape: "  <name>  <module>:<fn>" followed by a
-    # continuation doc line. We want the leftmost token of lines that
-    # start with whitespace + alphanum.
-    seen: set[str] = set()
-    for raw in proc.stdout.splitlines():
-        stripped = raw.strip()
-        if not stripped or ":" not in stripped:
-            continue
-        first = stripped.split()[0]
-        # Heuristic: names are identifiers or hyphenated slugs; module
-        # paths contain a dot before the colon. Discard the latter.
-        if "." in first.split(":", 1)[0]:
-            continue
-        seen.add(first)
+    try:
+        listed = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message="`po list --json` returned invalid JSON",
+            remediation="po packs restore",
+        )
+    seen = {
+        item["name"]
+        for item in listed
+        if isinstance(item, dict)
+        and item.get("kind") == "formula"
+        and isinstance(item.get("name"), str)
+    }
     if not seen:
         # Empty `po list` is the nonempty check's job, not this one.
         return CheckResult(
@@ -396,7 +398,7 @@ def check_uv_tool_fresh() -> CheckResult:
             name=name,
             status=Status.WARN,
             message="; ".join(parts),
-            remediation="uv tool install --force --editable . --with-editable <pack>",
+            remediation="po packs restore",
         )
     return CheckResult(
         name=name, status=Status.OK, message="entry points match `po list`"
@@ -1044,11 +1046,62 @@ def check_editable_installs_resolve() -> CheckResult:
         status=Status.FAIL if dangling else Status.WARN,
         message="; ".join(parts),
         remediation=(
-            "reinstall from canonical paths: uv tool install --force "
-            "--editable <core> --with-editable <pack> …  "
+            "reinstall from canonical paths with `po packs restore` "
             "(workers must never `uv tool install` from a worktree)"
         ),
     )
+
+
+def check_pack_manifest_consistent() -> CheckResult:
+    """Detect packs evicted from uv while durable PO intent still names them."""
+    from prefect_orchestration import packs as _packs
+
+    name = "pack manifest consistent"
+    path = _packs.packs_manifest_path()
+    discovered = {
+        _packs._norm_dist(pack.name)
+        for pack in _packs.discover_packs()
+        if _packs._norm_dist(pack.name) != _packs._norm_dist(_packs.CORE_DISTRIBUTION)
+    }
+    if not path.exists():
+        if discovered:
+            return CheckResult(
+                name=name,
+                status=Status.WARN,
+                message="pack manifest not initialized",
+                remediation=(
+                    "run `po packs install --editable <canonical-core-path>` "
+                    "once to record the current pack set"
+                ),
+            )
+        return CheckResult(name=name, status=Status.OK, message="no packs recorded")
+    try:
+        _, desired = _packs._load_manifest()
+    except _packs.PackError as exc:
+        return CheckResult(
+            name=name,
+            status=Status.FAIL,
+            message=str(exc),
+            remediation=f"repair or remove {path}, then reinstall packs through `po packs install`",
+        )
+    wanted = {_packs._norm_dist(req.name) for req in desired}
+    missing = sorted(wanted - discovered)
+    if missing:
+        return CheckResult(
+            name=name,
+            status=Status.FAIL,
+            message=f"desired pack(s) missing from tool environment: {', '.join(missing)}",
+            remediation="run `po packs restore`",
+        )
+    extra = sorted(discovered - wanted)
+    if extra:
+        return CheckResult(
+            name=name,
+            status=Status.WARN,
+            message=f"installed pack(s) not recorded: {', '.join(extra)}",
+            remediation="reinstall the pack(s) through `po packs install` to record them",
+        )
+    return CheckResult(name=name, status=Status.OK, message=f"{len(wanted)} pack(s) match")
 
 
 # -- aggregator ---------------------------------------------------------
@@ -1063,6 +1116,7 @@ ALL_CHECKS: list[Callable[[], CheckResult]] = [
     check_deployments_load,
     check_po_list_nonempty,
     check_uv_tool_fresh,
+    check_pack_manifest_consistent,
     check_editable_installs_resolve,
     check_beads_dolt_mode,
     check_logfire_token,

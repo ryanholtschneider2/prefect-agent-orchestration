@@ -14,9 +14,11 @@ every installed pack are visible to the same Python process.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import tomllib
 from dataclasses import dataclass, field
 from importlib.metadata import distributions
 from pathlib import Path
@@ -30,6 +32,7 @@ PACK_ENTRY_POINT_GROUPS: tuple[str, ...] = (
 )
 
 CORE_DISTRIBUTION = "prefect-orchestration"
+PACKS_MANIFEST_ENV = "PO_PACKS_MANIFEST"
 
 # `po` lives in the same uv tool env as its packs. These canonical argv
 # shapes are covered by unit tests so flag-drift in uv is caught fast.
@@ -51,6 +54,134 @@ class PackInfo:
     source: str  # "pypi" | "editable" | "git" | "local" | "unknown"
     source_detail: str = ""
     contributions: dict[str, list[str]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PackRequirement:
+    """A restorable package requirement kept outside uv's tool receipt."""
+
+    name: str
+    spec: str
+    editable: bool
+
+
+def packs_manifest_path() -> Path:
+    override = os.environ.get(PACKS_MANIFEST_ENV)
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".config" / "po" / "packs.json"
+
+
+def _requirement_for_pack(pack: PackInfo) -> PackRequirement:
+    editable = pack.source == "editable" and bool(pack.source_detail)
+    return PackRequirement(
+        name=pack.name,
+        spec=pack.source_detail if editable else pack.name,
+        editable=editable,
+    )
+
+
+def _load_manifest() -> tuple[PackRequirement, list[PackRequirement]]:
+    """Return the desired core and pack set; malformed state fails loudly."""
+    path = packs_manifest_path()
+    if not path.exists():
+        return PackRequirement(CORE_DISTRIBUTION, CORE_DISTRIBUTION, False), []
+    try:
+        payload = json.loads(path.read_text())
+        core_raw = payload.get("core") or {}
+        core = PackRequirement(
+            CORE_DISTRIBUTION,
+            str(core_raw.get("spec") or CORE_DISTRIBUTION),
+            bool(core_raw.get("editable", False)),
+        )
+        requirements = [
+            PackRequirement(
+                name=str(item["name"]),
+                spec=str(item["spec"]),
+                editable=bool(item.get("editable", False)),
+            )
+            for item in payload.get("packs", [])
+        ]
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise PackError(f"invalid PO pack manifest {path}: {exc}") from exc
+    return core, requirements
+
+
+def _write_manifest(
+    core: PackRequirement, requirements: list[PackRequirement]
+) -> None:
+    path = packs_manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "core": {"spec": core.spec, "editable": core.editable},
+        "packs": [
+            {"name": req.name, "spec": req.spec, "editable": req.editable}
+            for req in sorted(requirements, key=lambda item: _norm_dist(item.name))
+        ],
+    }
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
+
+
+def _merge_discovered(
+    requirements: list[PackRequirement], discovered: list[PackInfo]
+) -> list[PackRequirement]:
+    """Bootstrap/update durable intent from packs visible before a rebuild."""
+    merged = {_norm_dist(req.name): req for req in requirements}
+    for pack in discovered:
+        if _norm_dist(pack.name) != _norm_dist(CORE_DISTRIBUTION):
+            merged[_norm_dist(pack.name)] = _requirement_for_pack(pack)
+    return list(merged.values())
+
+
+def _requirements_argv(requirements: list[PackRequirement]) -> list[str]:
+    argv: list[str] = []
+    for req in requirements:
+        if req.editable:
+            # The target pack may carry a stale/different local source for this
+            # dependency. Our durable manifest is authoritative and the
+            # explicit editable requirement below supplies the chosen path.
+            argv += ["--no-sources-package", req.name, "--with-editable", req.spec]
+        else:
+            argv += ["--with", req.spec]
+    return argv
+
+
+def _core_install_argv(core: PackRequirement) -> list[str]:
+    argv = ["tool", "install", "--reinstall"]
+    if core.editable:
+        # A sibling editable pack may pin core through its own tool.uv.sources
+        # table. The explicitly selected core checkout is authoritative here;
+        # otherwise uv rejects the two local URLs as conflicting.
+        return [
+            *argv,
+            "--no-sources-package",
+            CORE_DISTRIBUTION,
+            "--editable",
+            core.spec,
+        ]
+    return [*argv, core.spec]
+
+
+def _is_core_path(spec: str) -> bool:
+    """Identify an editable checkout of this distribution without importing it."""
+    name = _distribution_name_for_spec(spec)
+    return bool(name and _norm_dist(name) == _norm_dist(CORE_DISTRIBUTION))
+
+
+def _distribution_name_for_spec(spec: str) -> str | None:
+    """Read local project identity so a new editable path replaces the old one."""
+    path = Path(spec)
+    if not path.is_dir():
+        return spec if classify_spec(spec) == "pypi" else None
+    try:
+        payload = tomllib.loads((path / "pyproject.toml").read_text())
+        name = payload.get("project", {}).get("name")
+    except (OSError, tomllib.TOMLDecodeError, AttributeError):
+        return None
+    return str(name) if name else None
 
 
 def find_uv() -> str:
@@ -173,19 +304,75 @@ def install(spec: str, *, editable: bool = False) -> None:
         kind = classify_spec(spec)
         if kind == "path":
             eff_editable = True
-    existing = [
-        p
-        for p in discover_packs()
-        if p.name != CORE_DISTRIBUTION
-        and not _same_pack(p, spec, editable=eff_editable)
-    ]
+    discovered = discover_packs()
+    manifest_core, manifest_packs = _load_manifest()
+    manifest_packs = _merge_discovered(manifest_packs, discovered)
+    target_name = _distribution_name_for_spec(spec)
+    if _is_core_path(spec):
+        core = PackRequirement(CORE_DISTRIBUTION, spec, eff_editable)
+        argv = _core_install_argv(core)
+        argv += _requirements_argv(manifest_packs)
+        # Persist intent before uv mutates the environment. If uv is interrupted,
+        # `po packs restore` still knows what the complete environment should be.
+        _write_manifest(core, manifest_packs)
+    else:
+        core = manifest_core
+        existing = [
+            p
+            for p in discovered
+            if p.name != CORE_DISTRIBUTION
+            and not (
+                target_name and _norm_dist(p.name) == _norm_dist(target_name)
+            )
+            and not _same_pack(p, spec, editable=eff_editable)
+        ]
+        # Prefer durable requirements because a prior raw uv reinstall may have
+        # already evicted packages from discoverable entry-point metadata.
+        preserved = {
+            _norm_dist(req.name): req
+            for req in manifest_packs
+            if not (
+                target_name and _norm_dist(req.name) == _norm_dist(target_name)
+            )
+            and not _same_pack(
+                PackInfo(req.name, "", "editable" if req.editable else "pypi", req.spec),
+                spec,
+                editable=eff_editable,
+            )
+        }
+        for pack in existing:
+            preserved[_norm_dist(pack.name)] = _requirement_for_pack(pack)
+        argv = _core_install_argv(core)
+        argv += _requirements_argv(list(preserved.values()))
+        argv += ["--with-editable" if eff_editable else "--with", spec]
     try:
-        _run_uv(_install_argv(spec, editable=eff_editable, existing=existing))
+        _run_uv(argv)
     except subprocess.CalledProcessError as exc:
         raise PackError(
             f"po install {spec!r} failed (uv exited {exc.returncode}):\n"
             f"{(exc.stderr or '').rstrip()}"
         ) from exc
+    installed = discover_packs()
+    final_packs = _merge_discovered(manifest_packs, installed)
+    if not _is_core_path(spec):
+        matched = next(
+            (pack for pack in installed if _same_pack(pack, spec, editable=eff_editable)),
+            None,
+        )
+        if matched is not None:
+            final_packs = _merge_discovered(final_packs, [matched])
+        elif not any(req.spec == spec for req in final_packs):
+            final_packs = [
+                req
+                for req in final_packs
+                if not (
+                    target_name and _norm_dist(req.name) == _norm_dist(target_name)
+                )
+            ]
+            final_packs.append(
+                PackRequirement(target_name or spec, spec, eff_editable)
+            )
+    _write_manifest(core, final_packs)
     _check_command_collisions()
 
 
@@ -236,14 +423,24 @@ def uninstall(name: str) -> None:
         # `uv tool install --reinstall <core>` with no --with drops the
         # named pack from the env. But uv has no per-extra removal, so
         # we re-install core with every OTHER pack except this one.
+        current = discover_packs()
         remaining = [
             p
-            for p in discover_packs()
+            for p in current
             if p.name != name and p.name != CORE_DISTRIBUTION
         ]
-        argv: list[str] = ["tool", "install", "--reinstall", CORE_DISTRIBUTION]
-        for pack in remaining:
-            argv += _pack_with_args(pack)
+        core, manifest_packs = _load_manifest()
+        removed_norms = {_norm_dist(name)}
+        removed_norms.update(
+            _norm_dist(pack.name) for pack in current if _norm_dist(pack.name) == _norm_dist(name)
+        )
+        desired = [
+            req for req in _merge_discovered(manifest_packs, remaining)
+            if _norm_dist(req.name) not in removed_norms
+        ]
+        argv = _core_install_argv(core)
+        argv += _requirements_argv(desired)
+        _write_manifest(core, desired)
         _run_uv(argv)
     except subprocess.CalledProcessError as exc:
         raise PackError(
@@ -293,6 +490,21 @@ def update(name: str | None = None) -> list[str]:
             f"{(exc.stderr or '').rstrip()}"
         ) from exc
     return [p.name for p in targets]
+
+
+def restore() -> list[str]:
+    """Rebuild the complete PO tool environment from durable desired state."""
+    core, requirements = _load_manifest()
+    argv = _core_install_argv(core)
+    argv += _requirements_argv(requirements)
+    try:
+        _run_uv(argv)
+    except subprocess.CalledProcessError as exc:
+        raise PackError(
+            f"po packs restore failed (uv exited {exc.returncode}):\n"
+            f"{(exc.stderr or '').rstrip()}"
+        ) from exc
+    return [req.name for req in requirements]
 
 
 def _source_for_dist(dist: object) -> tuple[str, str]:

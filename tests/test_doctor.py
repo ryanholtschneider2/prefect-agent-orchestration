@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from prefect_orchestration import doctor as doctor_mod
 from prefect_orchestration import deployments as deployments_mod
+from prefect_orchestration import packs as packs_mod
 from prefect_orchestration.cli import app
 from prefect_orchestration.doctor import (
     CheckResult,
@@ -272,7 +273,11 @@ def test_uv_tool_fresh_matches(monkeypatch):
         "run",
         lambda *a, **k: FakeProc(
             returncode=0,
-            stdout="  foo  po_formulas.x:foo\n  bar  po_formulas.x:bar\n",
+            stdout=(
+                '[{"kind":"command","name":"new"},'
+                '{"kind":"formula","name":"foo"},'
+                '{"kind":"formula","name":"bar"}]'
+            ),
         ),
     )
     r = doctor_mod.check_uv_tool_fresh()
@@ -287,11 +292,14 @@ def test_uv_tool_fresh_divergence(monkeypatch):
     monkeypatch.setattr(
         doctor_mod.subprocess,
         "run",
-        lambda *a, **k: FakeProc(returncode=0, stdout="  extra  po_formulas.x:extra\n"),
+        lambda *a, **k: FakeProc(
+            returncode=0,
+            stdout='[{"kind":"formula","name":"extra"}]',
+        ),
     )
     r = doctor_mod.check_uv_tool_fresh()
     assert r.status is Status.WARN
-    assert "uv tool install" in r.remediation
+    assert r.remediation == "po packs restore"
 
 
 # -- editable installs (footgun detector, prefect-orchestration-1crg) --
@@ -327,7 +335,7 @@ def test_editable_install_dangling_fails(monkeypatch, tmp_path):
     r = doctor_mod.check_editable_installs_resolve()
     assert r.status is Status.FAIL
     assert "dangling" in r.message
-    assert "uv tool install" in r.remediation
+    assert "po packs restore" in r.remediation
 
 
 # -- logfire ------------------------------------------------------------
@@ -343,6 +351,23 @@ def test_logfire_unset(monkeypatch):
     r = doctor_mod.check_logfire_token()
     assert r.status is Status.WARN
     assert r.remediation
+
+
+def test_pack_manifest_detects_evicted_pack(tmp_path, monkeypatch):
+    manifest = tmp_path / "packs.json"
+    manifest.write_text(
+        '{"version": 1, "core": {"spec": "prefect-orchestration", '
+        '"editable": false}, "packs": [{"name": "po-soloco", '
+        '"spec": "/src/po-soloco", "editable": true}]}'
+    )
+    monkeypatch.setenv(packs_mod.PACKS_MANIFEST_ENV, str(manifest))
+    monkeypatch.setattr(packs_mod, "discover_packs", lambda: [])
+
+    result = doctor_mod.check_pack_manifest_consistent()
+
+    assert result.status is Status.FAIL
+    assert "po-soloco" in result.message
+    assert result.remediation == "run `po packs restore`"
 
 
 # -- check_pack_overlays -----------------------------------------------

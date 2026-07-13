@@ -47,7 +47,7 @@ def po_skill_evals_fresh() -> DoctorCheck:
             name=name,
             status="red",
             message=f"cannot resolve {_PACK}/{_SKILL}: {exc}",
-            hint=f"reinstall: `uv tool install --force --editable .` (in {_PACK})",
+            hint=f"reinstall through PO: `po packs install --editable .` (in {_PACK})",
         )
 
     report_path = skill_dir / "reports" / "latest.json"

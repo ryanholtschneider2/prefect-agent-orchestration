@@ -868,12 +868,13 @@ dropped every software-dev formula until a full reinstall.) You can run
 `po packs install --editable A` then `po packs install --editable B` and
 keep both; `po packs uninstall A` keeps B.
 
-**Warning — `uv pip install -e <core>` evicts other editable packs.** Running
-`uv pip install -e .` directly (instead of `po packs install --editable`)
-will uninstall any other editable installs in the venv (e.g.
-`po-formulas-software-dev`), causing `ModuleNotFoundError` on unrelated tests.
-Always use `po packs install --editable <path>` for multi-pack dev setups, or
-reinstall all editable packs after any direct `uv pip install -e` invocation.
+**Never rebuild PO with raw uv.** Both `uv tool install --force --editable
+<core>` and `uv pip install -e <core>` can recreate the shared tool environment
+without its formula packs. Use `po packs install --editable <core>` instead.
+PO records the complete desired environment outside uv's disposable receipt at
+`~/.config/po/packs.json`, carries every pack through core reinstalls, and writes
+that intent before mutating the environment. If raw uv has already evicted a
+pack, run `po packs restore`; `po doctor` reports manifest drift.
 
 **After editing `pyproject.toml`**: verify that `[project.optional-dependencies]`
 extras and `[project.entry-points]` stanzas are still intact — linter/editor
