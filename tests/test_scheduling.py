@@ -505,7 +505,10 @@ async def test_ensure_manual_deployment_auto_creates_from_flow_object(
     class _FakeFlowObj:
         # No `.fn` attribute → the module-form entrypoint rewrite is skipped.
         def to_deployment(
-            self, name: str, work_pool_name: str | None = None
+            self,
+            name: str,
+            work_pool_name: str | None = None,
+            **_kwargs: object,
         ) -> _FakeApplyableDeployment:
             applied_dep.name = name
             applied_dep.work_pool_name = work_pool_name
@@ -558,7 +561,10 @@ async def test_ensure_manual_deployment_repairs_poolless_existing(
 
     class _FakeFlowObj:
         def to_deployment(
-            self, name: str, work_pool_name: str | None = None
+            self,
+            name: str,
+            work_pool_name: str | None = None,
+            **_kwargs: object,
         ) -> _FakeApplyableDeployment:
             repaired.work_pool_name = work_pool_name
             return repaired

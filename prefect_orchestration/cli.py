@@ -2254,6 +2254,20 @@ def packs_uninstall(
     typer.echo(f"uninstalled {name}")
 
 
+@packs_app.command("restore")
+def packs_restore() -> None:
+    """Rebuild core and all desired packs from PO's durable manifest."""
+    try:
+        restored = _packs.restore()
+    except _packs.PackError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(2) from exc
+    if restored:
+        typer.echo(f"restored: {', '.join(restored)}")
+    else:
+        typer.echo("restored core; no formula packs are recorded.")
+
+
 @packs_app.command("list")
 def packs_list() -> None:
     """List installed packs and what each contributes (formulas, deployments, ...)."""

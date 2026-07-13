@@ -382,6 +382,123 @@ def test_agent_step_skips_when_bead_already_closed(
 # ─── convergence ladder: nudge ──────────────────────────────────────
 
 
+def test_required_empty_artifact_is_valid_without_nudge(
+    tmp_path: Path, fake_bd: dict, fake_session: _FakeSession
+) -> None:
+    """Existence is transport; an empty receipt explicitly means no lessons."""
+    _write_prompt(tmp_path / "agents", "critic")
+    fake_bd["bead-receipt"] = {
+        "id": "bead-receipt",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+    receipt = tmp_path / "run" / "learning-receipt.md"
+    prompts: list[str] = []
+
+    def closing_prompt(text: str, **_kw: Any) -> str:
+        prompts.append(text)
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.touch()
+        fake_bd["bead-receipt"]["status"] = "closed"
+        fake_bd["bead-receipt"]["closure_reason"] = "pass: complete"
+        return "reviewed"
+
+    fake_session.prompt = closing_prompt  # type: ignore[assignment]
+    result = agent_step(
+        agent_dir=tmp_path / "agents" / "critic",
+        task="review",
+        seed_id="bead-receipt",
+        rig_path=str(tmp_path),
+        run_dir=receipt.parent,
+        verdict_keywords=("pass", "fail"),
+        required_artifacts=("learning-receipt.md",),
+    )
+
+    assert result.verdict == "pass"
+    assert result.closed_by == "agent"
+    assert len(prompts) == 1
+
+
+def test_missing_required_artifact_gets_same_session_nudge(
+    tmp_path: Path, fake_bd: dict, fake_session: _FakeSession
+) -> None:
+    _write_prompt(tmp_path / "agents", "critic")
+    fake_bd["bead-receipt"] = {
+        "id": "bead-receipt",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+    receipt = tmp_path / "run" / "learning-receipt.md"
+    calls = {"n": 0}
+    prompts: list[str] = []
+
+    def closing_then_receipt(text: str, **_kw: Any) -> str:
+        prompts.append(text)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            fake_bd["bead-receipt"]["status"] = "closed"
+            fake_bd["bead-receipt"]["closure_reason"] = "pass: complete"
+        else:
+            receipt.write_text("Reusable lesson\n")
+        return "reviewed"
+
+    fake_session.prompt = closing_then_receipt  # type: ignore[assignment]
+    result = agent_step(
+        agent_dir=tmp_path / "agents" / "critic",
+        task="review",
+        seed_id="bead-receipt",
+        rig_path=str(tmp_path),
+        run_dir=receipt.parent,
+        verdict_keywords=("pass", "fail"),
+        required_artifacts=("learning-receipt.md",),
+        artifact_nudge="Complete the learning receipt.",
+    )
+
+    assert result.verdict == "pass"
+    assert result.closed_by == "artifact-nudge"
+    assert prompts[-1] == "Complete the learning receipt."
+
+
+def test_missing_required_artifact_after_nudge_fails_step(
+    tmp_path: Path, fake_bd: dict, fake_session: _FakeSession
+) -> None:
+    _write_prompt(tmp_path / "agents", "critic")
+    fake_bd["bead-receipt"] = {
+        "id": "bead-receipt",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+
+    def closing_prompt(text: str, **_kw: Any) -> str:
+        fake_bd["bead-receipt"]["status"] = "closed"
+        fake_bd["bead-receipt"]["closure_reason"] = "pass: complete"
+        return "reviewed"
+
+    fake_session.prompt = closing_prompt  # type: ignore[assignment]
+    result = agent_step(
+        agent_dir=tmp_path / "agents" / "critic",
+        task="review",
+        seed_id="bead-receipt",
+        rig_path=str(tmp_path),
+        run_dir=tmp_path / "run",
+        verdict_keywords=("pass", "fail"),
+        required_artifacts=("learning-receipt.md",),
+    )
+
+    assert result.verdict == "failed"
+    assert result.closed_by == "artifact-nudge-failed"
+    assert "learning-receipt.md" in result.summary
+
+
 def test_agent_step_nudges_when_agent_forgot_to_close(
     tmp_path: Path, fake_bd: dict, fake_session: _FakeSession
 ) -> None:

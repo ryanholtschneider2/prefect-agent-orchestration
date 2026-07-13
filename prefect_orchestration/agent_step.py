@@ -187,7 +187,7 @@ class AgentStepResult:
     summary: str = ""
     reply: str = ""
     from_cache: bool = False
-    closed_by: str = ""  # "agent" | "nudge" | "force" | "cache"
+    closed_by: str = ""  # agent | nudge | force | cache | artifact-nudge[-failed]
 
     def __getitem__(self, key: str) -> Any:
         # dict-like access for ergonomic check `if result["verdict"] == "approved"`
@@ -208,6 +208,8 @@ def agent_step(
     iter_n: int | None = None,
     step: str | None = None,
     verdict_keywords: tuple[str, ...] = (),
+    required_artifacts: tuple[Path | str, ...] = (),
+    artifact_nudge: str | None = None,
     session_role: str | None = None,
     backend: Any = None,
     dry_run: bool = False,
@@ -250,6 +252,14 @@ def agent_step(
         as a token), `verdict` is set to that keyword. When empty, no
         verdict parsing is done — caller gets `reply` and the raw
         close-reason via `bead_id` lookup.
+    required_artifacts
+        Files the role must create before a closed bead is accepted. Relative
+        paths resolve below `run_dir`. File contents remain model judgment;
+        transport checks only that each path is a regular file, so an empty
+        receipt is an explicit and valid no-op.
+    artifact_nudge
+        Optional one-shot follow-up sent through the same role session when a
+        required artifact is absent. The default names every missing path.
     session_role
         Override the role key used by `RoleSessionStore`. Default:
         the basename of `agent_dir` (i.e. `agents/builder` → "builder").
@@ -356,6 +366,10 @@ def agent_step(
         "verdict_keywords": verdict_keywords,
         **ctx,
     }
+    artifact_paths = tuple(
+        path if (path := Path(value)).is_absolute() else run_dir_p / path
+        for value in required_artifacts
+    )
     if task is not None:
         rendered_task = _render_task(task, full_ctx)
         _stamp_description(target_bead, rendered_task, rig_path)
@@ -416,16 +430,55 @@ def agent_step(
         # the same Claude conversation.
         _persist_session(sess, role)
 
-    # Convergence ladder: agent close → nudge → force-close.
-    state = _read_bead_status(target_bead, rig_path)
-    if state and state["status"] == "closed":
+    def result_for_closed_state(
+        state: dict[str, Any], *, closed_by: str
+    ) -> AgentStepResult:
+        """Enforce declared file postconditions before accepting a close."""
+        missing = [path for path in artifact_paths if not path.is_file()]
+        if missing:
+            missing_text = ", ".join(str(path) for path in missing)
+            prompt = artifact_nudge or (
+                "Complete the required artifact receipt(s) now: "
+                f"{missing_text}. Create an empty file when there is no content "
+                "to record. Do not change the already-recorded verdict."
+            )
+            try:
+                _prompt_with_oauth_failover(
+                    sess,
+                    prompt,
+                    role=role,
+                    seed_id=seed_id,
+                    build_session=build_session,
+                )
+            except Exception:
+                pass
+            finally:
+                _persist_session(sess, role)
+            missing = [path for path in artifact_paths if not path.is_file()]
+            if missing:
+                return AgentStepResult(
+                    bead_id=target_bead,
+                    verdict="failed",
+                    summary=(
+                        "required artifact missing after completion nudge: "
+                        + ", ".join(str(path) for path in missing)
+                    ),
+                    reply=reply,
+                    closed_by="artifact-nudge-failed",
+                )
+            closed_by = "artifact-nudge"
         return _result_from_closed_bead(
             target_bead,
             state,
             verdict_keywords,
-            closed_by="agent",
+            closed_by=closed_by,
             reply=reply,
         )
+
+    # Convergence ladder: agent close → required artifacts → nudge → force-close.
+    state = _read_bead_status(target_bead, rig_path)
+    if state and state["status"] == "closed":
+        return result_for_closed_state(state, closed_by="agent")
 
     # Nudge: ONE more turn via the same --resume session.
     nudge_text = _build_nudge_prompt(target_bead, verdict_keywords)
@@ -445,13 +498,7 @@ def agent_step(
 
     state = _read_bead_status(target_bead, rig_path)
     if state and state["status"] == "closed":
-        return _result_from_closed_bead(
-            target_bead,
-            state,
-            verdict_keywords,
-            closed_by="nudge",
-            reply=reply,
-        )
+        return result_for_closed_state(state, closed_by="nudge")
 
     # Defensive force-close so the caller's loop converges.
     close_issue(
