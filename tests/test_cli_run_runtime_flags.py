@@ -23,6 +23,8 @@ def _scrub_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "PO_BACKEND",
         "PO_ACCOUNT",
         "PO_ACCOUNT_CLASS",
+        "PO_CAPACITY_RETRIES",
+        "PO_RUNTIME_FALLBACKS",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -234,6 +236,11 @@ def test_scheduled_run_stamps_runtime_env(
         "prefect.client.orchestration.get_client", lambda: _FakeClientCtx()
     )
     monkeypatch.setattr(cli_mod._scheduling, "submit_scheduled_run", _fake_submit)
+    monkeypatch.setenv("PO_CAPACITY_RETRIES", "1")
+    monkeypatch.setenv(
+        "PO_RUNTIME_FALLBACKS",
+        '[{"backend":"cursor-cli","model":"composer-2.5"}]',
+    )
 
     runner = CliRunner()
     result = runner.invoke(
@@ -273,6 +280,10 @@ def test_scheduled_run_stamps_runtime_env(
             "PO_MODEL_CLI": "gpt-5.5",
             "PO_EFFORT_CLI": "high",
             "PO_START_COMMAND_CLI": "codex --foo",
+            "PO_CAPACITY_RETRIES": "1",
+            "PO_RUNTIME_FALLBACKS": (
+                '[{"backend":"cursor-cli","model":"composer-2.5"}]'
+            ),
         }
     }
 

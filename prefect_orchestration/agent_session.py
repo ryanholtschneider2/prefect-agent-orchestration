@@ -2594,6 +2594,8 @@ class AgentSession:
             effort=self.effort,
             secret_provider=self.secret_provider,
             issue_id=self.issue_id,
+            runtime_fallbacks=self.runtime_fallbacks,
+            capacity_retries=self.capacity_retries,
         )
         # Mark the next .prompt() call as a fork via a sentinel prompt
         # — callers should use `child.prompt(text, fork=True)` explicitly

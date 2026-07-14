@@ -724,6 +724,8 @@ _SCHEDULED_RUNTIME_ENV_KEYS: tuple[str, ...] = (
     "PO_MODEL",
     "PO_EFFORT",
     "PO_START_COMMAND",
+    "PO_CAPACITY_RETRIES",
+    "PO_RUNTIME_FALLBACKS",
 )
 
 
