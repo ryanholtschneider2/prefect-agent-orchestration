@@ -1662,7 +1662,7 @@ def wait(
         help="Suppress per-poll status lines; only print the final summary.",
     ),
 ) -> None:
-    """Block until one or more bd issues reach `closed` state.
+    """Block until bd issues close or their Prefect flows fail.
 
     Polls `bd show <id>` every `--poll` seconds. Exits when:
 
@@ -1678,13 +1678,15 @@ def wait(
       0   all (or any, with --any) closed; close-reasons look like success
       1   at least one closed with a failure-coded reason
           (`failed:`, `cap-exhausted`, `nudge failed`, `force-closed`,
-          `regression:`, `rejected:`)
+          `regression:`, `rejected:`), or a tracked Prefect flow reached
+          Failed, Crashed, or Cancelled before its bead closed
       2   timeout reached before terminal state
       3   bd not available / no such issue
     """
     import time as _time
 
     from prefect_orchestration.beads_meta import _bd_available, _bd_show
+    from prefect_orchestration import wait as _wait
     from prefect_orchestration.run_lookup import lookup_prefect_run
 
     if not _bd_available():
@@ -1767,6 +1769,34 @@ def wait(
             break
         if not any_ and len(seen_closed) == len(issue_ids):
             break
+
+        # Beads closure remains authoritative for success.  Only unresolved
+        # issues are checked for a terminal Prefect transport failure.  This
+        # ordering preserves --any: the first observed close still wins.
+        for issue_id in issue_ids:
+            if issue_id in seen_closed:
+                continue
+            bead_id, rig_path = _resolve(issue_id)
+            terminal = _wait.latest_terminal_flow(bead_id)
+            if terminal is None:
+                continue
+            row = _show(issue_id)
+            if row is None or row.get("status") == "closed":
+                continue
+            cleared = _wait.reconcile_failed_claim(
+                bead_id,
+                row,
+                terminal,
+                rig_path=rig_path,
+            )
+            typer.echo(
+                f"Prefect flow {terminal.flow_run_id} reached {terminal.state}: "
+                f"{terminal.message}; bead {bead_id} remains "
+                f"{row.get('status', 'open')}; PO claim "
+                f"{'cleared' if cleared else 'preserved'}.",
+                err=True,
+            )
+            raise typer.Exit(1)
         if _time.monotonic() >= deadline:
             still_open = [i for i in issue_ids if i not in seen_closed]
             typer.echo(
