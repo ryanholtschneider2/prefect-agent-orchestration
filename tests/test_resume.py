@@ -293,6 +293,10 @@ def test_schedule_resume_inherits_persisted_runtime(
                     "PO_BACKEND": "codex",
                     "PO_ACCOUNT": "personal",
                     "PO_MODEL_CLI": "gpt-5.4",
+                    "PO_CAPACITY_RETRIES": "1",
+                    "PO_RUNTIME_FALLBACKS": (
+                        '[{"backend":"cursor-cli","model":"composer-2.5"}]'
+                    ),
                 }
             }
         )
@@ -323,6 +327,8 @@ def test_schedule_resume_inherits_persisted_runtime(
         "PO_MODEL_CLI",
         "PO_EFFORT_CLI",
         "PO_START_COMMAND_CLI",
+        "PO_CAPACITY_RETRIES",
+        "PO_RUNTIME_FALLBACKS",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -337,6 +343,10 @@ def test_schedule_resume_inherits_persisted_runtime(
             "PO_ACCOUNT": "personal",
             "PO_BACKEND": "codex",
             "PO_MODEL_CLI": "gpt-5.4",
+            "PO_CAPACITY_RETRIES": "1",
+            "PO_RUNTIME_FALLBACKS": (
+                '[{"backend":"cursor-cli","model":"composer-2.5"}]'
+            ),
             "PO_RESUME": "1",
         }
     }

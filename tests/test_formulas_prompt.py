@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 import prefect_orchestration.formulas as formulas_mod
+import prefect_orchestration.prompt_formula as prompt_formula_mod
 from prefect_orchestration import beads_meta
 from prefect_orchestration.formulas import agent_step_flow, discover_agent_dir
 from prefect_orchestration.prompt_formula import _pick_backend_factory
@@ -96,3 +98,48 @@ def test_prompt_formula_supports_cursor_backend(
     from prefect_orchestration.agent_session import CursorCliBackend
 
     assert _pick_backend_factory(dry_run=False) is CursorCliBackend
+
+
+def test_prompt_formula_materializes_capacity_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+    fallback = object()
+
+    class _Session:
+        session_id = None
+
+        def __init__(self, **kwargs: Any):
+            captured.update(kwargs)
+
+        def prompt(self, _text: str) -> str:
+            return "ok"
+
+    monkeypatch.setattr(prompt_formula_mod, "AgentSession", _Session)
+    monkeypatch.setattr(
+        prompt_formula_mod,
+        "get_run_logger",
+        lambda: SimpleNamespace(info=lambda *a: None, warning=lambda *a: None),
+    )
+    monkeypatch.setattr(
+        prompt_formula_mod, "_pick_backend_factory", lambda _dry: object
+    )
+    monkeypatch.setattr(prompt_formula_mod, "_make_backend", lambda *a, **k: object())
+    monkeypatch.setattr(
+        prompt_formula_mod,
+        "materialize_capacity_policy",
+        lambda **kwargs: captured.update({"capacity_call": kwargs}) or (2, (fallback,)),
+    )
+    monkeypatch.setattr(
+        prompt_formula_mod, "create_markdown_artifact", lambda **k: None
+    )
+
+    prompt_formula_mod.prompt_run.fn(
+        prompt="do it",
+        rig_path=str(tmp_path),
+        create_bead=False,
+    )
+
+    assert captured["capacity_retries"] == 2
+    assert captured["runtime_fallbacks"] == (fallback,)
+    assert captured["capacity_call"]["role"] == "general"

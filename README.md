@@ -605,6 +605,32 @@ disjoint from `config.toml` (runtime knobs). Setting
 `identity.toml: model = "..."` only affects the rendered prompt's
 `<self>` block; use `config.toml` for runtime control.
 
+### Capacity-only retry and explicit fallback
+
+Capacity recovery is disabled by default. Operators may set
+`PO_CAPACITY_RETRIES` to `0..3` and `PO_RUNTIME_FALLBACKS` to an ordered JSON
+array. Every fallback must explicitly name its backend and model; optional
+fields are `effort`, `start_command`, `account`, `account_class`, and `label`.
+Malformed configuration fails before the agent turn. PO advances through this
+chain only for a typed provider capacity response—ordinary code, test, auth,
+and tool failures stop immediately.
+
+```bash
+export PO_CAPACITY_RETRIES=1
+export PO_RUNTIME_FALLBACKS='[
+  {"backend":"codex-tmux","model":"gpt-5.5","effort":"high",
+   "account":"codex-personal","account_class":"personal","label":"deep"},
+  {"backend":"cursor-tmux","model":"composer-2.5","label":"cursor"}
+]'
+po run software-dev-agentic --backend codex-tmux --model gpt-5.4 \
+  --account-class personal --issue-id <id> --rig <r> --rig-path <p>
+```
+
+Accepted fallback backends are `cli`, `tmux`, `codex-cli`, `codex-tmux`,
+`codex-tmux-stream`, `cursor-cli`, and `cursor-tmux`. `auto` and `stub` are
+intentionally rejected because a fallback must never be inferred or fake a
+successful implementation turn.
+
 ### Explicit backend dispatch
 
 The dispatching agent chooses the backend, account class, model, and effort
