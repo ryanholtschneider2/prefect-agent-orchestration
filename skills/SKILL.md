@@ -254,7 +254,7 @@ po sessions <issue-id>              # per-role Claude UUIDs (useful to tmux-atta
 po watch <issue-id>                 # live stream of Prefect state transitions + run-dir file changes
 po retry <issue-id>                 # archive run_dir + relaunch fresh
 po status                           # all active / recent PO runs, grouped by issue_id
-po wait <issue-id>...               # block until issue(s) reach `closed` (exit 0/1/2/3)
+po wait <issue-id>...               # block until beads close or Prefect flows fail (exit 0/1/2/3)
 ```
 
 Prefect UI at `http://127.0.0.1:4200` shows the DAG + task state.
@@ -279,9 +279,9 @@ po run software-dev-full --issue-id <id> --rig <name> --rig-path <path>
 
 # OR — if you launched it elsewhere (`po retry`, another shell, an epic
 # child) and want to be notified when it closes:
-po wait <id> --timeout 1800             # exits when bd closes the issue
+po wait <id> --timeout 1800             # exits when bd closes or its Prefect flow fails
                                         # exit 0 = success-shaped close
-                                        # exit 1 = `failed:` / `cap-exhausted` / `rejected:` / `regression:` / `force-closed`
+                                        # exit 1 = failure-coded close, or Prefect Failed/Crashed/Cancelled
                                         # exit 2 = timeout
                                         # exit 3 = bd unavailable / no such id
 
@@ -292,7 +292,12 @@ po wait <id1> <id2> <id3>
 po wait <id1> <id2> --any
 ```
 
-`po wait` polls `bd show --json` every `--poll` seconds (default 30s).
+`po wait` polls `bd show --json` and the latest tagged Prefect flow every
+`--poll` seconds (default 30s). A Prefect Failed, Crashed, or Cancelled run
+exits promptly with its flow id, state, and message. PO adds a durable comment
+to the still-open bead and clears the assignee only when it exactly matches
+that flow's `po-<flow-id-prefix>` claim; it never closes the bead or invents a
+success verdict.
 Match the verb-first convention agents follow (`approved: ...`,
 `no regression: ...`, `failed: ...`); the failure-prefix matcher is
 strict so `no regression: 763 passed` correctly counts as success.

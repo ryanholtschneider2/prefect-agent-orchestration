@@ -30,6 +30,7 @@ def _patch_wait(
     advancing one map per outer poll-tick. `time.sleep` is also stubbed
     to a no-op so the test runs synchronously."""
     from prefect_orchestration import beads_meta
+    from prefect_orchestration import wait as wait_helpers
 
     state = {"tick": 0}
 
@@ -42,6 +43,7 @@ def _patch_wait(
 
     monkeypatch.setattr(beads_meta, "_bd_show", fake_show)
     monkeypatch.setattr(beads_meta, "_bd_available", lambda: bd_available)
+    monkeypatch.setattr(wait_helpers, "latest_terminal_flow", lambda _id: None)
     monkeypatch.setattr("time.sleep", advance_tick)
 
 
@@ -162,3 +164,68 @@ def test_wait_any_returns_when_first_closes(monkeypatch, runner):
         cli.app, ["wait", "a", "b", "--any", "--poll", "1", "--quiet"]
     )
     assert result.exit_code == 0, result.output
+
+
+def test_wait_exits_one_on_prefect_failure_and_reconciles(monkeypatch, runner):
+    from prefect_orchestration import wait as wait_helpers
+
+    _patch_wait(
+        monkeypatch,
+        rows_per_call=[
+            {
+                "a": {
+                    "status": "in_progress",
+                    "assignee": "po-12345678",
+                    "close_reason": "",
+                }
+            },
+        ],
+    )
+    terminal = wait_helpers.TerminalFlow(
+        flow_run_id="12345678-abcd",
+        state="Failed",
+        message="worker exited 137",
+    )
+    monkeypatch.setattr(wait_helpers, "latest_terminal_flow", lambda _id: terminal)
+    reconciled: list[tuple] = []
+    monkeypatch.setattr(
+        wait_helpers,
+        "reconcile_failed_claim",
+        lambda *args, **kwargs: reconciled.append((args, kwargs)) or True,
+    )
+
+    result = runner.invoke(cli.app, ["wait", "a", "--poll", "1", "--quiet"])
+
+    assert result.exit_code == 1, result.output
+    assert "12345678-abcd" in result.stderr
+    assert "Failed" in result.stderr
+    assert "worker exited 137" in result.stderr
+    assert "claim cleared" in result.stderr
+    assert len(reconciled) == 1
+
+
+def test_wait_any_preserves_first_close_over_other_flow_failure(monkeypatch, runner):
+    from prefect_orchestration import wait as wait_helpers
+
+    _patch_wait(
+        monkeypatch,
+        rows_per_call=[
+            {
+                "a": {"status": "closed", "close_reason": "approved: done"},
+                "b": {"status": "in_progress", "assignee": "po-deadbeef"},
+            }
+        ],
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(
+        wait_helpers,
+        "latest_terminal_flow",
+        lambda issue_id: calls.append(issue_id),
+    )
+
+    result = runner.invoke(
+        cli.app, ["wait", "a", "b", "--any", "--poll", "1", "--quiet"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == []
