@@ -1443,7 +1443,9 @@ def status(
         None, "--state", help="Filter by Prefect state name (Running, Completed, ...)."
     ),
     limit: int = typer.Option(
-        200, "--limit", help="Max flow runs to fetch from server."
+        200,
+        "--limit",
+        help="Max recent flow runs to fetch; non-terminal runs are always included.",
     ),
     include_zombies: bool = typer.Option(
         False,

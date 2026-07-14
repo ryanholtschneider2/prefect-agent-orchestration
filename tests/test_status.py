@@ -600,9 +600,11 @@ class _FakeClient:
     def __init__(self, runs: list[Any]) -> None:
         self.runs = runs
         self.call_kwargs: dict[str, Any] = {}
+        self.calls: list[dict[str, Any]] = []
 
     async def read_flow_runs(self, **kwargs: Any) -> list[Any]:
         self.call_kwargs = kwargs
+        self.calls.append(kwargs)
         return list(self.runs)
 
 
@@ -625,6 +627,17 @@ async def test_find_runs_applies_tag_filter_server_side() -> None:
     flt = client.call_kwargs["flow_run_filter"]
     # Server-side tag filter is set to exactly `issue_id:po-9`
     assert any("po-9" in t for t in flt.tags.all_)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_find_runs_explicit_state_stays_single_server_filtered_query() -> None:
+    client = _FakeClient([])
+    await _status.find_runs_by_issue_id(client, state="Running")
+
+    assert len(client.calls) == 1
+    flt = client.calls[0]["flow_run_filter"]
+    assert flt.state.name.any_ == ["Running"]
 
 
 @pytest.mark.asyncio
@@ -649,6 +662,64 @@ async def test_find_runs_uses_expected_start_time_filter() -> None:
     assert flt.start_time is None, (
         "start_time filter must not be set (excludes null-start_time runs)"
     )
+
+
+@pytest.mark.asyncio
+async def test_find_runs_merges_older_active_runs_outside_recent_history_cap() -> None:
+    """More than 200 newer terminal runs must not hide older active PO work."""
+    t0 = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
+    active = FakeFlowRun(
+        id="active-old",
+        name="software_dev_agentic",
+        tags=["issue_id:courtpro-1ytf"],
+        state_name="Running",
+        expected_start_time=t0,
+    )
+    terminal = [
+        FakeFlowRun(
+            id=f"done-{i}",
+            name="software_dev_agentic",
+            tags=[f"issue_id:frontdesk-{i}"],
+            state_name="Completed",
+            expected_start_time=t0 + timedelta(minutes=i + 1),
+        )
+        for i in range(201)
+    ]
+
+    class FilteringClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def read_flow_runs(self, **kwargs: Any) -> list[Any]:
+            self.calls.append(kwargs)
+            runs = sorted(
+                [active, *terminal],
+                key=lambda run: run.expected_start_time,
+                reverse=True,
+            )
+            state_type = getattr(
+                getattr(kwargs.get("flow_run_filter"), "state", None),
+                "type",
+                None,
+            )
+            excluded = {
+                getattr(value, "value", value).upper()
+                for value in (getattr(state_type, "not_any_", None) or [])
+            }
+            if excluded:
+                runs = [run for run in runs if run.state_name.upper() not in excluded]
+            offset = kwargs.get("offset", 0)
+            return runs[offset : offset + kwargs["limit"]]
+
+    client = FilteringClient()
+    since = t0 - timedelta(hours=1)
+    out = await _status.find_runs_by_issue_id(client, since=since, limit=200)
+
+    assert active in out
+    assert len(out) == 201, "200 recent terminal runs plus the older active run"
+    assert len(client.calls) == 2, "one recent page and one non-terminal page"
+    for call in client.calls:
+        assert call["flow_run_filter"].expected_start_time.after_ == since
 
 
 def test_group_by_issue_null_start_time_run_visible() -> None:
