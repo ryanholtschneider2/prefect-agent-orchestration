@@ -153,6 +153,10 @@ from prefect_orchestration.beads_meta import (
     close_issue,
     create_child_bead,
 )
+from prefect_orchestration.capacity import (
+    instantiate_backend,
+    materialize_capacity_policy,
+)
 from prefect_orchestration import iter_bead_ids
 from prefect_orchestration.role_config import resolve_role_runtime
 from prefect_orchestration.role_sessions import RoleSessionStore
@@ -667,6 +671,9 @@ def _build_session(
     """
     backend_factory = backend
     runtime = resolve_role_runtime(agent_dir)
+    capacity_retries, runtime_fallbacks = materialize_capacity_policy(
+        seed_id=seed_id, role=role
+    )
     if backend_factory is None:
         backend_factory = StubBackend if dry_run else select_default_backend()
         backend_factory = adapt_backend_to_start_command(
@@ -683,30 +690,20 @@ def _build_session(
     # Resolve the per-role runtime knobs: per-role config.toml > CLI flag
     # (PO_*_CLI env) > shell env (PO_*) > None. Backends fall back to their
     # hardcoded defaults when a knob is None.
-    backend_kwargs: dict[str, Any] = {}
-    if runtime.start_command is not None:
-        backend_kwargs["start_command"] = runtime.start_command
-
-    # Different backends have different __init__ shapes:
-    #   * ClaudeCliBackend / StubBackend → no required args
-    #   * TmuxClaudeBackend → requires issue + role
-    # Try the issue+role shape first (works for tmux); fall through to
-    # zero-arg construction (works for cli / stub).
-    try:
-        backend_inst = backend_factory(issue=seed_id, role=role, **backend_kwargs)
-    except TypeError:
-        try:
-            backend_inst = backend_factory(**backend_kwargs)
-        except TypeError:
-            # Backend doesn't accept start_command (e.g. some stubs); ignore the
-            # override rather than crashing the whole step.
-            backend_inst = backend_factory()
+    backend_inst = instantiate_backend(
+        backend_factory,
+        seed_id=seed_id,
+        role=role,
+        start_command=runtime.start_command,
+    )
     session_kwargs: dict[str, Any] = {
         "backend": backend_inst,
         "repo_path": rig_path_p,
         "session_id": prior_uuid,
         "role": role,
         "issue_id": seed_id,
+        "capacity_retries": capacity_retries,
+        "runtime_fallbacks": runtime_fallbacks,
     }
     if runtime.model is not None:
         session_kwargs["model"] = runtime.model

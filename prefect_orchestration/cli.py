@@ -28,6 +28,7 @@ import typer
 from prefect_orchestration import artifacts as _artifacts
 from prefect_orchestration import account as _account
 from prefect_orchestration import attach as _attach
+from prefect_orchestration import beads_meta as _beads_meta
 from prefect_orchestration import trace as _trace
 from prefect_orchestration import commands as _commands
 from prefect_orchestration import deployments as _deployments
@@ -272,6 +273,96 @@ def show(
 
 
 _DEFAULT_PREFECT_API = "http://127.0.0.1:4200/api"
+
+_DISPATCH_BEAD_KEYS: tuple[str, ...] = ("issue_id", "epic_id", "root_id")
+
+
+class DispatchTrackerMismatch(ValueError):
+    """The caller bead cannot be resolved from the worker's rig tracker."""
+
+
+def _nearest_tracker_root(start: Path) -> Path | None:
+    """Return the nearest ancestor containing ``.beads``.
+
+    Beads resolves a tracker relative to the shellout's working directory.
+    Mirroring that ancestor lookup makes the diagnostic useful for both a
+    normal single-repo rig and a polyrepo rig whose code lives below the
+    tracker root.
+    """
+    current = start.expanduser().resolve()
+    if current.is_file():
+        current = current.parent
+    for candidate in (current, *current.parents):
+        if (candidate / ".beads").is_dir():
+            return candidate
+    return None
+
+
+def _validate_dispatch_tracker(
+    parameters: dict[str, Any], *, caller_path: Path | None = None
+) -> None:
+    """Reject a dispatch that would strand its seed in another tracker.
+
+    Only the proven mismatch is rejected: the requested bead exists in the
+    caller tracker, the caller and rig resolve different tracker roots, and
+    the bead is absent from the exact tracker selected by ``rig_path``.
+    Missing beads in both trackers retain the formula's existing error path,
+    while a nested code path that resolves to the caller tracker remains a
+    valid polyrepo rig.
+    """
+    rig_value = parameters.get("rig_path")
+    if not isinstance(rig_value, (str, Path)):
+        return
+
+    target_key = next(
+        (
+            key
+            for key in _DISPATCH_BEAD_KEYS
+            if isinstance(parameters.get(key), str) and parameters[key]
+        ),
+        None,
+    )
+    if target_key is None:
+        return
+
+    caller = (caller_path or Path.cwd()).expanduser().resolve()
+    rig_path = Path(rig_value).expanduser().resolve()
+    caller_root = _nearest_tracker_root(caller)
+    rig_root = _nearest_tracker_root(rig_path)
+    if caller_root is None or caller_root == rig_root:
+        return
+
+    bead_id = parameters[target_key]
+    if _beads_meta._bd_show(bead_id, rig_path=caller) is None:
+        return
+    rig_row = (
+        _beads_meta._bd_show(bead_id, rig_path=rig_path) if rig_path.is_dir() else None
+    )
+    if rig_row is not None:
+        return
+
+    caller_tracker = caller_root / ".beads"
+    rig_tracker = rig_root / ".beads" if rig_root is not None else "(none found)"
+    raise DispatchTrackerMismatch(
+        f"dispatch tracker mismatch for {target_key} {bead_id!r}:\n"
+        f"  caller tracker:     {caller_tracker}\n"
+        f"  --rig-path tracker: {rig_tracker}\n"
+        f"  --rig-path:         {rig_path}\n"
+        f"{bead_id!r} exists in the caller tracker but not in the tracker the "
+        "worker would use. Pass the tracker root as --rig-path (it may be a "
+        "polyrepo root), or move/link the bead into the intended rig tracker. "
+        "No Prefect flow was submitted."
+    )
+
+
+def _validate_dispatch_tracker_or_exit(
+    parameters: dict[str, Any], *, caller_path: Path | None = None
+) -> None:
+    try:
+        _validate_dispatch_tracker(parameters, caller_path=caller_path)
+    except DispatchTrackerMismatch as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(2) from exc
 
 
 def _autoconfigure_prefect_api() -> None:
@@ -538,6 +629,9 @@ def run(
     )
     _merge_param_overrides(kwargs, param)
 
+    if from_file is None and env_name is not None and not dry_run:
+        _validate_dispatch_tracker_or_exit(kwargs)
+
     if env_name == "up":
         if env_driver is None:
             typer.echo("error: --env up requires --driver <name>", err=True)
@@ -592,6 +686,8 @@ def run(
     prior_int = signal.signal(signal.SIGINT, _signal_cleanup)
     prior_term = signal.signal(signal.SIGTERM, _signal_cleanup)
     call_kwargs = _filter_kwargs_for_flow(flow_obj, kwargs, label=label)
+    if from_file is None:
+        _validate_dispatch_tracker_or_exit(call_kwargs)
     try:
         result = flow_obj(**call_kwargs)
     except TypeError as exc:
@@ -628,6 +724,8 @@ _SCHEDULED_RUNTIME_ENV_KEYS: tuple[str, ...] = (
     "PO_MODEL",
     "PO_EFFORT",
     "PO_START_COMMAND",
+    "PO_CAPACITY_RETRIES",
+    "PO_RUNTIME_FALLBACKS",
 )
 
 
@@ -835,6 +933,7 @@ def _run_scheduled(
     # rig/rig_path (etc.) baked into the deployment parameters — those raise
     # SignatureMismatchError when the worker picks the run up.
     parameters = _filter_kwargs_for_flow(formulas[name], kwargs, label=name)
+    _validate_dispatch_tracker_or_exit(parameters)
     _stamp_dispatch_manifest(name, parameters)
 
     import asyncio
@@ -1443,7 +1542,9 @@ def status(
         None, "--state", help="Filter by Prefect state name (Running, Completed, ...)."
     ),
     limit: int = typer.Option(
-        200, "--limit", help="Max flow runs to fetch from server."
+        200,
+        "--limit",
+        help="Max recent flow runs to fetch; non-terminal runs are always included.",
     ),
     include_zombies: bool = typer.Option(
         False,
@@ -1563,7 +1664,7 @@ def wait(
         help="Suppress per-poll status lines; only print the final summary.",
     ),
 ) -> None:
-    """Block until one or more bd issues reach `closed` state.
+    """Block until bd issues close or their Prefect flows fail.
 
     Polls `bd show <id>` every `--poll` seconds. Exits when:
 
@@ -1579,13 +1680,15 @@ def wait(
       0   all (or any, with --any) closed; close-reasons look like success
       1   at least one closed with a failure-coded reason
           (`failed:`, `cap-exhausted`, `nudge failed`, `force-closed`,
-          `regression:`, `rejected:`)
+          `regression:`, `rejected:`), or a tracked Prefect flow reached
+          Failed, Crashed, or Cancelled before its bead closed
       2   timeout reached before terminal state
       3   bd not available / no such issue
     """
     import time as _time
 
     from prefect_orchestration.beads_meta import _bd_available, _bd_show
+    from prefect_orchestration import wait as _wait
     from prefect_orchestration.run_lookup import lookup_prefect_run
 
     if not _bd_available():
@@ -1668,6 +1771,34 @@ def wait(
             break
         if not any_ and len(seen_closed) == len(issue_ids):
             break
+
+        # Beads closure remains authoritative for success.  Only unresolved
+        # issues are checked for a terminal Prefect transport failure.  This
+        # ordering preserves --any: the first observed close still wins.
+        for issue_id in issue_ids:
+            if issue_id in seen_closed:
+                continue
+            bead_id, rig_path = _resolve(issue_id)
+            terminal = _wait.latest_terminal_flow(bead_id)
+            if terminal is None:
+                continue
+            row = _show(issue_id)
+            if row is None or row.get("status") == "closed":
+                continue
+            cleared = _wait.reconcile_failed_claim(
+                bead_id,
+                row,
+                terminal,
+                rig_path=rig_path,
+            )
+            typer.echo(
+                f"Prefect flow {terminal.flow_run_id} reached {terminal.state}: "
+                f"{terminal.message}; bead {bead_id} remains "
+                f"{row.get('status', 'open')}; PO claim "
+                f"{'cleared' if cleared else 'preserved'}.",
+                err=True,
+            )
+            raise typer.Exit(1)
         if _time.monotonic() >= deadline:
             still_open = [i for i in issue_ids if i not in seen_closed]
             typer.echo(

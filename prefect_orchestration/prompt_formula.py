@@ -25,6 +25,7 @@ from prefect.artifacts import create_markdown_artifact
 from prefect.runtime import flow_run
 
 from prefect_orchestration.beads_meta import mint_seed_bead
+from prefect_orchestration.capacity import materialize_capacity_policy
 from prefect_orchestration.agent_session import (
     AgentSession,
     ClaudeCliBackend,
@@ -252,8 +253,17 @@ def prompt_run(
     scope = rig_path_p.name
     factory = _pick_backend_factory(dry_run)
     backend = _make_backend(factory, issue=issue_handle, role=role, scope=scope)
+    capacity_retries, runtime_fallbacks = materialize_capacity_policy(
+        seed_id=issue_handle, role=role, tmux_scope=scope
+    )
     session = AgentSession(
-        role=role, repo_path=rig_path_p, backend=backend, model=model
+        role=role,
+        repo_path=rig_path_p,
+        backend=backend,
+        model=model,
+        issue_id=issue_handle,
+        capacity_retries=capacity_retries,
+        runtime_fallbacks=runtime_fallbacks,
     )
 
     safe_scope = scope.replace(".", "_")

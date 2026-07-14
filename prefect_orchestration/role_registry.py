@@ -37,6 +37,7 @@ from prefect_orchestration.beads_meta import (
     claim_issue,
     resolve_seed_bead,
 )
+from prefect_orchestration.capacity import materialize_capacity_policy
 from prefect_orchestration.role_artifacts import publish_role_artifacts
 from prefect_orchestration.role_sessions import RoleSessionStore
 from prefect_orchestration.run_handles import stamp_run_url_on_bead, write_run_handles
@@ -109,11 +110,19 @@ class RoleRegistry:
     def get(self, role: str) -> AgentSession:
         if role not in self._sessions:
             sid = self._read_session(role)
+            capacity_retries, runtime_fallbacks = materialize_capacity_policy(
+                seed_id=self.issue_id,
+                role=role,
+                tmux_scope=self.tmux_scope,
+            )
             self._sessions[role] = AgentSession(
                 role=role,
                 repo_path=self._cwd_for_role(role),
                 backend=self._make_backend(role),
                 session_id=sid,
+                issue_id=self.issue_id,
+                capacity_retries=capacity_retries,
+                runtime_fallbacks=runtime_fallbacks,
             )
         return self._sessions[role]
 

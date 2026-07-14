@@ -15,11 +15,16 @@ import pytest
 
 import prefect_orchestration.agent_step as agent_step_mod
 from prefect_orchestration.role_config import (
+    CapacityPolicy,
+    CapacityPolicyConfigError,
     RoleConfigLoadError,
     RoleRuntime,
+    RuntimeFallbackSpec,
     load_role_config,
+    resolve_capacity_policy,
     resolve_role_runtime,
 )
+from prefect_orchestration.agent_session import CodexCliBackend, CursorCliBackend
 
 
 def _write_config(agent_dir: Path, body: str) -> None:
@@ -142,6 +147,60 @@ def test_independent_axes(tmp_path: Path) -> None:
     assert rt.start_command == "claude --foo"
 
 
+def test_capacity_policy_defaults_to_disabled() -> None:
+    assert resolve_capacity_policy(env={}) == CapacityPolicy()
+
+
+def test_capacity_policy_parses_ordered_explicit_runtime_chain() -> None:
+    policy = resolve_capacity_policy(
+        env={
+            "PO_CAPACITY_RETRIES": "2",
+            "PO_RUNTIME_FALLBACKS": """
+            [
+              {"backend":"codex-cli","model":"gpt-5.5","effort":"high",
+               "account":"codex-personal","account_class":"personal","label":"deep"},
+              {"backend":"cursor-cli","model":"composer-2.5"}
+            ]
+            """,
+        }
+    )
+    assert policy.retries == 2
+    assert policy.fallbacks == (
+        RuntimeFallbackSpec(
+            backend="codex-cli",
+            model="gpt-5.5",
+            effort="high",
+            account="codex-personal",
+            account_class="personal",
+            label="deep",
+        ),
+        RuntimeFallbackSpec(backend="cursor-cli", model="composer-2.5"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("env", "match"),
+    [
+        ({"PO_CAPACITY_RETRIES": "forever"}, "must be an integer"),
+        ({"PO_CAPACITY_RETRIES": "4"}, "must be between"),
+        ({"PO_RUNTIME_FALLBACKS": "{}"}, "must be a JSON array"),
+        ({"PO_RUNTIME_FALLBACKS": '[{"backend":"auto","model":"x"}]'}, "backend"),
+        ({"PO_RUNTIME_FALLBACKS": '[{"backend":"codex-cli"}]'}, "model"),
+        (
+            {
+                "PO_RUNTIME_FALLBACKS": '[{"backend":"codex-cli","model":"x","mystery":1}]'
+            },
+            "unknown field",
+        ),
+    ],
+)
+def test_capacity_policy_rejects_malformed_configuration(
+    env: dict[str, str], match: str
+) -> None:
+    with pytest.raises(CapacityPolicyConfigError, match=match):
+        resolve_capacity_policy(env=env)
+
+
 # ─── _build_session integration ─────────────────────────────────────
 
 
@@ -223,6 +282,53 @@ def test_build_session_start_command_threads_to_backend(
     assert sess.backend.init_kwargs.get("start_command") == "claude --custom"
 
 
+def test_build_session_materializes_explicit_capacity_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    role_dir = _make_role(tmp_path, "builder")
+    monkeypatch.setenv("PO_CAPACITY_RETRIES", "1")
+    monkeypatch.setenv(
+        "PO_RUNTIME_FALLBACKS",
+        '[{"backend":"codex-cli","model":"gpt-5.5","effort":"high",'
+        '"account":"codex-personal"},'
+        '{"backend":"cursor-cli","model":"composer-2.5"}]',
+    )
+
+    sess = agent_step_mod._build_session(
+        seed_id="seed",
+        role="builder",
+        rig_path=str(tmp_path),
+        agent_dir=role_dir,
+        run_dir=tmp_path / "rundir",
+        backend=_RecordingBackend,
+        dry_run=False,
+    )
+
+    assert sess.capacity_retries == 1
+    assert len(sess.runtime_fallbacks) == 2
+    assert isinstance(sess.runtime_fallbacks[0].backend, CodexCliBackend)
+    assert sess.runtime_fallbacks[0].model == "gpt-5.5"
+    assert sess.runtime_fallbacks[0].account == "codex-personal"
+    assert isinstance(sess.runtime_fallbacks[1].backend, CursorCliBackend)
+
+
+def test_build_session_fails_loudly_on_bad_capacity_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    role_dir = _make_role(tmp_path, "builder")
+    monkeypatch.setenv("PO_RUNTIME_FALLBACKS", "not-json")
+    with pytest.raises(CapacityPolicyConfigError, match="valid JSON"):
+        agent_step_mod._build_session(
+            seed_id="seed",
+            role="builder",
+            rig_path=str(tmp_path),
+            agent_dir=role_dir,
+            run_dir=tmp_path / "rundir",
+            backend=_RecordingBackend,
+            dry_run=False,
+        )
+
+
 def test_build_session_no_overrides_uses_defaults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -235,6 +341,8 @@ def test_build_session_no_overrides_uses_defaults(
         "PO_EFFORT_CLI",
         "PO_START_COMMAND",
         "PO_START_COMMAND_CLI",
+        "PO_CAPACITY_RETRIES",
+        "PO_RUNTIME_FALLBACKS",
     ):
         monkeypatch.delenv(var, raising=False)
     role_dir = _make_role(tmp_path, "doer")

@@ -77,6 +77,24 @@ class RateLimitError(RuntimeError):
         )
 
 
+class ModelCapacityError(RuntimeError):
+    """The selected provider/model explicitly reported unavailable capacity.
+
+    This is deliberately narrower than a generic non-zero CLI exit.  Callers may
+    retry or use an operator-supplied fallback runtime for this error only; code,
+    test, authentication, and tool failures retain their original exceptions.
+    """
+
+    def __init__(self, provider: str, model: str, transcript: str):
+        self.provider = provider
+        self.model = model
+        self.transcript = transcript
+        super().__init__(
+            f"{provider} model {model!r} reported capacity exhaustion\n"
+            f"transcript tail: {transcript[-2000:]}"
+        )
+
+
 class StepTimeoutError(RuntimeError):
     """Claude subprocess exceeded its wall-clock budget without exiting.
 
@@ -106,6 +124,41 @@ _RATE_LIMIT_MARKERS = (
     "you've hit your limit",
     "you have hit your limit",
 )
+
+# These are terminal provider messages observed in CLI transcripts.  Keep the
+# list intentionally specific: a plain "unavailable" or "try again" would turn
+# ordinary implementation/tool failures into unsafe runtime failover.
+_MODEL_CAPACITY_MARKERS: dict[str, tuple[str, ...]] = {
+    "claude": (
+        "overloaded_error",
+        "anthropic's api is temporarily overloaded",
+        "the model is currently overloaded",
+    ),
+    "codex": (
+        "model capacity is temporarily unavailable",
+        "model capacity exhausted",
+        "no capacity available for this model",
+        "the model is currently overloaded",
+    ),
+    "cursor": (
+        "no capacity available for this model",
+        "model is unavailable due to high demand",
+        "the model is currently overloaded",
+    ),
+}
+
+
+def _is_model_capacity_error(provider: str, text: str) -> bool:
+    """Return whether a failed provider transcript has an explicit capacity signal."""
+    lowered = text.lower()
+    return any(
+        marker in lowered for marker in _MODEL_CAPACITY_MARKERS.get(provider, ())
+    )
+
+
+def _raise_model_capacity(provider: str, model: str, text: str) -> None:
+    if _is_model_capacity_error(provider, text):
+        raise ModelCapacityError(provider, model, text)
 
 
 def _extract_reset_time(text: str) -> str:
@@ -236,6 +289,18 @@ class SessionBackend(Protocol):
         effort: str | None = "medium",
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]: ...
+
+
+@dataclass(frozen=True)
+class RuntimeFallback:
+    """One explicitly configured runtime candidate for capacity-only failover."""
+
+    backend: SessionBackend
+    model: str
+    effort: str | None = None
+    label: str = ""
+    account: str | None = None
+    account_class: str | None = None
 
 
 def _build_claude_argv(
@@ -480,6 +545,7 @@ class ClaudeCliBackend:
             )
 
         if proc.returncode != 0:
+            _raise_model_capacity("claude", model, combined)
             raise RuntimeError(
                 f"claude CLI exited {proc.returncode}\n"
                 f"argv: {cmd}\n"
@@ -534,6 +600,8 @@ class CodexCliBackend:
             ) from exc
 
         if proc.returncode != 0:
+            combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            _raise_model_capacity("codex", model, combined)
             raise RuntimeError(
                 f"codex exec exited {proc.returncode}\n"
                 f"argv: {cmd}\n"
@@ -587,6 +655,8 @@ class CursorCliBackend:
             ) from exc
 
         if proc.returncode != 0:
+            combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            _raise_model_capacity("cursor", model, combined)
             raise RuntimeError(
                 f"cursor-agent exited {proc.returncode}\n"
                 f"argv: {cmd}\n"
@@ -1147,6 +1217,7 @@ class TmuxClaudeBackend:
                     message=stdout[-1000:],
                 )
             if rc != 0:
+                _raise_model_capacity("claude", model, stdout)
                 raise RuntimeError(
                     f"claude CLI exited {rc}\nstdout tail: {stdout[-2000:]}"
                 )
@@ -1260,6 +1331,7 @@ class TmuxCodexBackend:
             rc = int(rc_path.read_text().strip() or "-1")
             stdout = out_path.read_text() if out_path.exists() else ""
             if rc != 0:
+                _raise_model_capacity("codex", model, stdout)
                 raise RuntimeError(
                     f"codex exec exited {rc}\nstdout tail: {stdout[-2000:]}"
                 )
@@ -1374,6 +1446,7 @@ class TmuxCursorBackend:
             rc = int(rc_path.read_text().strip() or "-1")
             stdout = out_path.read_text() if out_path.exists() else ""
             if rc != 0:
+                _raise_model_capacity("cursor", model, stdout)
                 raise RuntimeError(
                     f"cursor-agent exited {rc}\nstdout tail: {stdout[-2000:]}"
                 )
@@ -2169,6 +2242,19 @@ class TmuxInteractiveClaudeBackend:
             prompt_path.unlink(missing_ok=True)
             raise RateLimitError(reset_time=reset or None)
 
+        # Interactive Claude surfaces overload as a 529 pane error and does not
+        # fire the Stop hook. Require both the transport status and the explicit
+        # capacity marker so source text in the submitted prompt cannot trigger
+        # failover.
+        if "api error: 529" in final_pane.lower() and _is_model_capacity_error(
+            "claude", final_pane
+        ):
+            _cleanup_tmux(target, scoped=scoped)
+            if sentinel is not None:
+                sentinel.unlink(missing_ok=True)
+            prompt_path.unlink(missing_ok=True)
+            raise ModelCapacityError("claude", model, final_pane)
+
         try:
             if new_sid is None:
                 # Resume mode: claude assigned its own session_id internally
@@ -2280,6 +2366,13 @@ class AgentSession:
     # pack flows) typically know the bead id and pass it through; left None
     # for in-tree tests / standalone use.
     issue_id: str | None = None
+    # No implicit provider/model switching. A caller must supply every fallback
+    # runtime and an optional bounded same-runtime retry count explicitly.
+    runtime_fallbacks: tuple[RuntimeFallback, ...] = ()
+    capacity_retries: int = 0
+    last_runtime_provenance: list[dict[str, Any]] = field(
+        default_factory=list, init=False
+    )
     _materialized: bool = field(default=False, init=False, repr=False)
     _turn_index: int = field(default=0, init=False, repr=False)
 
@@ -2330,21 +2423,7 @@ class AgentSession:
         mails = self._fetch_inbox()
         full_text = _render_with_inbox(mails, text)
 
-        extra_env = (
-            dict(self.secret_provider.get_role_env(self.role))
-            if self.secret_provider is not None
-            else None
-        )
         from prefect_orchestration.account import resolve_environment_for_backend
-
-        account_resolution = resolve_environment_for_backend(
-            self.backend,
-            cwd=self.repo_path,
-        )
-        if account_resolution is not None:
-            if extra_env is None:
-                extra_env = {}
-            extra_env.update(account_resolution.environment)
 
         from prefect_orchestration import telemetry
 
@@ -2364,16 +2443,84 @@ class AgentSession:
             attrs["tmux_session"] = tmux_name
 
         with tel.span("agent.prompt", **attrs) as span:
+            candidates = [
+                RuntimeFallback(self.backend, self.model, self.effort, "primary"),
+                *self.runtime_fallbacks,
+            ]
+            self.last_runtime_provenance = []
             try:
-                result, new_sid = self.backend.run(
-                    full_text,
-                    session_id=self.session_id,
-                    cwd=self.repo_path,
-                    fork=fork,
-                    model=self.model,
-                    effort=self.effort,
-                    extra_env=extra_env,
-                )
+                for runtime_index, runtime in enumerate(candidates):
+                    for retry_index in range(max(0, self.capacity_retries) + 1):
+                        extra_env = (
+                            dict(self.secret_provider.get_role_env(self.role))
+                            if self.secret_provider is not None
+                            else None
+                        )
+                        account_kwargs: dict[str, Any] = {"cwd": self.repo_path}
+                        if runtime.account is not None:
+                            account_kwargs["account"] = runtime.account
+                        if runtime.account_class is not None:
+                            account_kwargs["account_class"] = runtime.account_class
+                        account_resolution = resolve_environment_for_backend(
+                            runtime.backend, **account_kwargs
+                        )
+                        if account_resolution is not None:
+                            if extra_env is None:
+                                extra_env = {}
+                            extra_env.update(account_resolution.environment)
+                        attempt = {
+                            "runtime_index": runtime_index,
+                            "retry_index": retry_index,
+                            "label": runtime.label or f"fallback-{runtime_index}",
+                            "backend": type(runtime.backend).__name__,
+                            "model": runtime.model,
+                            "effort": runtime.effort,
+                            "account": (
+                                getattr(account_resolution, "handle", None)
+                                if account_resolution is not None
+                                else runtime.account
+                            ),
+                            "account_class": (
+                                getattr(account_resolution, "account_class", None)
+                                if account_resolution is not None
+                                else runtime.account_class
+                            ),
+                        }
+                        self.last_runtime_provenance.append(attempt)
+                        try:
+                            result, new_sid = runtime.backend.run(
+                                full_text,
+                                # Session ids are provider/runtime-specific. Only
+                                # the primary runtime may resume the prior turn.
+                                session_id=(
+                                    self.session_id if runtime_index == 0 else None
+                                ),
+                                cwd=self.repo_path,
+                                fork=fork,
+                                model=runtime.model,
+                                effort=runtime.effort,
+                                extra_env=extra_env,
+                            )
+                        except ModelCapacityError:
+                            attempt["outcome"] = "capacity-exhausted"
+                            if retry_index < max(0, self.capacity_retries):
+                                continue
+                            if runtime_index + 1 < len(candidates):
+                                break
+                            raise
+                        attempt["outcome"] = "completed"
+                        self.backend = runtime.backend
+                        self.model = runtime.model
+                        self.effort = runtime.effort
+                        span.set_attribute("runtime_index", runtime_index)
+                        span.set_attribute("runtime_backend", attempt["backend"])
+                        break
+                    else:  # pragma: no cover - retry range is always non-empty
+                        continue
+                    if attempt.get("outcome") == "completed":
+                        break
+                else:  # pragma: no cover - final capacity error raises above
+                    raise RuntimeError("runtime fallback chain exhausted")
             except BaseException as e:
                 span.record_exception(e)
                 span.set_status("ERROR", f"{type(e).__name__}: {e}")
@@ -2447,6 +2594,8 @@ class AgentSession:
             effort=self.effort,
             secret_provider=self.secret_provider,
             issue_id=self.issue_id,
+            runtime_fallbacks=self.runtime_fallbacks,
+            capacity_retries=self.capacity_retries,
         )
         # Mark the next .prompt() call as a fork via a sentinel prompt
         # — callers should use `child.prompt(text, fork=True)` explicitly

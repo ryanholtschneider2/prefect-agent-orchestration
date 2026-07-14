@@ -74,6 +74,8 @@ async def _schedule_resume(
         "PO_MODEL_CLI",
         "PO_EFFORT_CLI",
         "PO_START_COMMAND_CLI",
+        "PO_CAPACITY_RETRIES",
+        "PO_RUNTIME_FALLBACKS",
     )
     runtime_env: dict[str, str] = {}
     manifest_path = (
