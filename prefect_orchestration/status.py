@@ -157,16 +157,22 @@ async def find_runs_by_issue_id(
 
     `client` is an `PrefectClient` (from `get_client()`). Tag filtering:
     if `issue_id` is given we filter server-side via `tags.all_`; otherwise
-    we pull up to `limit` recent runs and filter client-side for any
-    `issue_id:` tag, which keeps the API single-round-trip.
+    we merge the recent-history page with every non-terminal run, then filter
+    client-side for any `issue_id:` tag. The active-run query is deliberately
+    separate so newer terminal history can never push live PO work outside the
+    recent-history cap. An explicit `state` keeps the original single-query,
+    server-filtered behavior.
     """
     from prefect.client.schemas.filters import (
         FlowRunFilter,
         FlowRunFilterExpectedStartTime,
+        FlowRunFilterState,
         FlowRunFilterStateName,
+        FlowRunFilterStateType,
         FlowRunFilterTags,
     )
     from prefect.client.schemas.sorting import FlowRunSort
+    from prefect.states import StateType
 
     kwargs: dict[str, Any] = {}
     if issue_id is not None:
@@ -181,15 +187,65 @@ async def find_runs_by_issue_id(
 
     flow_run_filter = FlowRunFilter(**kwargs) if kwargs else None
 
-    runs = await client.read_flow_runs(
-        flow_run_filter=flow_run_filter,
-        sort=FlowRunSort.EXPECTED_START_TIME_DESC,
-        limit=limit,
-        offset=offset,
+    runs = list(
+        await client.read_flow_runs(
+            flow_run_filter=flow_run_filter,
+            sort=FlowRunSort.EXPECTED_START_TIME_DESC,
+            limit=limit,
+            offset=offset,
+        )
     )
+
+    # Exact issue and explicit-state lookups are already protected from
+    # unrelated terminal history by their server-side filters. Bare status is
+    # the exceptional case: fetch all non-terminal runs independently of the
+    # bounded recent-history page. Prefect caps one filter response at 200, so
+    # page until exhaustion.
+    if issue_id is None and state is None:
+        active_kwargs = dict(kwargs)
+        active_kwargs["state"] = FlowRunFilterState(
+            type=FlowRunFilterStateType(
+                not_any_=[
+                    StateType.COMPLETED,
+                    StateType.FAILED,
+                    StateType.CANCELLED,
+                    StateType.CRASHED,
+                ]
+            )
+        )
+        active_filter = FlowRunFilter(**active_kwargs)
+        active_offset = 0
+        active_page_size = 200
+        while True:
+            page = list(
+                await client.read_flow_runs(
+                    flow_run_filter=active_filter,
+                    sort=FlowRunSort.EXPECTED_START_TIME_DESC,
+                    limit=active_page_size,
+                    offset=active_offset,
+                )
+            )
+            runs.extend(page)
+            if len(page) < active_page_size:
+                break
+            active_offset += len(page)
+
     if issue_id is None:
         runs = [r for r in runs if extract_issue_id(getattr(r, "tags", []) or [])]
-    return list(runs)
+
+    # The recent and active queries overlap for newly-started runs. Prefer the
+    # first (recent-history) copy and use object identity only as a fallback for
+    # test doubles without a Prefect id.
+    unique: list[Any] = []
+    seen: set[Any] = set()
+    for run in runs:
+        run_id = getattr(run, "id", None)
+        key = ("id", str(run_id)) if run_id is not None else ("object", id(run))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(run)
+    return unique
 
 
 async def current_step_for_flow_run(client: Any, flow_run_id: Any) -> str | None:
