@@ -433,8 +433,8 @@ def run(
     model: str | None = typer.Option(
         None,
         "--model",
-        help="Provider model alias or full id (for example sonnet, gpt-5.4, "
-        "gpt-5.5, or composer-2.5). "
+        help="Provider model alias or full id (for example sonnet, "
+        "gpt-5.6-terra, gpt-5.6-sol, or composer-2.5). "
         "Stamps PO_MODEL_CLI; per-role agents/<role>/config.toml beats this.",
     ),
     effort: str | None = typer.Option(

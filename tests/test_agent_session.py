@@ -120,7 +120,7 @@ def test_codex_successful_run_parses_jsonl(tmp_path: Path) -> None:
     assert sid == "tid-123"
 
 
-def test_codex_run_ignores_model_flag_for_cli_compatibility(tmp_path: Path) -> None:
+def test_codex_run_pins_subscription_model(tmp_path: Path) -> None:
     completed = subprocess.CompletedProcess(
         args=["codex"],
         returncode=0,
@@ -134,11 +134,10 @@ def test_codex_run_ignores_model_flag_for_cli_compatibility(tmp_path: Path) -> N
             "hello",
             session_id=None,
             cwd=tmp_path,
-            model="gpt-5-codex",
+            model="gpt-5.6-sol",
         )
     cmd = run_mock.call_args.kwargs.get("args") or run_mock.call_args.args[0]
-    assert "-m" not in cmd
-    assert "gpt-5-codex" not in cmd
+    assert cmd[cmd.index("--model") + 1] == "gpt-5.6-sol"
 
 
 @pytest.mark.parametrize(

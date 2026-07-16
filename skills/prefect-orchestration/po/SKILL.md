@@ -233,9 +233,10 @@ Declare the full runtime tuple on dispatch: `--backend`, `--account-class`
 to multiple providers or rely on an inferred complexity tier.
 
 - Default: `cursor-tmux`, `composer-2.5`, medium effort field.
-- Sonnet-class substitute: `codex-tmux`, `gpt-5.4`, medium.
-- Difficult work: `codex-tmux`, `gpt-5.5`, high.
-- Exceptional reasoning: `gpt-5.5` with xhigh or max when justified.
+- Haiku-class substitute: `codex-tmux`, `gpt-5.6-luna`, low.
+- Sonnet-class substitute: `codex-tmux`, `gpt-5.6-terra`, medium.
+- Opus-class work: `codex-tmux`, `gpt-5.6-sol`, high.
+- Exceptional reasoning: `gpt-5.6-sol` with xhigh or max when justified.
 - Fallback after preferred accounts are exhausted: Claude `tmux`, Sonnet,
   medium. Use Opus/high only when needed.
 - Testing: `stub`.

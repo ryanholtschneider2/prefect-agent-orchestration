@@ -15,9 +15,10 @@ cross-provider fan-out and no automatic provider failover inside a run.
 | Work class | Preferred runtime |
 |---|---|
 | Default | Cursor `composer-2.5`; effort field `medium` |
-| Sonnet substitute | Codex `gpt-5.4`, medium |
-| Difficult | Codex `gpt-5.5`, high |
-| Exceptional | Codex `gpt-5.5`, xhigh or max |
+| Haiku substitute | Codex `gpt-5.6-luna`, low |
+| Sonnet substitute | Codex `gpt-5.6-terra`, medium |
+| Opus substitute | Codex `gpt-5.6-sol`, high |
+| Exceptional | Codex `gpt-5.6-sol`, xhigh or max |
 | Fallback | Claude Sonnet, medium; Opus/high only when justified |
 
 Composer 2.5 does not currently expose a separate effort knob. PO keeps the

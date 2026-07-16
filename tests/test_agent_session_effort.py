@@ -10,8 +10,10 @@ from unittest.mock import patch
 from prefect_orchestration.agent_session import (
     AgentSession,
     ClaudeCliBackend,
+    CodexCliBackend,
     StubBackend,
     _build_claude_argv,
+    model_for_backend,
 )
 
 
@@ -120,3 +122,36 @@ def test_stub_backend_accepts_effort_kwarg(tmp_path: Path) -> None:
     )
     assert "ack" in out
     assert sid.startswith("stub-") or sid
+
+
+def test_codex_backend_maps_capability_tiers_to_gpt_5_6() -> None:
+    backend = CodexCliBackend()
+
+    assert model_for_backend("haiku", backend) == "gpt-5.6-luna"
+    assert model_for_backend("sonnet", backend) == "gpt-5.6-terra"
+    assert model_for_backend("opus", backend) == "gpt-5.6-sol"
+    assert model_for_backend("gpt-5.6-sol", backend) == "gpt-5.6-sol"
+
+
+def test_agent_session_resolves_codex_tier_before_dispatch(tmp_path: Path) -> None:
+    captured: dict = {}
+
+    class _CodexCapture(CodexCliBackend):
+        def run(self, prompt, **kwargs):
+            captured.update(kwargs)
+            return ("ok", "sid-1")
+
+    session = AgentSession(
+        role="builder",
+        repo_path=tmp_path,
+        backend=_CodexCapture(),
+        model="sonnet",
+        effort="medium",
+        overlay=False,
+        skills=False,
+    )
+
+    session.prompt("go")
+
+    assert captured["model"] == "gpt-5.6-terra"
+    assert session.model == "gpt-5.6-terra"

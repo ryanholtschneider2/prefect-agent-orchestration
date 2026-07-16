@@ -357,19 +357,15 @@ def _build_codex_exec_argv(
     turns we intentionally start a fresh thread: isolation matters more than
     inheriting parent context, and reusing the parent thread would pollute it.
 
-    We intentionally do NOT pass `-m <model>` here. In local testing, Codex
-    authenticated via a ChatGPT account rejects explicit model names such as
-    `gpt-5-codex`, `gpt-5`, and `o3`, while the CLI's own default model works.
-    Callers that truly need a pinned Codex model can still bake it into
-    `start_command`.
+    The model is always explicit so PO's durable runtime tuple matches the
+    model the subscription-backed CLI actually executes.
     """
-    del model
     base = shlex.split(start_command)
     if session_id and _UUID_RE.match(session_id) and not fork:
         argv = base + ["resume", session_id]
     else:
         argv = base
-    argv += ["--json"]
+    argv += ["--model", model, "--json"]
     return argv
 
 
@@ -569,7 +565,7 @@ class CodexCliBackend:
         session_id: str | None,
         cwd: Path,
         fork: bool = False,
-        model: str = "gpt-5-codex",
+        model: str = "gpt-5.6-terra",
         effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
         timeout: float | None = DEFAULT_AGENT_TIMEOUT_S,
@@ -1268,7 +1264,7 @@ class TmuxCodexBackend:
         session_id: str | None,
         cwd: Path,
         fork: bool = False,
-        model: str = "gpt-5-codex",
+        model: str = "gpt-5.6-terra",
         effort: str | None = None,
         extra_env: Mapping[str, str] | None = None,
     ) -> tuple[str, str]:
@@ -2331,6 +2327,23 @@ def _render_with_inbox(mails: list[Any], prompt_text: str) -> str:
     return f"{block}\n\n{prompt_text}"
 
 
+CODEX_TIER_MODELS = {
+    "haiku": "gpt-5.6-luna",
+    "sonnet": "gpt-5.6-terra",
+    "opus": "gpt-5.6-sol",
+    "fast": "gpt-5.6-luna",
+    "balanced": "gpt-5.6-terra",
+    "expert": "gpt-5.6-sol",
+}
+
+
+def model_for_backend(model: str, backend: SessionBackend) -> str:
+    """Translate abstract capability tiers for a provider-specific backend."""
+    if isinstance(backend, (CodexCliBackend, TmuxCodexBackend)):
+        return CODEX_TIER_MODELS.get(model.strip().lower(), model)
+    return model
+
+
 @dataclass
 class AgentSession:
     """One logical agent (a role) with a persistent Claude session.
@@ -2450,6 +2463,7 @@ class AgentSession:
             self.last_runtime_provenance = []
             try:
                 for runtime_index, runtime in enumerate(candidates):
+                    resolved_model = model_for_backend(runtime.model, runtime.backend)
                     for retry_index in range(max(0, self.capacity_retries) + 1):
                         extra_env = (
                             dict(self.secret_provider.get_role_env(self.role))
@@ -2473,7 +2487,7 @@ class AgentSession:
                             "retry_index": retry_index,
                             "label": runtime.label or f"fallback-{runtime_index}",
                             "backend": type(runtime.backend).__name__,
-                            "model": runtime.model,
+                            "model": resolved_model,
                             "effort": runtime.effort,
                             "account": (
                                 getattr(account_resolution, "handle", None)
@@ -2497,7 +2511,7 @@ class AgentSession:
                                 ),
                                 cwd=self.repo_path,
                                 fork=fork,
-                                model=runtime.model,
+                                model=resolved_model,
                                 effort=runtime.effort,
                                 extra_env=extra_env,
                             )
@@ -2510,7 +2524,7 @@ class AgentSession:
                             raise
                         attempt["outcome"] = "completed"
                         self.backend = runtime.backend
-                        self.model = runtime.model
+                        self.model = resolved_model
                         self.effort = runtime.effort
                         span.set_attribute("runtime_index", runtime_index)
                         span.set_attribute("runtime_backend", attempt["backend"])
