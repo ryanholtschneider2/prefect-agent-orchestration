@@ -375,7 +375,13 @@ def agent_step(
         for value in required_artifacts
     )
     if task is not None:
-        rendered_task = _render_task(task, full_ctx)
+        # The bead is the canonical task source, so its task template needs the
+        # same executable close contract as a fresh identity prompt. Keep the
+        # addition local to task rendering: resumed prompts intentionally stay
+        # short and only point back to this already-complete bead description.
+        task_ctx = dict(full_ctx)
+        task_ctx.setdefault("role_step_close_block", _default_close_block(task_ctx))
+        rendered_task = _render_task(task, task_ctx)
         _stamp_description(target_bead, rendered_task, rig_path)
 
     # Resolve session and run the agent's turn.
