@@ -777,6 +777,7 @@ def _default_close_block(ctx: dict[str, Any]) -> str:
     a NEEDS_CHANGES default and wastes a full critic loop.
     """
     bead = ctx.get("role_step_bead_id") or ctx.get("seed_id", "<bead>")
+    verdict_name = str(ctx.get("step") or "role-step")
     kws = ctx.get("verdict_keywords") or ()
     if isinstance(kws, str):
         kws = tuple(k.strip() for k in kws.split(",") if k.strip())
@@ -811,8 +812,9 @@ def _default_close_block(ctx: dict[str, Any]) -> str:
         "1. Stamp your structured verdict with `po write-verdict` (backend-agnostic; "
         "works on both dolt and beads-rust). Do NOT hand-write "
         "`bd update ... --metadata` — it is dolt-only and breaks on br rigs:\n\n"
-        f"```bash\npo write-verdict --bead-id {bead} --name <role> "
-        "--payload '<json-verdict>'\n```\n\n"
+        f"```bash\npo write-verdict --bead-id {bead} --name {verdict_name} "
+        "--payload '{\"verdict\":\"<keyword>\",\"summary\":\"<one-line summary>\"}'"
+        "\n```\n\n"
         "2. Close the bead with the keyword close-reason:\n\n"
         f'```bash\nbd close {bead} --reason "<keyword>: <one-line summary>"\n```\n\n'
         "**Stuck or need a human decision?** Don't leave the bead open silently — "

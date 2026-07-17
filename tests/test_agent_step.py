@@ -673,7 +673,11 @@ def test_agent_step_renders_close_contract_in_prompt_and_task_description(
     assert len(descriptions) == 1
     for rendered in (descriptions[0], fake_session.prompts[0]):
         assert "{{role_step_close_block}}" not in rendered
-        assert "po write-verdict --bead-id bead-close" in rendered
+        assert (
+            "po write-verdict --bead-id bead-close --name role-step "
+            "--payload '{\"verdict\":\"<keyword>\","
+            "\"summary\":\"<one-line summary>\"}'"
+        ) in rendered
         assert 'bd close bead-close --reason "<keyword>: <one-line summary>"' in rendered
 
 
