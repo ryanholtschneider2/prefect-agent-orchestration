@@ -55,15 +55,16 @@ Returns a JSON array. Each element:
   "current_step": "builder",  // nullable — latest non-terminal task name
   "run_count": 1,              // total flow runs for this issue
   "stale_secs": null,          // int seconds since last activity, or null
-  "work_landed": null,         // bool | null — true iff any build-iter-*.diff is non-empty
+  "work_landed": null,         // bool | null — true for a non-empty build diff or pinned delivery revision
+  "delivery_state": null,      // string | null — durable delivery checkpoint such as integration_pending
   "terminal_role": null,       // str  | null — role at which the flow crashed
   "terminal_iter": null,       // int  | null — iter number at crash
   "exception_class": null      // str  | null — Python class name (e.g. "StepTimeoutError")
 }
 ```
 
-The last four fields are read from `<run_dir>/flow_outcome.json` written
-by `software_dev_full`'s exception guard on non-Completed exit; all four
+The last five fields are read from `<run_dir>/flow_outcome.json` written
+by the software-development flows' exception guard on non-Completed exit; all five
 are `null` for Completed flows or when the outcome file is absent.
 
 ---

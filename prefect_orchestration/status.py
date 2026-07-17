@@ -565,6 +565,7 @@ def to_json_list(groups: list[IssueGroup]) -> list[dict]:
                 "run_count": 1 + g.extra_count,
                 "stale_secs": g.stale_secs,
                 "work_landed": outcome.get("work_landed") if outcome else None,
+                "delivery_state": outcome.get("delivery_state") if outcome else None,
                 "terminal_role": outcome.get("terminal_role") if outcome else None,
                 "terminal_iter": outcome.get("terminal_iter") if outcome else None,
                 "exception_class": outcome.get("exception_class") if outcome else None,
@@ -635,6 +636,9 @@ def render_table(groups: list[IssueGroup]) -> str:
                     parts.append("[work landed: ✓]")
                 elif wl is False:
                     parts.append("[work landed: ✗]")
+                delivery_state = outcome.get("delivery_state")
+                if delivery_state:
+                    parts.append(f"[delivery: {str(delivery_state).replace('_', ' ')}]")
                 role = outcome.get("terminal_role")
                 it = outcome.get("terminal_iter")
                 if role and it is not None:
