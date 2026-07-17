@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -63,3 +64,60 @@ def test_claim_marker_is_idempotent(tmp_path: Path) -> None:
 
     assert first is not None
     assert second is None
+
+
+@pytest.mark.asyncio
+async def test_find_old_zombies_pages_all_running_and_skips_live(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = datetime.now(timezone.utc) - timedelta(days=3)
+    recent = datetime.now(timezone.utc) - timedelta(hours=2)
+    pages = [
+        [
+            SimpleNamespace(
+                id="old-dead-run",
+                name="old-dead",
+                tags=["issue_id:old-dead"],
+                state_name="Running",
+                parameters={"rig_path": "/tmp/dead"},
+                created=old,
+                start_time=old,
+                expected_start_time=old,
+            ),
+            SimpleNamespace(
+                id="old-live-run",
+                name="old-live",
+                tags=["issue_id:old-live"],
+                state_name="Running",
+                parameters={"rig_path": "/tmp/live"},
+                created=old,
+                start_time=old,
+                expected_start_time=old,
+            ),
+            SimpleNamespace(
+                id="recent-run",
+                name="recent",
+                tags=["issue_id:recent"],
+                state_name="Running",
+                parameters={"rig_path": "/tmp/recent"},
+                created=recent,
+                start_time=recent,
+                expected_start_time=recent,
+            ),
+        ]
+    ]
+
+    async def find_page(_client, **kwargs):
+        assert kwargs.get("since") is None
+        return pages.pop(0)
+
+    monkeypatch.setattr(reconcile.status, "find_runs_by_issue_id", find_page)
+    monkeypatch.setattr(
+        reconcile.status,
+        "_has_live_process",
+        lambda issue_id: issue_id == "old-live",
+    )
+
+    found = await reconcile._find_old_zombies(object())
+
+    assert found == [("old-dead", "old-dead-run")]

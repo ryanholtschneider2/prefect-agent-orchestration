@@ -1529,8 +1529,13 @@ def doctor(
 
 @app.command()
 def status(
+    issue_id_arg: str | None = typer.Argument(
+        None,
+        metavar="ISSUE_ID",
+        help="Optional issue id to filter (equivalent to --issue-id).",
+    ),
     issue_id: str | None = typer.Option(
-        None, "--issue-id", help="Filter to runs tagged `issue_id:<id>`."
+        None, "--issue-id", "-i", help="Filter to runs tagged `issue_id:<id>`."
     ),
     since: str | None = typer.Option(
         None, "--since", help="Relative (1h, 30m, 2d) or ISO-8601. Default: 24h."
@@ -1573,6 +1578,14 @@ def status(
     import anyio
 
     from prefect.client.orchestration import get_client
+
+    if issue_id_arg and issue_id and issue_id_arg != issue_id:
+        typer.echo(
+            "error: positional ISSUE_ID and --issue-id refer to different issues",
+            err=True,
+        )
+        raise typer.Exit(2)
+    issue_id = issue_id or issue_id_arg
 
     since_dt = None
     if not all_:
@@ -2115,10 +2128,12 @@ def reconcile(
     result = reconcile_once(stale_secs=stale_secs)
     typer.echo(
         f"inspected={result.inspected} resumed={len(result.resumed)} "
-        f"skipped={len(result.skipped)}"
+        f"terminalized={len(result.terminalized)} skipped={len(result.skipped)}"
     )
     if result.resumed:
         typer.echo("resumed: " + ", ".join(result.resumed))
+    if result.terminalized:
+        typer.echo("terminalized: " + ", ".join(result.terminalized))
     if result.skipped:
         typer.echo("skipped: " + ", ".join(result.skipped), err=True)
 

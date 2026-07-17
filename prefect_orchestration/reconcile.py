@@ -15,6 +15,7 @@ from prefect_orchestration import retry, run_lookup, status
 class ReconcileResult:
     inspected: int
     resumed: tuple[str, ...]
+    terminalized: tuple[str, ...]
     skipped: tuple[str, ...]
 
 
@@ -54,6 +55,52 @@ async def _find_abandoned(client: Any, stale_secs: int) -> list[tuple[str, str]]
     return abandoned
 
 
+async def _find_old_zombies(
+    client: Any, *, older_than: timedelta = timedelta(hours=24)
+) -> list[tuple[str, str]]:
+    """Find ancient Running controllers that cannot still be legitimate turns.
+
+    Recent controllers use artifact staleness and may be resumed. This separate
+    all-history pass only terminalizes records older than the declared policy
+    boundary and never submits work, so old Prefect rows cannot remain Running
+    forever merely because their temporary run directory disappeared.
+    """
+    runs: list[Any] = []
+    offset = 0
+    while True:
+        page = await status.find_runs_by_issue_id(
+            client, state="Running", limit=200, offset=offset
+        )
+        runs.extend(page)
+        if len(page) < 200:
+            break
+        offset += len(page)
+
+    cutoff = datetime.now(timezone.utc) - older_than
+    zombies: list[tuple[str, str]] = []
+    for group in status.group_by_issue(runs):
+        started = next(
+            (
+                value
+                for value in (
+                    getattr(group.latest, "expected_start_time", None),
+                    getattr(group.latest, "start_time", None),
+                    getattr(group.latest, "created", None),
+                )
+                if value is not None
+            ),
+            None,
+        )
+        if started is None:
+            continue
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if started > cutoff or status._has_live_process(group.issue_id):
+            continue
+        zombies.append((group.issue_id, str(group.latest.id)))
+    return zombies
+
+
 def reconcile_once(
     *, stale_secs: int = status.PO_WATCHDOG_STALE_SECS
 ) -> ReconcileResult:
@@ -62,18 +109,31 @@ def reconcile_once(
     from prefect.client.orchestration import get_client
     from prefect.states import Failed
 
-    async def discover_and_fail() -> list[tuple[str, str]]:
+    async def discover_and_fail() -> tuple[
+        list[tuple[str, str]], list[tuple[str, str]]
+    ]:
         async with get_client() as client:
             abandoned = await _find_abandoned(client, stale_secs)
+            zombies = await _find_old_zombies(client)
+            abandoned_run_ids = {flow_run_id for _issue_id, flow_run_id in abandoned}
+            zombies = [row for row in zombies if row[1] not in abandoned_run_ids]
             for _issue_id, flow_run_id in abandoned:
                 await client.set_flow_run_state(
                     flow_run_id,
                     Failed(message="PO controller abandoned; durable resume submitted"),
                     force=True,
                 )
-            return abandoned
+            for _issue_id, flow_run_id in zombies:
+                await client.set_flow_run_state(
+                    flow_run_id,
+                    Failed(
+                        message="PO controller zombie terminalized; no resume submitted"
+                    ),
+                    force=True,
+                )
+            return abandoned, zombies
 
-    abandoned = anyio.run(discover_and_fail)
+    abandoned, zombies = anyio.run(discover_and_fail)
     resumed: list[str] = []
     skipped: list[str] = []
     for issue_id, flow_run_id in abandoned:
@@ -97,5 +157,8 @@ def reconcile_once(
             except (NameError, OSError):
                 pass
     return ReconcileResult(
-        inspected=len(abandoned), resumed=tuple(resumed), skipped=tuple(skipped)
+        inspected=len(abandoned) + len(zombies),
+        resumed=tuple(resumed),
+        terminalized=tuple(issue_id for issue_id, _flow_run_id in zombies),
+        skipped=tuple(skipped),
     )

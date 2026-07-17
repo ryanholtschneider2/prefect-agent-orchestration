@@ -612,7 +612,11 @@ def render_table(groups: list[IssueGroup]) -> str:
         )
         end = getattr(fr, "end_time", None)
         state_str = str(state)
-        if g.stale_secs is not None and g.stale_secs >= _STALE_WARN_SECS:
+        if (
+            g.stale_secs is not None
+            and g.stale_secs >= _STALE_WARN_SECS
+            and not _has_live_process(g.issue_id)
+        ):
             mins = g.stale_secs // 60
             state_str = f"{state_str} (stale: {mins}m)"
         # Append flow_outcome.json annotation for non-Completed flows so
