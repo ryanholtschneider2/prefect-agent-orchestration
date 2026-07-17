@@ -763,6 +763,48 @@ def test_status_cli_exits_zero_when_server_down(
     assert "error:" in (result.stderr if result.stderr else result.output)
 
 
+def test_status_cli_accepts_positional_issue_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The natural `po status <issue>` form reaches the query layer."""
+
+    from prefect_orchestration import cli as _cli
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise ConnectionError("nope")
+
+    monkeypatch.setattr("prefect.client.orchestration.get_client", _boom)
+
+    result = CliRunner().invoke(_cli.app, ["status", "raystightend-1jzj"])
+    assert result.exit_code == 0, result.stderr + result.stdout
+    assert "unexpected extra argument" not in result.output
+    assert "error:" in (result.stderr if result.stderr else result.output)
+
+
+def test_status_cli_preserves_issue_id_option_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from prefect_orchestration import cli as _cli
+
+    def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise ConnectionError("nope")
+
+    monkeypatch.setattr("prefect.client.orchestration.get_client", _boom)
+
+    result = CliRunner().invoke(_cli.app, ["status", "-i", "raystightend-1jzj"])
+    assert result.exit_code == 0, result.stderr + result.stdout
+    assert "error:" in (result.stderr if result.stderr else result.output)
+
+
+def test_status_cli_rejects_conflicting_issue_ids() -> None:
+    result = CliRunner().invoke(
+        app,
+        ["status", "issue-a", "--issue-id", "issue-b"],
+    )
+    assert result.exit_code == 2
+    assert "different issues" in (result.stderr if result.stderr else result.output)
+
+
 def test_status_cli_bad_since_exits_zero() -> None:
     """`--since` garbage is also treated as observation → exit 0, error to stderr."""
     runner = CliRunner()
@@ -1042,7 +1084,8 @@ async def test_watchdog_fails_stale_dead_run(monkeypatch: pytest.MonkeyPatch) ->
 # ─── render_table stale annotation ───────────────────────────────────
 
 
-def test_render_table_shows_stale_annotation() -> None:
+def test_render_table_shows_stale_annotation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_status, "_has_live_process", lambda _issue: False)
     t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
     g = _status.IssueGroup(
         issue_id="po-stale",
@@ -1058,6 +1101,30 @@ def test_render_table_shows_stale_annotation() -> None:
     )
     out = _status.render_table([g])
     assert "(stale: 6m)" in out
+
+
+def test_render_table_suppresses_stale_annotation_for_live_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_status, "_has_live_process", lambda _issue: True)
+    t0 = datetime(2026, 4, 24, 10, 0, tzinfo=timezone.utc)
+    g = _status.IssueGroup(
+        issue_id="po-active",
+        latest=FakeFlowRun(
+            id="active",
+            name="software_dev_agentic",
+            tags=["issue_id:po-active"],
+            state_name="Running",
+            start_time=t0,
+        ),
+        extras=[],
+        stale_secs=1080,
+    )
+
+    out = _status.render_table([g])
+
+    assert "Running" in out
+    assert "stale" not in out
 
 
 def test_render_table_no_annotation_below_warn_threshold() -> None:

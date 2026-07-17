@@ -116,6 +116,32 @@ class StepTimeoutError(RuntimeError):
         )
 
 
+class TmuxSessionLostError(RuntimeError):
+    """The tmux target vanished before its wrapper persisted an exit code."""
+
+
+class AgentTransportInterruptedError(RuntimeError):
+    """A model turn was interrupted, but its provider session is resumable."""
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        session_id: str | None,
+        output_path: Path,
+        transcript: str,
+    ) -> None:
+        self.provider = provider
+        self.session_id = session_id
+        self.output_path = output_path
+        self.transcript = transcript
+        super().__init__(
+            f"{provider} tmux transport disappeared before terminal evidence; "
+            f"session_id={session_id or 'unknown'} output={output_path}\n"
+            f"transcript tail: {transcript[-2000:]}"
+        )
+
+
 # `resets <time>` capture stops at end-of-line, closing-paren, or middle-dot
 # so we don't slurp trailing punctuation. Claude's exact format is
 # `You've hit your limit · resets 1:30am (America/New_York)`.
@@ -124,6 +150,13 @@ _RATE_LIMIT_MARKERS = (
     "you've hit your limit",
     "you have hit your limit",
 )
+
+_TRANSPORT_RECOVERY_PROMPT = """Your previous role turn was interrupted after the
+tmux transport disappeared. Resume from this existing session and inspect the
+current repository and bead state. Continue idempotently from the last durable
+point, finish the remaining role work, write the required structured verdict,
+and close only your role-step bead. Do not repeat mutations that already landed.
+"""
 
 # These are terminal provider messages observed in CLI transcripts.  Keep the
 # list intentionally specific: a plain "unavailable" or "try again" would turn
@@ -469,6 +502,46 @@ def _parse_codex_exec_jsonl(stdout: str, prior_sid: str | None) -> tuple[str, st
         ):
             last_text = item["text"]
     return last_text or stdout, last_sid or str(uuid.uuid4())
+
+
+def _structured_turn_evidence(
+    stdout: str, *, provider: str, prior_sid: str | None
+) -> tuple[bool, str | None]:
+    """Return provider terminal-event presence and the last real session ID."""
+    terminal = False
+    session_id = prior_sid
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not (line.startswith("{") and line.endswith("}")):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if provider == "codex":
+            if event.get("type") == "thread.started" and isinstance(
+                event.get("thread_id"), str
+            ):
+                session_id = event["thread_id"]
+            if event.get("type") == "turn.completed":
+                terminal = True
+            continue
+        if isinstance(event.get("session_id"), str):
+            session_id = event["session_id"]
+        if event.get("type") == "result":
+            terminal = True
+    if not terminal and provider == "cursor":
+        try:
+            envelope = json.loads(stdout)
+        except json.JSONDecodeError:
+            envelope = None
+        if isinstance(envelope, dict) and envelope.get("type") == "result":
+            terminal = True
+            if isinstance(envelope.get("session_id"), str):
+                session_id = envelope["session_id"]
+    return terminal, session_id
 
 
 @dataclass
@@ -913,12 +986,30 @@ def _wait_for_rc(
             check=False,
         )
         if has.returncode != 0 and not rc_path.exists():
-            raise RuntimeError(
+            raise TmuxSessionLostError(
                 f"tmux session {session_name!r} disappeared before writing rc"
             )
         time.sleep(poll)
     raise TimeoutError(
         f"claude CLI in tmux session {session_name!r} did not finish within {timeout}s"
+    )
+
+
+def _recover_lost_tmux_output(
+    *, out_path: Path, provider: str, prior_sid: str | None
+) -> str:
+    """Accept only structured terminal evidence; otherwise raise resumably."""
+    stdout = out_path.read_text() if out_path.exists() else ""
+    terminal, session_id = _structured_turn_evidence(
+        stdout, provider=provider, prior_sid=prior_sid
+    )
+    if terminal:
+        return stdout
+    raise AgentTransportInterruptedError(
+        provider=provider,
+        session_id=session_id,
+        output_path=out_path,
+        transcript=stdout,
     )
 
 
@@ -1199,9 +1290,16 @@ class TmuxClaudeBackend:
                         flush=True,
                     )
 
-            _wait_for_rc(rc_path, target, timeout=self.timeout_s)
-            rc = int(rc_path.read_text().strip() or "-1")
-            stdout = out_path.read_text() if out_path.exists() else ""
+            try:
+                _wait_for_rc(rc_path, target, timeout=self.timeout_s)
+            except TmuxSessionLostError:
+                stdout = _recover_lost_tmux_output(
+                    out_path=out_path, provider="claude", prior_sid=session_id
+                )
+                rc = 0
+            else:
+                rc = int(rc_path.read_text().strip() or "-1")
+                stdout = out_path.read_text() if out_path.exists() else ""
             # Detect rate-limit *regardless of rc*. Claude CLI can exit 0
             # with a 429-shaped success envelope (see ClaudeCliBackend.run
             # for the observed payload). Hoisted check ensures a
@@ -1323,9 +1421,16 @@ class TmuxCodexBackend:
                         flush=True,
                     )
 
-            _wait_for_rc(rc_path, target, timeout=self.timeout_s)
-            rc = int(rc_path.read_text().strip() or "-1")
-            stdout = out_path.read_text() if out_path.exists() else ""
+            try:
+                _wait_for_rc(rc_path, target, timeout=self.timeout_s)
+            except TmuxSessionLostError:
+                stdout = _recover_lost_tmux_output(
+                    out_path=out_path, provider="codex", prior_sid=session_id
+                )
+                rc = 0
+            else:
+                rc = int(rc_path.read_text().strip() or "-1")
+                stdout = out_path.read_text() if out_path.exists() else ""
             if rc != 0:
                 _raise_model_capacity("codex", model, stdout)
                 raise RuntimeError(
@@ -1438,9 +1543,16 @@ class TmuxCursorBackend:
                         flush=True,
                     )
 
-            _wait_for_rc(rc_path, target, timeout=self.timeout_s)
-            rc = int(rc_path.read_text().strip() or "-1")
-            stdout = out_path.read_text() if out_path.exists() else ""
+            try:
+                _wait_for_rc(rc_path, target, timeout=self.timeout_s)
+            except TmuxSessionLostError:
+                stdout = _recover_lost_tmux_output(
+                    out_path=out_path, provider="cursor", prior_sid=session_id
+                )
+                rc = 0
+            else:
+                rc = int(rc_path.read_text().strip() or "-1")
+                stdout = out_path.read_text() if out_path.exists() else ""
             if rc != 0:
                 _raise_model_capacity("cursor", model, stdout)
                 raise RuntimeError(
@@ -2515,6 +2627,30 @@ class AgentSession:
                                 effort=runtime.effort,
                                 extra_env=extra_env,
                             )
+                        except AgentTransportInterruptedError as interrupted:
+                            attempt["outcome"] = "transport-interrupted"
+                            attempt["interrupted_session_id"] = interrupted.session_id
+                            attempt["output_path"] = str(interrupted.output_path)
+                            if interrupted.session_id is None:
+                                raise
+                            recovery_attempt = {
+                                **attempt,
+                                "retry_index": retry_index,
+                                "transport_recovery": 1,
+                                "session_id": interrupted.session_id,
+                            }
+                            self.last_runtime_provenance.append(recovery_attempt)
+                            result, new_sid = runtime.backend.run(
+                                _TRANSPORT_RECOVERY_PROMPT,
+                                session_id=interrupted.session_id,
+                                cwd=self.repo_path,
+                                fork=False,
+                                model=resolved_model,
+                                effort=runtime.effort,
+                                extra_env=extra_env,
+                            )
+                            recovery_attempt["outcome"] = "completed"
+                            attempt = recovery_attempt
                         except ModelCapacityError:
                             attempt["outcome"] = "capacity-exhausted"
                             if retry_index < max(0, self.capacity_retries):

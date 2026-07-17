@@ -72,3 +72,10 @@ def test_po_status_unreachable_server_is_observational() -> None:
     # Either a connect error (expected) or an empty table if something
     # happens to answer on port 1; both are acceptable non-crash paths.
     assert result.stderr or result.stdout
+
+
+def test_po_status_accepts_positional_issue_id() -> None:
+    result = _po("status", "raystightend-1jzj")
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert "unexpected extra argument" not in result.stderr
+    assert "Traceback" not in result.stderr
