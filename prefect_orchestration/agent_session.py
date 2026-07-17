@@ -168,6 +168,7 @@ _MODEL_CAPACITY_MARKERS: dict[str, tuple[str, ...]] = {
         "the model is currently overloaded",
     ),
     "codex": (
+        "selected model is at capacity",
         "model capacity is temporarily unavailable",
         "model capacity exhausted",
         "no capacity available for this model",
