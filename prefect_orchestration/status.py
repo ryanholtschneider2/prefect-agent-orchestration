@@ -512,6 +512,30 @@ def _run_dir_for_issue(issue_id: str) -> Path | None:
     return Path(run_dir_s)
 
 
+def _run_dir_for_group(group: IssueGroup) -> Path | None:
+    """Resolve a run directory from tracker metadata or Prefect rig parameters.
+
+    Beads Rust does not expose PO's arbitrary metadata fields. In that backend,
+    the flow still records ``rig_path`` in Prefect and uses a deterministic
+    ``.planning/<formula>/<issue>`` directory, so recover it from the filesystem
+    instead of hiding landed/checkpoint truth from ``po status``.
+    """
+    run_dir = _run_dir_for_issue(group.issue_id)
+    if run_dir is not None:
+        return run_dir
+    params = getattr(group.latest, "parameters", None) or {}
+    raw_rig_path = params.get("rig_path")
+    rig_path = Path(raw_rig_path) if isinstance(raw_rig_path, str) else None
+    try:
+        from prefect_orchestration.run_lookup import _filesystem_run_dir
+
+        recovered = _filesystem_run_dir(group.issue_id, [rig_path, Path.cwd()])
+    except Exception as exc:  # noqa: BLE001 - status is best-effort
+        logger.debug("filesystem run_dir lookup failed for %s: %s", group.issue_id, exc)
+        return None
+    return recovered.run_dir if recovered is not None else None
+
+
 def to_json_list(groups: list[IssueGroup]) -> list[dict]:
     """Stable JSON shape for `po status --json`."""
     rows = []
@@ -536,7 +560,7 @@ def to_json_list(groups: list[IssueGroup]) -> list[dict]:
         if str(state).upper() != "COMPLETED":
             run_dir: Path | None = None
             try:
-                run_dir = _run_dir_for_issue(g.issue_id)
+                run_dir = _run_dir_for_group(g)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("run_dir lookup failed for %s: %s", g.issue_id, exc)
                 run_dir = None
@@ -625,7 +649,7 @@ def render_table(groups: list[IssueGroup]) -> str:
         # run-dir. Completed flows render unchanged.
         if state_str.upper().split()[0] != "COMPLETED":
             try:
-                outcome = _load_flow_outcome(_run_dir_for_issue(g.issue_id))
+                outcome = _load_flow_outcome(_run_dir_for_group(g))
             except Exception as exc:  # noqa: BLE001
                 logger.debug("flow_outcome lookup failed for %s: %s", g.issue_id, exc)
                 outcome = None
