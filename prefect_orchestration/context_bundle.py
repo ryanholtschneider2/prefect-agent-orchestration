@@ -77,7 +77,11 @@ def _lessons_ledger(rig_path: Path, max_chars: int = 12_000) -> str:
             text = f.read_text().strip()
         except OSError:
             continue
-        if "status:" in text:  # has at least one real entry, not just the header
+        # A real entry is a `### <slug> ... status: ...` heading. Key on that, not
+        # a bare "status:" substring — the area-file boilerplate header explains
+        # the open/promoted lifecycle in prose and would otherwise false-match,
+        # injecting empty headers into every CONTEXT.md.
+        if any(ln.startswith("### ") and "status:" in ln for ln in text.splitlines()):
             chunks.append(f"### {f.stem}\n\n{text}")
     if not chunks:
         return "(none)"
