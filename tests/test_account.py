@@ -58,6 +58,36 @@ def test_save_and_load_registry_round_trip(tmp_path: Path) -> None:
     assert expected.path.stat().st_mode & 0o777 == 0o600
 
 
+def test_clean_room_account_sets_provider_and_user_homes(tmp_path: Path) -> None:
+    user_home = tmp_path / "clean-user"
+    config = Registry(
+        accounts={
+            "codex-personal2": Account(
+                handle="codex-personal2",
+                provider="codex",
+                account_class="personal2",
+                home=str(user_home / ".codex"),
+                user_home=str(user_home),
+            )
+        },
+        rules=(),
+        path=tmp_path / "accounts.toml",
+    )
+
+    result = resolve_account(
+        config,
+        provider="codex",
+        cwd=tmp_path,
+        account="codex-personal2",
+        environ={},
+    )
+
+    assert result.environment == {
+        "HOME": str(user_home),
+        "CODEX_HOME": str(user_home / ".codex"),
+    }
+
+
 def test_resolve_uses_longest_directory_rule(tmp_path: Path) -> None:
     config = registry(tmp_path)
     cwd = tmp_path / "work" / "repo"
@@ -224,6 +254,8 @@ def test_launch_agent_execs_provider_with_resolved_environment(
     monkeypatch.setattr("prefect_orchestration.account.os.execvpe", capture_exec)
     monkeypatch.setenv("PO_ACCOUNT", "")
     monkeypatch.setenv("PO_ACCOUNT_CLASS", "")
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
+    monkeypatch.setenv("RYAN_PERSONAL_OPENAI_KEY", "must-not-leak")
 
     launch_agent(
         "claude",
@@ -233,6 +265,8 @@ def test_launch_agent_execs_provider_with_resolved_environment(
     )
 
     environment = captured["environment"]
+    assert "OPENAI_API_KEY" not in environment
+    assert "RYAN_PERSONAL_OPENAI_KEY" not in environment
     assert isinstance(environment, dict)
     assert captured["executable"] == "/usr/bin/claude"
     assert captured["argv"] == ["/usr/bin/claude", "--version"]

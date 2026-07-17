@@ -947,16 +947,19 @@ def _clean_env(extra_env: Mapping[str, str] | None = None) -> dict[str, str]:
     Strip `ANTHROPIC_API_KEY` so the CLI uses OAuth (matches the
     user-global convention), then strip every `<PREFIX>_*` role-scoped
     secret so peer-role tokens don't leak through `os.environ`. If
-    `extra_env` is supplied, overlay it last — this is the current
-    role's re-keyed secrets (e.g. `{"SLACK_TOKEN": "xoxb-…"}`).
+    `extra_env` is supplied, overlay the current role's re-keyed service
+    secrets (e.g. `{"SLACK_TOKEN": "xoxb-…"}`), then enforce the local
+    coding-agent API-key denylist again.
     """
+    from prefect_orchestration.account import MODEL_API_ENV_KEYS
     from prefect_orchestration.secrets import strip_role_scoped
 
     env = os.environ.copy()
-    env.pop("ANTHROPIC_API_KEY", None)
     strip_role_scoped(env, DEFAULT_PREFIXES)
     if extra_env:
         env.update(extra_env)
+    for key in MODEL_API_ENV_KEYS:
+        env.pop(key, None)
     return env
 
 

@@ -100,7 +100,18 @@ specific account handle.
 |---|---|
 | Codex | `CODEX_HOME=<account.home>` |
 | Claude Code | `CLAUDE_CONFIG_DIR=<account.home>` |
-| Cursor | none; selection and policy validation only |
+| Cursor | no provider-specific variable |
+
+When `account.user_home` is configured, all providers also receive
+`HOME=<account.user_home>`. This is intended for clean-room accounts that must
+not discover user-global prompts, skills, rules, or state. Cursor uses this
+mechanism because its CLI stores global configuration under `~/.cursor` and
+does not expose a dedicated configuration-directory variable.
+
+Local coding-agent launches remove model-provider API-key environment
+variables before starting the child process. Interactive accounts therefore
+use their provider's subscription login rather than silently switching to API
+billing.
 
 For isolated Codex accounts, each home should use file credential storage so
 authentication is scoped under `CODEX_HOME`.

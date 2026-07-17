@@ -15,6 +15,14 @@ import typer
 
 CONFIG_PATH = Path.home() / ".config" / "po" / "accounts.toml"
 SUPPORTED_PROVIDERS = {"claude", "codex", "cursor"}
+MODEL_API_ENV_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "CURSOR_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
+    "RYAN_PERSONAL_GEMINI_API_KEY",
+    "RYAN_PERSONAL_OPENAI_KEY",
+)
 PROVIDER_EXECUTABLES = {
     "claude": ("claude",),
     "codex": ("codex",),
@@ -73,6 +81,7 @@ class Account:
     provider: str
     account_class: str
     home: str | None = None
+    user_home: str | None = None
     email: str | None = None
     description: str | None = None
     config_source: str | None = None
@@ -97,6 +106,7 @@ class Resolution:
     provider: str
     account_class: str
     home: str | None
+    user_home: str | None
     email: str | None
     source: str
     environment: dict[str, str]
@@ -156,6 +166,7 @@ def load_registry(path: Path = CONFIG_PATH) -> Registry:
             provider=provider,
             account_class=account_class,
             home=home,
+            user_home=(str(raw["user_home"]).strip() if raw.get("user_home") else None),
             email=str(raw["email"]).strip() if raw.get("email") else None,
             description=(
                 str(raw["description"]).strip() if raw.get("description") else None
@@ -209,14 +220,17 @@ def _matching_rule(registry: Registry, cwd: Path) -> DirectoryRule | None:
 
 
 def _environment(account: Account) -> dict[str, str]:
+    environment: dict[str, str] = {}
+    if account.user_home:
+        environment["HOME"] = str(_expand_path(account.user_home))
     if not account.home:
-        return {}
+        return environment
     home = str(_expand_path(account.home))
     if account.provider == "codex":
-        return {"CODEX_HOME": home}
-    if account.provider == "claude":
-        return {"CLAUDE_CONFIG_DIR": home}
-    return {}
+        environment["CODEX_HOME"] = home
+    elif account.provider == "claude":
+        environment["CLAUDE_CONFIG_DIR"] = home
+    return environment
 
 
 def resolve_account(
@@ -296,6 +310,9 @@ def resolve_account(
         provider=selected.provider,
         account_class=selected.account_class,
         home=str(_expand_path(selected.home)) if selected.home else None,
+        user_home=(
+            str(_expand_path(selected.user_home)) if selected.user_home else None
+        ),
         email=selected.email,
         source=source,
         environment=_environment(selected),
@@ -367,6 +384,8 @@ def launch_agent(
         account_class=account_class,
     )
     environment = os.environ.copy()
+    for key in MODEL_API_ENV_KEYS:
+        environment.pop(key, None)
     environment.update(resolution.environment)
     environment["PO_ACCOUNT"] = resolution.handle
     environment["PO_ACCOUNT_CLASS"] = resolution.account_class
@@ -423,6 +442,8 @@ def save_registry(registry: Registry) -> None:
         lines.append(f"class = {_toml_string(account.account_class)}")
         if account.home:
             lines.append(f"home = {_toml_string(account.home)}")
+        if account.user_home:
+            lines.append(f"user_home = {_toml_string(account.user_home)}")
         if account.email:
             lines.append(f"email = {_toml_string(account.email)}")
         if account.description:
@@ -526,6 +547,7 @@ def add_account(
     provider: str = typer.Option(..., "--provider"),
     account_class: str = typer.Option(..., "--class"),
     home: str | None = typer.Option(None, "--home"),
+    user_home: str | None = typer.Option(None, "--user-home"),
     email: str | None = typer.Option(None, "--email"),
     description: str | None = typer.Option(None, "--description"),
     config_source: str | None = typer.Option(None, "--config-source"),
@@ -549,6 +571,7 @@ def add_account(
             provider=normalized_provider,
             account_class=account_class,
             home=home,
+            user_home=user_home,
             email=email,
             description=description,
             config_source=config_source,

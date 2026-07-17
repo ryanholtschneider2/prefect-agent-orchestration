@@ -105,8 +105,15 @@ def test_parse_envelope_invalid_json_falls_back():
 
 def test_clean_env_strips_api_key(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-be-stripped")
-    env = _clean_env()
+    env = _clean_env(
+        {
+            "OPENAI_API_KEY": "sk-should-also-be-stripped",
+            "RYAN_PERSONAL_OPENAI_KEY": "sk-should-also-be-stripped",
+        }
+    )
     assert "ANTHROPIC_API_KEY" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "RYAN_PERSONAL_OPENAI_KEY" not in env
 
 
 def test_session_name_derivation():
