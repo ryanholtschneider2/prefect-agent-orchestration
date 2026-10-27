@@ -31,3 +31,17 @@ def _pin_beads_binary_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(beads_backend, "_BD_IS_BR_MEMO", None)
     monkeypatch.setattr(beads_backend, "_bd_is_really_br", lambda: False)
     monkeypatch.setenv("PO_BEADS_BACKEND", "dolt")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_packs_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Keep pack tests off the operator's real `~/.config/po/packs.json`.
+
+    The install/update tests record their fixture packs in the manifest, and
+    `po packs restore` reinstalls whatever it lists, so a run of the unit suite
+    once left `/tmp/pytest-*` and `po-mypack` entries in the real file.
+    """
+    manifest = tmp_path_factory.mktemp("po-config") / "packs.json"
+    monkeypatch.setenv("PO_PACKS_MANIFEST", str(manifest))
