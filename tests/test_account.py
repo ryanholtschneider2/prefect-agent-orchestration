@@ -1,3 +1,4 @@
+import json as _json
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,8 @@ from prefect_orchestration.account import (
     launch_agent,
     resolve_account,
     resolve_environment_for_backend,
+    restore_plan,
+    resume_session_id,
     save_registry,
     sync_shared_config,
 )
@@ -357,3 +360,189 @@ def test_sync_shared_config_links_cursor_cli_files(tmp_path: Path) -> None:
     ).resolve() == personal_home / "cli-config.json"
     assert (work_home / "mcp.json").resolve() == personal_home / "mcp.json"
     assert any(target.name == "cli-config.json" for target, _ in links)
+
+
+# ---------- agent-restore ----------
+
+
+def _restore_registry(tmp_path: Path) -> Registry:
+    return Registry(
+        accounts={
+            "claude-personal": Account(
+                "claude-personal", "claude", "personal", home=str(tmp_path / "cp")
+            ),
+            "claude-work": Account(
+                "claude-work", "claude", "work", home=str(tmp_path / "cw")
+            ),
+            "codex-personal": Account(
+                "codex-personal", "codex", "personal", home=str(tmp_path / "cx")
+            ),
+        },
+        rules=(),
+    )
+
+
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(_json.dumps(r) for r in records) + "\n")
+
+
+def test_resume_session_id_only_matches_bare_resume() -> None:
+    assert resume_session_id("claude", ["--resume", "abc"]) == "abc"
+    assert resume_session_id("claude", ["-r", "abc"]) == "abc"
+    assert resume_session_id("claude", ["--resume=abc"]) == "abc"
+    assert resume_session_id("codex", ["resume", "abc"]) == "abc"
+    assert (
+        resume_session_id(
+            "claude", ["--dangerously-skip-permissions", "--resume", "abc"]
+        )
+        == "abc"
+    )
+    assert resume_session_id("codex", ["--yolo", "resume", "abc"]) == "abc"
+    assert resume_session_id("claude", ["--resume"]) is None
+    assert resume_session_id("claude", []) is None
+    assert resume_session_id("codex", ["--model", "x"]) is None
+
+
+def test_restore_plan_finds_owning_claude_account_and_flags(tmp_path: Path) -> None:
+    _write_jsonl(
+        tmp_path / "cw/projects/-home-x-NuGIS/sess-1.jsonl",
+        [
+            {"type": "user", "permissionMode": "bypassPermissions", "effort": "medium"},
+            {
+                "type": "assistant",
+                "message": {"model": "claude-opus-5-5"},
+                "effort": "medium",
+            },
+        ],
+    )
+    plan = restore_plan(_restore_registry(tmp_path), "claude", ["--resume", "sess-1"])
+    assert plan == (
+        "claude-work",
+        [
+            "--resume",
+            "sess-1",
+            "--model",
+            "claude-opus-5-5",
+            "--effort",
+            "medium",
+            "--dangerously-skip-permissions",
+        ],
+    )
+
+
+def test_restore_plan_keeps_default_permissions(tmp_path: Path) -> None:
+    _write_jsonl(
+        tmp_path / "cp/projects/p/sess-2.jsonl",
+        [
+            {
+                "type": "assistant",
+                "permissionMode": "default",
+                "message": {"model": "claude-sonnet-5-5"},
+            }
+        ],
+    )
+    handle, args = restore_plan(_restore_registry(tmp_path), "claude", ["-r", "sess-2"])
+    assert handle == "claude-personal"
+    assert "--dangerously-skip-permissions" not in args and "claude-sonnet-5-5" in args
+
+
+def test_restore_plan_codex_model_and_effort(tmp_path: Path) -> None:
+    _write_jsonl(
+        tmp_path / "cx/sessions/2026/10/27/rollout-2026-10-27T10-00-00-sess-3.jsonl",
+        [
+            {
+                "type": "turn_context",
+                "payload": {"model": "gpt-6.1-sol", "effort": "high"},
+            }
+        ],
+    )
+    plan = restore_plan(_restore_registry(tmp_path), "codex", ["resume", "sess-3"])
+    assert plan == (
+        "codex-personal",
+        [
+            "resume",
+            "sess-3",
+            "-m",
+            "gpt-6.1-sol",
+            "-c",
+            'model_reasoning_effort="high"',
+        ],
+    )
+
+
+def test_restore_plan_does_not_duplicate_flags_the_caller_set(tmp_path: Path) -> None:
+    _write_jsonl(
+        tmp_path / "cw/projects/p/sess-4.jsonl",
+        [
+            {
+                "type": "assistant",
+                "permissionMode": "bypassPermissions",
+                "effort": "high",
+                "message": {"model": "claude-opus-5-5"},
+            }
+        ],
+    )
+    handle, args = restore_plan(
+        _restore_registry(tmp_path),
+        "claude",
+        ["--dangerously-skip-permissions", "--resume", "sess-4", "--model", "sonnet"],
+    )
+    assert handle == "claude-work"
+    assert args == [
+        "--dangerously-skip-permissions",
+        "--resume",
+        "sess-4",
+        "--model",
+        "sonnet",
+        "--effort",
+        "high",
+    ]
+
+
+def test_launch_agent_resume_overrides_cwd_rule(tmp_path: Path, monkeypatch) -> None:
+    _write_jsonl(
+        tmp_path / "cw/projects/p/sess-5.jsonl", [{"type": "user", "effort": "low"}]
+    )
+    config = tmp_path / "accounts.toml"
+    config.write_text(
+        f'''[accounts."claude-personal"]
+provider = "claude"
+class = "personal"
+home = "{tmp_path / "cp"}"
+[accounts."claude-work"]
+provider = "claude"
+class = "work"
+home = "{tmp_path / "cw"}"
+[[rules]]
+path = "{tmp_path}"
+class = "personal"
+'''
+    )
+    seen = {}
+    monkeypatch.setattr(
+        "prefect_orchestration.account._resolve_provider_executable",
+        lambda _p: "claude",
+    )
+    monkeypatch.setattr(
+        "os.execvpe", lambda exe, argv, env: seen.update(argv=argv, env=env)
+    )
+    launch_agent("claude", ["--resume", "sess-5"], cwd=tmp_path, config_path=config)
+    assert seen["env"]["PO_ACCOUNT"] == "claude-work"
+    assert seen["env"]["CLAUDE_CONFIG_DIR"] == str((tmp_path / "cw").resolve())
+    assert seen["argv"] == ["claude", "--resume", "sess-5", "--effort", "low"]
+    # an explicit account still wins
+    launch_agent(
+        "claude",
+        ["--resume", "sess-5"],
+        cwd=tmp_path,
+        account="claude-personal",
+        config_path=config,
+    )
+    assert seen["env"]["PO_ACCOUNT"] == "claude-personal"
+
+
+def test_restore_plan_none_when_not_a_resume_or_unknown_session(tmp_path: Path) -> None:
+    reg = _restore_registry(tmp_path)
+    assert restore_plan(reg, "claude", ["--model", "opus"]) is None
+    assert restore_plan(reg, "claude", ["--resume", "missing"]) is None

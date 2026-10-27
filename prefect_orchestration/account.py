@@ -375,9 +375,17 @@ def launch_agent(
     """Replace this process with a provider CLI under the resolved account."""
     normalized_provider = normalize_provider(provider)
     executable = _resolve_provider_executable(normalized_provider)
+    registry = load_registry(config_path)
+
+    # A resumed session can only load from the account home that holds it,
+    # so that beats the cwd rule unless the caller named an account.
+    if account is None and account_class is None:
+        plan = restore_plan(registry, normalized_provider, args)
+        if plan is not None:
+            account, args = plan
 
     resolution = resolve_account(
-        load_registry(config_path),
+        registry,
         provider=normalized_provider,
         cwd=cwd,
         account=account,
@@ -390,6 +398,154 @@ def launch_agent(
     environment["PO_ACCOUNT"] = resolution.handle
     environment["PO_ACCOUNT_CLASS"] = resolution.account_class
     os.execvpe(executable, [executable, *args], environment)
+
+
+# ---------- restoring a session after a multiplexer restart ----------
+# Herdr (and similar) restore a pane by typing `claude --resume <id>` or
+# `codex resume <id>` into a fresh shell, which reaches `po agent` through
+# the shell function with no account named. The cwd rule then picks an
+# account that may not hold the session ("No conversation found"), and the
+# original model, effort and permission flags are gone. The session
+# transcript records those flags and the registry says which account home
+# holds it, so both are recovered without any extra launch-time state.
+
+_TAIL_BYTES = 4 * 1024 * 1024
+
+
+def resume_session_id(provider: str, args: list[str]) -> str | None:
+    """The session id resumed by `args` (`--resume ID`, `-r ID`, `codex resume ID`)."""
+    match normalize_provider(provider):
+        case "claude":
+            for index, arg in enumerate(args):
+                if arg in ("--resume", "-r") and index + 1 < len(args):
+                    return args[index + 1]
+                if arg.startswith("--resume="):
+                    return arg.split("=", 1)[1]
+        case "codex":
+            if "resume" in args:
+                index = args.index("resume")
+                if index + 1 < len(args) and not args[index + 1].startswith("-"):
+                    return args[index + 1]
+    return None
+
+
+def _already_set(args: list[str], *names: str) -> bool:
+    return any(arg in names or arg.split("=", 1)[0] in names for arg in args)
+
+
+def _session_file(account: Account, session_id: str) -> Path | None:
+    if not account.home:
+        return None
+    home = _expand_path(account.home)
+    match account.provider:
+        case "claude":
+            matches = list(home.glob(f"projects/*/{session_id}.jsonl"))
+        case "codex":
+            matches = list(home.glob(f"sessions/*/*/*/rollout-*-{session_id}.jsonl"))
+        case _:
+            matches = []
+    return max(matches, key=lambda p: p.stat().st_mtime) if matches else None
+
+
+def find_session_account(
+    registry: Registry, provider: str, session_id: str
+) -> tuple[Account, Path] | None:
+    """The registered account whose home holds this session (newest if several)."""
+    normalized = normalize_provider(provider)
+    found = [
+        (account, path)
+        for account in registry.accounts.values()
+        if account.provider == normalized
+        and (path := _session_file(account, session_id)) is not None
+    ]
+    return max(found, key=lambda item: item[1].stat().st_mtime) if found else None
+
+
+def _tail_records(path: Path) -> list[dict]:
+    with path.open("rb") as handle:
+        handle.seek(max(0, path.stat().st_size - _TAIL_BYTES))
+        raw = handle.read().decode("utf-8", errors="replace")
+    records = []
+    for line in raw.splitlines():
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            continue  # first line may be cut mid-record by the seek
+    return records
+
+
+def session_launch_flags(provider: str, path: Path) -> list[str]:
+    """Model, effort and permission flags the session was last running with."""
+    model = effort = permission = None
+    for record in reversed(_tail_records(path)):
+        match normalize_provider(provider):
+            case "claude":
+                message = record.get("message") or {}
+                model = model or (
+                    message.get("model") if isinstance(message, dict) else None
+                )
+                effort = effort or record.get("effort")
+                permission = permission or record.get("permissionMode")
+            case "codex" if record.get("type") == "turn_context":
+                payload = record.get("payload") or {}
+                model = model or payload.get("model")
+                effort = effort or payload.get("effort")
+        if model and effort and (permission or provider != "claude"):
+            break
+    flags: list[str] = []
+    match normalize_provider(provider):
+        case "claude":
+            if model and model.startswith("claude-"):
+                flags += ["--model", model]
+            if effort:
+                flags += ["--effort", effort]
+            if permission == "bypassPermissions":
+                flags.append("--dangerously-skip-permissions")
+        case "codex":
+            if model:
+                flags += ["-m", model]
+            if effort:
+                flags += ["-c", f'model_reasoning_effort="{effort}"']
+    return flags
+
+
+def restore_plan(
+    registry: Registry, provider: str, args: list[str]
+) -> tuple[str, list[str]] | None:
+    """(owning account, args plus recovered flags) for a resume, or None."""
+    session_id = resume_session_id(provider, args)
+    if session_id is None:
+        return None
+    found = find_session_account(registry, provider, session_id)
+    if found is None:
+        return None
+    account, path = found
+    recovered = session_launch_flags(provider, path)
+    extra: list[str] = []
+    index = 0
+    while index < len(recovered):
+        flag = recovered[index]
+        takes_value = flag in ("--model", "--effort", "-m", "-c")
+        value = recovered[index + 1] if takes_value else None
+        match flag, value:
+            case "--model", _ if _already_set(args, "--model"):
+                pass
+            case "--effort", _ if _already_set(args, "--effort"):
+                pass
+            case "-m", _ if _already_set(args, "-m", "--model"):
+                pass
+            case "-c", str(setting) if setting.startswith(
+                "model_reasoning_effort"
+            ) and any("model_reasoning_effort" in arg for arg in args):
+                pass
+            case "--dangerously-skip-permissions", _ if _already_set(
+                args, "--dangerously-skip-permissions"
+            ):
+                pass
+            case _:
+                extra += [flag] if value is None else [flag, value]
+        index += 2 if takes_value else 1
+    return account.handle, [*args, *extra]
 
 
 def sync_shared_config(registry: Registry) -> list[tuple[Path, Path]]:
