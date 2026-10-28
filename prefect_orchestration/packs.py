@@ -107,9 +107,7 @@ def _load_manifest() -> tuple[PackRequirement, list[PackRequirement]]:
     return core, requirements
 
 
-def _write_manifest(
-    core: PackRequirement, requirements: list[PackRequirement]
-) -> None:
+def _write_manifest(core: PackRequirement, requirements: list[PackRequirement]) -> None:
     path = packs_manifest_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -321,9 +319,7 @@ def install(spec: str, *, editable: bool = False) -> None:
             p
             for p in discovered
             if p.name != CORE_DISTRIBUTION
-            and not (
-                target_name and _norm_dist(p.name) == _norm_dist(target_name)
-            )
+            and not (target_name and _norm_dist(p.name) == _norm_dist(target_name))
             and not _same_pack(p, spec, editable=eff_editable)
         ]
         # Prefer durable requirements because a prior raw uv reinstall may have
@@ -331,11 +327,11 @@ def install(spec: str, *, editable: bool = False) -> None:
         preserved = {
             _norm_dist(req.name): req
             for req in manifest_packs
-            if not (
-                target_name and _norm_dist(req.name) == _norm_dist(target_name)
-            )
+            if not (target_name and _norm_dist(req.name) == _norm_dist(target_name))
             and not _same_pack(
-                PackInfo(req.name, "", "editable" if req.editable else "pypi", req.spec),
+                PackInfo(
+                    req.name, "", "editable" if req.editable else "pypi", req.spec
+                ),
                 spec,
                 editable=eff_editable,
             )
@@ -356,7 +352,11 @@ def install(spec: str, *, editable: bool = False) -> None:
     final_packs = _merge_discovered(manifest_packs, installed)
     if not _is_core_path(spec):
         matched = next(
-            (pack for pack in installed if _same_pack(pack, spec, editable=eff_editable)),
+            (
+                pack
+                for pack in installed
+                if _same_pack(pack, spec, editable=eff_editable)
+            ),
             None,
         )
         if matched is not None:
@@ -365,13 +365,9 @@ def install(spec: str, *, editable: bool = False) -> None:
             final_packs = [
                 req
                 for req in final_packs
-                if not (
-                    target_name and _norm_dist(req.name) == _norm_dist(target_name)
-                )
+                if not (target_name and _norm_dist(req.name) == _norm_dist(target_name))
             ]
-            final_packs.append(
-                PackRequirement(target_name or spec, spec, eff_editable)
-            )
+            final_packs.append(PackRequirement(target_name or spec, spec, eff_editable))
     _write_manifest(core, final_packs)
     _check_command_collisions()
 
@@ -425,17 +421,18 @@ def uninstall(name: str) -> None:
         # we re-install core with every OTHER pack except this one.
         current = discover_packs()
         remaining = [
-            p
-            for p in current
-            if p.name != name and p.name != CORE_DISTRIBUTION
+            p for p in current if p.name != name and p.name != CORE_DISTRIBUTION
         ]
         core, manifest_packs = _load_manifest()
         removed_norms = {_norm_dist(name)}
         removed_norms.update(
-            _norm_dist(pack.name) for pack in current if _norm_dist(pack.name) == _norm_dist(name)
+            _norm_dist(pack.name)
+            for pack in current
+            if _norm_dist(pack.name) == _norm_dist(name)
         )
         desired = [
-            req for req in _merge_discovered(manifest_packs, remaining)
+            req
+            for req in _merge_discovered(manifest_packs, remaining)
             if _norm_dist(req.name) not in removed_norms
         ]
         argv = _core_install_argv(core)

@@ -228,9 +228,7 @@ def test_safe_editable_core_reinstall_preserves_manifest_packs(
 ) -> None:
     core = tmp_path / "prefect-orchestration"
     core.mkdir()
-    (core / "pyproject.toml").write_text(
-        '[project]\nname = "prefect-orchestration"\n'
-    )
+    (core / "pyproject.toml").write_text('[project]\nname = "prefect-orchestration"\n')
     manifest = Path(os.environ[packs.PACKS_MANIFEST_ENV])
     manifest.write_text(
         json.dumps(
@@ -249,8 +247,12 @@ def test_safe_editable_core_reinstall_preserves_manifest_packs(
     monkeypatch.setattr(
         packs,
         "_run_uv",
-        lambda args: calls.append(args)
-        or subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr=""),
+        lambda args: (
+            calls.append(args)
+            or subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="", stderr=""
+            )
+        ),
     )
 
     packs.install(str(core), editable=True)
@@ -285,9 +287,7 @@ def test_restore_uses_external_manifest_after_environment_eviction(
             {
                 "version": 1,
                 "core": {"spec": "/src/core", "editable": True},
-                "packs": [
-                    {"name": "po-a", "spec": "/src/a", "editable": True}
-                ],
+                "packs": [{"name": "po-a", "spec": "/src/a", "editable": True}],
             }
         )
     )
@@ -295,8 +295,12 @@ def test_restore_uses_external_manifest_after_environment_eviction(
     monkeypatch.setattr(
         packs,
         "_run_uv",
-        lambda args: calls.append(args)
-        or subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr=""),
+        lambda args: (
+            calls.append(args)
+            or subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="", stderr=""
+            )
+        ),
     )
 
     assert packs.restore() == ["po-a"]
@@ -330,9 +334,7 @@ def test_install_replaces_prior_editable_path_by_distribution_name(
             {
                 "version": 1,
                 "core": {"spec": packs.CORE_DISTRIBUTION, "editable": False},
-                "packs": [
-                    {"name": "po-soloco", "spec": str(old), "editable": True}
-                ],
+                "packs": [{"name": "po-soloco", "spec": str(old), "editable": True}],
             }
         )
     )
@@ -347,8 +349,12 @@ def test_install_replaces_prior_editable_path_by_distribution_name(
     monkeypatch.setattr(
         packs,
         "_run_uv",
-        lambda args: calls.append(args)
-        or subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr=""),
+        lambda args: (
+            calls.append(args)
+            or subprocess.CompletedProcess(
+                args=args, returncode=0, stdout="", stderr=""
+            )
+        ),
     )
 
     packs.install(str(new), editable=True)

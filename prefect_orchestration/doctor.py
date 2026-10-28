@@ -1101,7 +1101,9 @@ def check_pack_manifest_consistent() -> CheckResult:
             message=f"installed pack(s) not recorded: {', '.join(extra)}",
             remediation="reinstall the pack(s) through `po packs install` to record them",
         )
-    return CheckResult(name=name, status=Status.OK, message=f"{len(wanted)} pack(s) match")
+    return CheckResult(
+        name=name, status=Status.OK, message=f"{len(wanted)} pack(s) match"
+    )
 
 
 # -- aggregator ---------------------------------------------------------
