@@ -574,11 +574,34 @@ def test_claim_issue_continues_on_timeout(
     beads_meta.claim_issue("any-id", "po-worker", rig_path="/tmp")
 
 
-def test_close_issue_continues_on_timeout(
+def test_close_issue_raises_on_timeout(
     monkeypatch: pytest.MonkeyPatch, force_bd_backend: None
 ) -> None:
     monkeypatch.setattr(beads_meta.subprocess, "run", _raise_timeout)
-    # Best-effort write: must not raise.
+    with pytest.raises(RuntimeError, match="close any-id timed out"):
+        beads_meta.close_issue("any-id", notes="complete", rig_path="/tmp")
+
+
+def test_close_issue_rejects_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch, force_bd_backend: None
+) -> None:
+    monkeypatch.setattr(
+        beads_meta.subprocess,
+        "run",
+        lambda *a, **k: _RecordingProc(returncode=1, stderr="database is unavailable"),
+    )
+    with pytest.raises(RuntimeError, match="database is unavailable"):
+        beads_meta.close_issue("any-id", notes="complete", rig_path="/tmp")
+
+
+def test_close_issue_is_idempotent_when_backend_reports_already_closed(
+    monkeypatch: pytest.MonkeyPatch, force_bd_backend: None
+) -> None:
+    monkeypatch.setattr(
+        beads_meta.subprocess,
+        "run",
+        lambda *a, **k: _RecordingProc(returncode=1, stderr="issue already closed"),
+    )
     beads_meta.close_issue("any-id", notes="complete", rig_path="/tmp")
 
 

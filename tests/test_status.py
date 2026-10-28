@@ -5,8 +5,10 @@ No live Prefect server — everything runs against simple fakes.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -262,6 +264,7 @@ def test_status_render_table_with_flow_outcome(
         _json.dumps(
             {
                 "work_landed": True,
+                "delivery_state": "integration_pending",
                 "terminal_role": "lint",
                 "terminal_iter": 2,
                 "exception_class": "StepTimeoutError",
@@ -290,6 +293,7 @@ def test_status_render_table_with_flow_outcome(
     )
     out = _status.render_table([g])
     assert "[work landed: ✓]" in out
+    assert "[delivery: integration pending]" in out
     assert "[last: lint-iter-2]" in out
     assert "[exc: StepTimeoutError]" in out
 
@@ -297,7 +301,7 @@ def test_status_render_table_with_flow_outcome(
 def test_status_to_json_with_flow_outcome(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Non-Completed flow + flow_outcome.json → JSON row gains 4 new fields."""
+    """Non-Completed flow + flow_outcome.json exposes delivery failure fields."""
     import json as _json
 
     run_dir = tmp_path / "run-fo"
@@ -306,6 +310,7 @@ def test_status_to_json_with_flow_outcome(
         _json.dumps(
             {
                 "work_landed": True,
+                "delivery_state": "closure_pending",
                 "terminal_role": "lint",
                 "terminal_iter": 2,
                 "exception_class": "StepTimeoutError",
@@ -336,9 +341,46 @@ def test_status_to_json_with_flow_outcome(
     assert len(rows) == 1
     row = rows[0]
     assert row["work_landed"] is True
+    assert row["delivery_state"] == "closure_pending"
     assert row["terminal_role"] == "lint"
     assert row["terminal_iter"] == 2
     assert row["exception_class"] == "StepTimeoutError"
+
+
+def test_status_recovers_flow_outcome_from_br_rig_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / ".planning" / "software-dev-agentic" / "br-issue"
+    run_dir.mkdir(parents=True)
+    (run_dir / "flow_outcome.json").write_text(
+        json.dumps(
+            {
+                "work_landed": True,
+                "delivery_state": "integration_pending",
+                "exception_class": "ModelCapacityError",
+            }
+        )
+    )
+    monkeypatch.setattr(_status, "_run_dir_for_issue", lambda _iid: None)
+    group = _status.IssueGroup(
+        issue_id="br-issue",
+        latest=FakeFlowRun(
+            id="br-run",
+            name="br-issue",
+            tags=["issue_id:br-issue"],
+            state_name="Failed",
+            parameters={"rig_path": str(tmp_path)},
+        ),
+        extras=[],
+    )
+
+    rendered = _status.render_table([group])
+    row = _status.to_json_list([group])[0]
+
+    assert "[work landed: ✓]" in rendered
+    assert "[delivery: integration pending]" in rendered
+    assert row["work_landed"] is True
+    assert row["delivery_state"] == "integration_pending"
 
 
 def test_status_no_flow_outcome_file_renders_unchanged(
@@ -381,6 +423,7 @@ def test_status_no_flow_outcome_file_renders_unchanged(
         "run_count": 1,
         "stale_secs": None,
         "work_landed": None,
+        "delivery_state": None,
         "terminal_role": None,
         "terminal_iter": None,
         "exception_class": None,

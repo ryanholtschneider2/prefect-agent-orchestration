@@ -226,6 +226,11 @@ def test_codex_run_pins_subscription_model(tmp_path: Path) -> None:
             "codex",
         ),
         (
+            CodexCliBackend(),
+            '{"type":"error","message":"Selected model is at capacity. Please try a different model."}',
+            "codex",
+        ),
+        (
             CursorCliBackend(),
             '{"type":"error","message":"Model is unavailable due to high demand"}',
             "cursor",

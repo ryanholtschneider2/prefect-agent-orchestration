@@ -625,11 +625,13 @@ def close_issue(
     notes: str | None = None,
     rig_path: Path | str | None = None,
 ) -> None:
-    """Close a beads issue. No-op if the binary is missing.
+    """Close a beads issue and fail unless closure is mechanically confirmed.
 
     The binary (`bd` or `br`) is resolved from *rig_path*; `close [--reason]`
     is flag-identical on both. `rig_path` (when set) becomes the shellout's
-    `cwd`.
+    `cwd`. Re-closing an already-closed issue is idempotent. A timeout or a
+    rejected close is load-bearing: callers must retain their closure-pending
+    checkpoint rather than reporting a completed flow with an open seed.
     """
     binary = _resolve_binary(rig_path)
     if binary is None:
@@ -638,18 +640,26 @@ def close_issue(
     if notes:
         cmd += ["--reason", notes]
     try:
-        subprocess.run(
+        proc = subprocess.run(
             cmd,
             check=False,
             cwd=str(rig_path) if rig_path is not None else None,
             timeout=BD_SHELL_TIMEOUT_S,
+            capture_output=True,
+            text=True,
         )
-    except subprocess.TimeoutExpired:
-        logger.warning(
-            "bd close of %s timed out after %ss; continuing",
-            issue_id,
-            BD_SHELL_TIMEOUT_S,
-        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"{binary} close {issue_id} timed out after {BD_SHELL_TIMEOUT_S}s"
+        ) from exc
+    if proc.returncode == 0:
+        return
+    output = f"{proc.stdout or ''}\n{proc.stderr or ''}".strip()
+    if "already closed" in output.lower():
+        return
+    raise RuntimeError(
+        f"{binary} close {issue_id} failed (rc={proc.returncode}): {output[:500]}"
+    )
 
 
 def read_iter_cap(
