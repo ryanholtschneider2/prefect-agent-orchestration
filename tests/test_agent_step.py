@@ -623,6 +623,64 @@ def test_agent_step_uses_short_prompt_on_resumed_session(
     assert len(sent) < 500
 
 
+def test_agent_step_renders_close_contract_in_prompt_and_task_description(
+    tmp_path: Path,
+    fake_bd: dict,
+    fake_session: _FakeSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The canonical bead task and first-turn prompt must both be executable.
+
+    Regression: task.md was rendered before the default close block entered the
+    context, leaving a literal placeholder that made reviewers search the CLI.
+    """
+    _write_prompt(
+        tmp_path / "agents",
+        "reviewer",
+        body="Review the task.\n{{role_step_close_block}}",
+    )
+    fake_bd["bead-close"] = {
+        "id": "bead-close",
+        "status": "open",
+        "title": "x",
+        "metadata": {},
+        "closure_reason": "",
+        "notes": "",
+    }
+    descriptions: list[str] = []
+    monkeypatch.setattr(
+        agent_step_mod,
+        "_stamp_description",
+        lambda _bead_id, description, _rig_path: descriptions.append(description),
+    )
+
+    def closing_prompt(text: str, **_kw: Any) -> str:
+        fake_session.prompts.append(text)
+        fake_bd["bead-close"]["status"] = "closed"
+        fake_bd["bead-close"]["closure_reason"] = "pass: reviewed"
+        return "ack"
+
+    fake_session.prompt = closing_prompt  # type: ignore[assignment]
+
+    agent_step(
+        agent_dir=tmp_path / "agents" / "reviewer",
+        task="Canonical task.\n{{role_step_close_block}}",
+        seed_id="bead-close",
+        rig_path=str(tmp_path),
+        verdict_keywords=("pass", "needs_changes"),
+    )
+
+    assert len(descriptions) == 1
+    for rendered in (descriptions[0], fake_session.prompts[0]):
+        assert "{{role_step_close_block}}" not in rendered
+        assert (
+            "po write-verdict --bead-id bead-close --name role-step "
+            "--payload '{\"verdict\":\"<keyword>\","
+            "\"summary\":\"<one-line summary>\"}'"
+        ) in rendered
+        assert 'bd close bead-close --reason "<keyword>: <one-line summary>"' in rendered
+
+
 def test_agent_step_rotates_oauth_slot_and_retries_after_rate_limit(
     tmp_path: Path, fake_bd: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
